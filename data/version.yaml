@@ -1,0 +1,12 @@
+schema_version: 1
+data_version: fixtures_v1.0
+eval_version: eval_v1
+vocab_version: vocab_v1
+seed: 20260729
+locale: zh-CN
+counts:
+  users: 3
+  garments: 50
+  outfits: 20
+  catalog: 50
+  eval: 30
