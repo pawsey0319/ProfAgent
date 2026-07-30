@@ -1,0 +1,20 @@
+schema_version: 1
+data_version: fixtures_v1.0
+sources:
+  fixtures:
+    kind: synthetic
+    used_for: [users, garments, outfits]
+    note: 完全虚构的用户、衣橱与穿搭数据，由固定规则生成并人工抽查。
+  catalog_mock:
+    kind: synthetic
+    used_for: [catalog]
+    note: 仅借鉴中文购物平台常见的标题、卖点和属性组织方式，不抓取或复制真实商品。
+  eval_set:
+    kind: designed
+    used_for: [eval]
+    note: 人工设计的固定规则评测样本，不含真实用户信息。
+restrictions:
+  - 不使用真实身份、真人画像或敏感健康信息
+  - 不复制真实品牌、商家、商品链接、评论、图片或平台文案
+  - 不将模拟商品表述为真实在售商品
+  - 不把合成反馈冒充真实用户行为

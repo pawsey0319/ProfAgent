@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "outfit.schema.json",
+  "title": "Outfit",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "data_version", "source_id", "synthetic", "outfit_id", "user_id", "name", "items", "grade", "positive", "season", "occasion", "goal", "note"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "data_version": {"const": "fixtures_v1.0"},
+    "source_id": {"const": "fixtures"},
+    "synthetic": {"const": true},
+    "outfit_id": {"type": "string", "pattern": "^o[0-9]{3}$"},
+    "user_id": {"type": "string", "pattern": "^u[0-9]{2}$"},
+    "name": {"type": "string", "minLength": 1, "maxLength": 30},
+    "items": {"type": "array", "minItems": 2, "maxItems": 6, "uniqueItems": true, "items": {"type": "string", "pattern": "^g[0-9]{3}$"}},
+    "grade": {"enum": ["gold", "silver", "bronze"]},
+    "positive": {"type": "boolean"},
+    "season": {"enum": ["spring", "summer", "autumn", "winter", "all"]},
+    "occasion": {"enum": ["daily", "commute", "interview", "meeting", "date", "party", "travel", "outdoor", "home", "sports"]},
+    "goal": {"enum": ["reliable", "modern", "comfortable", "polished", "low_key", "confident", "cool"]},
+    "note": {"type": "string", "minLength": 1, "maxLength": 80}
+  }
+}

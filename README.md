@@ -33,15 +33,20 @@ tests/
 
 ## 校验
 
+本项目统一使用已创建的 Conda 环境 `torch128`：
+
 ```powershell
-python -m pip install -e ".[dev]"
-python scripts/validate.py
-python -m pytest -q
+conda run -n torch128 python -m pip install -e ".[dev]"
+conda run -n torch128 python scripts/generate.py
+conda run -n torch128 python scripts/validate.py
+conda run -n torch128 python -m pytest -q
 ```
+
+生成脚本固定使用 `seed=20260729`，重复运行会得到相同数据和清单哈希。
 
 ## 核心规则
 
-- `persona_id` 固定为 `stylist`。
-- `now`、`today`、`unknown` 默认是高急切度，禁止商品检索。
+- `persona` 固定为 `stylist`。
+- `urgency=high` 或 `horizon=unknown` 时禁止购物和商品检索。
 - 穿搭中的衣物 ID 必须存在，并属于同一个用户。
 - 禁忌色、无库存、不适合季节和不可用衣物在召回前过滤。

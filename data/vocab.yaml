@@ -1,0 +1,16 @@
+schema_version: 1
+data_version: fixtures_v1.0
+persona: [stylist]
+urgency: [high, medium, low]
+horizon: [now, today, soon, planned, unknown]
+budget: [low, mid, high]
+slot: [outer, top, bottom, dress, shoes, bag, accessory]
+season: [spring, summer, autumn, winter, all]
+status: [available, laundry, reserved, unavailable]
+style: [simple, classic, smart, formal, street, sporty, soft, vintage, business, campus]
+occasion: [daily, commute, interview, meeting, date, party, travel, outdoor, home, sports]
+goal: [reliable, modern, comfortable, polished, low_key, confident, cool]
+intent: [recommend, buy, fill_gap, browse, vent]
+color: [black, white, gray, navy, beige, brown, khaki, red, pink, orange, yellow, green, blue, purple, multi]
+material: [cotton, knit, denim, wool, linen, leather, synthetic]
+fit: [slim, regular, loose, straight]

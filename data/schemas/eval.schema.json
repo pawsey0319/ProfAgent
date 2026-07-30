@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "eval.schema.json",
+  "title": "EvalCase",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "data_version", "source_id", "synthetic", "case_id", "bucket", "user_id", "query", "urgency", "horizon", "intent", "shopping", "allow_catalog", "allowed_catalog", "forbidden_catalog", "allowed_garments", "forbidden_garments", "reference_outfits", "bad_ids", "expected"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "data_version": {"const": "fixtures_v1.0"},
+    "source_id": {"const": "eval_set"},
+    "synthetic": {"const": true},
+    "case_id": {"type": "string", "pattern": "^e[0-9]{3}$"},
+    "bucket": {"enum": ["urgent_no_shop", "conditional_buy", "weather_season_formality", "taboo_stock_availability", "grounding", "support_safety"]},
+    "user_id": {"type": "string", "pattern": "^u[0-9]{2}$"},
+    "query": {"type": "string", "minLength": 4, "maxLength": 120},
+    "urgency": {"enum": ["high", "medium", "low"]},
+    "horizon": {"enum": ["now", "today", "soon", "planned", "unknown"]},
+    "intent": {"enum": ["recommend", "buy", "fill_gap", "browse", "vent"]},
+    "shopping": {"type": "boolean"},
+    "allow_catalog": {"type": "boolean"},
+    "allowed_catalog": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^c[0-9]{3}$"}},
+    "forbidden_catalog": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^c[0-9]{3}$"}},
+    "allowed_garments": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^g[0-9]{3}$"}},
+    "forbidden_garments": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^g[0-9]{3}$"}},
+    "reference_outfits": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^o[0-9]{3}$"}},
+    "bad_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 30}},
+    "expected": {"type": "string", "minLength": 4, "maxLength": 180}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"urgency": {"const": "high"}}, "required": ["urgency"]},
+      "then": {
+        "properties": {
+          "shopping": {"const": false},
+          "allow_catalog": {"const": false},
+          "allowed_catalog": {"maxItems": 0}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"horizon": {"const": "unknown"}}, "required": ["horizon"]},
+      "then": {
+        "properties": {
+          "urgency": {"const": "high"},
+          "shopping": {"const": false},
+          "allow_catalog": {"const": false},
+          "allowed_catalog": {"maxItems": 0}
+        }
+      }
+    }
+  ]
+}
