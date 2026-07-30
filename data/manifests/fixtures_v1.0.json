@@ -1,0 +1,32 @@
+{
+  "data_version": "fixtures_v1.0",
+  "files": {
+    "catalog": {
+      "count": 50,
+      "path": "data/fixtures/catalog.jsonl",
+      "sha256": "c56e47f700b38be3053aeb476d116c3ecfcac0c0784e6c2a6c92a3eae0ce33af"
+    },
+    "eval": {
+      "count": 30,
+      "path": "data/eval/eval.jsonl",
+      "sha256": "a534e04346a60b837528248e38891d9e17a1024895f36aea9433e209409bff66"
+    },
+    "garments": {
+      "count": 50,
+      "path": "data/fixtures/garments.jsonl",
+      "sha256": "b9f6d85ace1dc31079b304d342c37a29ba9f6362d63ca3cd548e62f7226be001"
+    },
+    "outfits": {
+      "count": 20,
+      "path": "data/fixtures/outfits.jsonl",
+      "sha256": "cf2a439194d4bf209a3fa2289903271c95cb36424dcdb5b772d22e37550045a2"
+    },
+    "users": {
+      "count": 3,
+      "path": "data/fixtures/users.jsonl",
+      "sha256": "a47a1225037834c85b890fa06011e43ba69d485c9fcf419935fd027d5eaff466"
+    }
+  },
+  "schema_version": 1,
+  "seed": 20260729
+}
