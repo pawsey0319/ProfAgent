@@ -1,0 +1,4977 @@
+{
+  "report_version": "r1_demo_v1",
+  "generated_at": "2026-08-10T17:18:33+08:00",
+  "status": "PASS",
+  "command": "conda run -n torch128 python -m profagent.eval",
+  "versions": {
+    "data": "fixtures_v1.0",
+    "eval": "eval_fixtures_v1.0_30",
+    "eval_sha256": "a534e04346a60b837528248e38891d9e17a1024895f36aea9433e209409bff66",
+    "rules": "scene_rules_v1|hard_filter_v1|response_validator_v1|stylist_score_v1",
+    "ranker": "rule_bm25_rrf_v1",
+    "provider_contract": "cpa_grok4.5_v1",
+    "providers": {
+      "llm": "cpa_text_grok4.5_v1|offline_rule_fallback",
+      "dense": "hashed_dense_v1|disabled_fixture_baseline",
+      "catalog": "fixtures_v1.0_mock",
+      "vision": "garment_visibility_codes_v2|httpx_mock_only"
+    },
+    "model": {
+      "logical": "grok4.5",
+      "transport": "grok-4.5-high",
+      "evaluation_mode": "offline_rule_fallback",
+      "external_calls": 0
+    },
+    "evaluation_oracle": "independent_garment_catalog_score_oracle_v2"
+  },
+  "evaluation_protocol": {
+    "main_30_input_mode": "structured_scene_fields",
+    "main_30_supplied_fields": [
+      "user_id",
+      "query_text",
+      "event_horizon",
+      "intent"
+    ],
+    "main_30_purpose": "deterministic gate, hard-constraint, retrieval, catalog and output validation",
+    "urgency_metric_definition": "horizon_to_urgency_mapping_accuracy",
+    "urgency_metric_not_claimed_as": "query_only_nlp_accuracy",
+    "query_only_assurance": "QUERY-ONLY-SCENE",
+    "audit_no_deadline_assurance": "AUDIT-NO-DEADLINE"
+  },
+  "evaluation_inputs": {
+    "main_30": {
+      "mode": "structured_scene_fields",
+      "supplied_fields": [
+        "user_id",
+        "query_text",
+        "event_horizon",
+        "intent"
+      ],
+      "metric_definition": "horizon_to_urgency_mapping_accuracy",
+      "not_claimed": "query_nlp_accuracy"
+    },
+    "query_only": {
+      "mode": "query_only",
+      "supplied_fields": [
+        "user_id",
+        "query_text"
+      ],
+      "case_ids": [
+        "e001",
+        "e002",
+        "e003",
+        "e004",
+        "e005",
+        "e006",
+        "e007",
+        "e008",
+        "e009",
+        "e010",
+        "e011",
+        "e012",
+        "e013",
+        "e014",
+        "e015",
+        "e016",
+        "e017",
+        "e018",
+        "e028",
+        "e029",
+        "e030"
+      ],
+      "denominator": 21,
+      "expectations": {
+        "e001": {
+          "horizon": "now",
+          "urgency": "high",
+          "intent": "recommend",
+          "shopping": false
+        },
+        "e002": {
+          "horizon": "today",
+          "urgency": "high",
+          "intent": "recommend",
+          "shopping": false
+        },
+        "e003": {
+          "horizon": "now",
+          "urgency": "high",
+          "intent": "recommend",
+          "shopping": false
+        },
+        "e004": {
+          "horizon": "unknown",
+          "urgency": "high",
+          "intent": "recommend",
+          "shopping": false
+        },
+        "e005": {
+          "horizon": "now",
+          "urgency": "high",
+          "intent": "recommend",
+          "shopping": false
+        },
+        "e006": {
+          "horizon": "today",
+          "urgency": "high",
+          "intent": "recommend",
+          "shopping": false
+        },
+        "e007": {
+          "horizon": "now",
+          "urgency": "high",
+          "intent": "recommend",
+          "shopping": false
+        },
+        "e008": {
+          "horizon": "unknown",
+          "urgency": "high",
+          "intent": "recommend",
+          "shopping": false
+        },
+        "e009": {
+          "horizon": "soon",
+          "urgency": "medium",
+          "intent": "fill_gap",
+          "shopping": true
+        },
+        "e010": {
+          "horizon": "planned",
+          "urgency": "low",
+          "intent": "fill_gap",
+          "shopping": true
+        },
+        "e011": {
+          "horizon": "soon",
+          "urgency": "medium",
+          "intent": "browse",
+          "shopping": true
+        },
+        "e012": {
+          "horizon": "planned",
+          "urgency": "low",
+          "intent": "fill_gap",
+          "shopping": true
+        },
+        "e013": {
+          "horizon": "planned",
+          "urgency": "low",
+          "intent": "fill_gap",
+          "shopping": true
+        },
+        "e014": {
+          "horizon": "soon",
+          "urgency": "medium",
+          "intent": "recommend",
+          "shopping": false
+        },
+        "e015": {
+          "horizon": "planned",
+          "urgency": "low",
+          "intent": "recommend",
+          "shopping": false
+        },
+        "e016": {
+          "horizon": "soon",
+          "urgency": "medium",
+          "intent": "recommend",
+          "shopping": false
+        },
+        "e017": {
+          "horizon": "planned",
+          "urgency": "low",
+          "intent": "recommend",
+          "shopping": false
+        },
+        "e018": {
+          "horizon": "planned",
+          "urgency": "low",
+          "intent": "recommend",
+          "shopping": false
+        },
+        "e028": {
+          "horizon": "soon",
+          "urgency": "medium",
+          "intent": "vent",
+          "shopping": false
+        },
+        "e029": {
+          "horizon": "unknown",
+          "urgency": "high",
+          "intent": "vent",
+          "shopping": false
+        },
+        "e030": {
+          "horizon": "unknown",
+          "urgency": "high",
+          "intent": "vent",
+          "shopping": false
+        }
+      }
+    },
+    "audit_no_deadline": {
+      "mode": "query_only",
+      "supplied_fields": [
+        "user_id",
+        "query_text"
+      ],
+      "case_ids": [
+        "e020",
+        "e023",
+        "audit_given_wardrobe"
+      ],
+      "denominator": 3,
+      "expected_horizon": "unknown",
+      "expected_urgency": "high",
+      "expected_catalog_invocations": 0
+    },
+    "catalog_expectation": {
+      "call_requirement_oracle": "independent_query_catalog_call_required_v1",
+      "explicit_gap_call_required_case_ids": [
+        "e009",
+        "e010",
+        "e011",
+        "e012",
+        "e013"
+      ],
+      "expected_explicit_gap_call_required_case_ids": [
+        "e009",
+        "e010",
+        "e011",
+        "e012",
+        "e013"
+      ],
+      "non_call_required_zero_call_case_ids": [
+        "e001",
+        "e002",
+        "e003",
+        "e004",
+        "e005",
+        "e006",
+        "e007",
+        "e008",
+        "e014",
+        "e015",
+        "e016",
+        "e017",
+        "e018",
+        "e019",
+        "e020",
+        "e021",
+        "e022",
+        "e023",
+        "e024",
+        "e025",
+        "e026",
+        "e027",
+        "e028",
+        "e029",
+        "e030"
+      ],
+      "presence_rule": "allow_catalog=false => empty; query-local explicit slot gap => actual/trace Catalog call; independently eligible inventory nonempty => suggestions nonempty and subset eligible; eligible inventory empty => suggestions empty with complete filtered Trace; every non-call-required case => actual/trace Catalog zero and suggestions empty",
+      "inventory_eligibility_oracle": {
+        "version": "independent_fixture_query_inventory_v1",
+        "inputs": [
+          "query_text",
+          "fixture_catalog",
+          "fixture_user_budget_and_avoid_colors"
+        ],
+        "criteria": [
+          "slot",
+          "stock",
+          "budget",
+          "occasion_with_interview_meeting_reciprocal_rule",
+          "formality",
+          "season",
+          "delivery_eta_plus_one_day_safety_buffer",
+          "rain",
+          "taboo_color"
+        ],
+        "uses_business_catalog_service": false
+      },
+      "legacy_generator_candidate_witness_contract": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "release_gating": false,
+        "basis": [
+          "generate.py stores candidates[:2] after filtering",
+          "legacy generator candidates may fail current SHOP-04 inventory eligibility"
+        ]
+      }
+    }
+  },
+  "thresholds": {
+    "urgency_accuracy": {
+      "operator": ">=",
+      "value": 0.95
+    },
+    "high_urgency_shopping_gate_accuracy": {
+      "operator": "==",
+      "value": 1.0
+    },
+    "high_urgency_catalog_calls": {
+      "operator": "==",
+      "value": 0
+    },
+    "item_hallucinations": {
+      "operator": "==",
+      "value": 0
+    },
+    "hard_constraint_violations": {
+      "operator": "==",
+      "value": 0
+    },
+    "slot_completeness": {
+      "operator": ">=",
+      "value": 0.95
+    }
+  },
+  "metrics": {
+    "urgency_accuracy": {
+      "numerator": 30,
+      "denominator": 30,
+      "value": 1.0,
+      "unit": "ratio",
+      "threshold": {
+        "operator": ">=",
+        "value": 0.95
+      },
+      "status": "PASS",
+      "failed_case_ids": []
+    },
+    "high_urgency_shopping_gate_accuracy": {
+      "numerator": 10,
+      "denominator": 10,
+      "value": 1.0,
+      "unit": "ratio",
+      "threshold": {
+        "operator": "==",
+        "value": 1.0
+      },
+      "status": "PASS",
+      "failed_case_ids": []
+    },
+    "high_urgency_catalog_calls": {
+      "numerator": 0,
+      "denominator": 10,
+      "value": 0,
+      "unit": "invocations",
+      "threshold": {
+        "operator": "==",
+        "value": 0
+      },
+      "status": "PASS",
+      "failed_case_ids": []
+    },
+    "item_hallucinations": {
+      "numerator": 0,
+      "denominator": 515,
+      "value": 0,
+      "unit": "violations",
+      "threshold": {
+        "operator": "==",
+        "value": 0
+      },
+      "status": "PASS",
+      "failed_case_ids": []
+    },
+    "hard_constraint_violations": {
+      "numerator": 0,
+      "denominator": 423,
+      "value": 0,
+      "unit": "violations",
+      "threshold": {
+        "operator": "==",
+        "value": 0
+      },
+      "status": "PASS",
+      "failed_case_ids": [],
+      "definition": "observed_outfit_alternative_catalog_product_and_validation_constraint_violations",
+      "excluded_release_gates": [
+        "catalog_expected_presence"
+      ]
+    },
+    "slot_completeness": {
+      "numerator": 74,
+      "denominator": 74,
+      "value": 1.0,
+      "unit": "ratio",
+      "threshold": {
+        "operator": ">=",
+        "value": 0.95
+      },
+      "status": "PASS",
+      "failed_case_ids": []
+    }
+  },
+  "release_gates": {
+    "catalog_expected_presence": {
+      "status": "PASS",
+      "violation_count": 0,
+      "failed_case_ids": [],
+      "included_in_hard_constraint_metric": false,
+      "blocks_overall_via": "assurance_checks.CATALOG-ORACLE"
+    }
+  },
+  "supplemental_counts": {
+    "eval_cases": 30,
+    "outfits": 74,
+    "item_references": 515,
+    "alternative_references": 269,
+    "catalog_references": 6,
+    "catalog_hard_violations": 0,
+    "catalog_expectation_violations": 0,
+    "observed_product_constraint_violations": 0,
+    "catalog_expected_presence_violations": 0,
+    "catalog_grounding_failed_case_ids": [],
+    "catalog_constraint_failed_case_ids": [],
+    "catalog_expectation_failed_case_ids": [],
+    "catalog_call_required_case_ids": [
+      "e009",
+      "e010",
+      "e011",
+      "e012",
+      "e013"
+    ],
+    "catalog_call_mapping_status": "PASS",
+    "catalog_inventory_presence_failed_case_ids": [],
+    "catalog_inventory_return_failed_case_ids": [],
+    "catalog_inventory_trace_coverage_failed_case_ids": [],
+    "catalog_no_gap_zero_call_failed_case_ids": [],
+    "high_urgency_catalog_invocations": 0,
+    "high_urgency_catalog_trace_calls": 0,
+    "reported_validation_disagreements": 0,
+    "honest_gap_case_count": 7,
+    "availability_cases_checked": 3,
+    "availability_filter_failed_case_ids": [],
+    "supportive_message_failed_case_ids": [],
+    "direction_contract_status": "PASS",
+    "direction_contract_failed_case_ids": []
+  },
+  "catalog_legacy_witness_diagnostics": {
+    "release_gating": false,
+    "authoritative": false,
+    "exhaustive": false,
+    "all_cases": {
+      "witness_entry_count": 12,
+      "overlap_count": 5,
+      "overlap_ratio": 0.416667
+    },
+    "explicit_gap_cases": {
+      "witness_entry_count": 9,
+      "overlap_count": 5,
+      "overlap_ratio": 0.555556
+    }
+  },
+  "assurance_checks": {
+    "QUERY-ONLY-SCENE": {
+      "status": "PASS",
+      "evidence": "query-only deadline/season/unknown parser subset; no horizon/intent labels supplied",
+      "checks": [
+        "query_only_horizon",
+        "query_only_urgency",
+        "query_only_intent",
+        "query_only_shopping_gate",
+        "unknown_to_high_fail_closed"
+      ],
+      "failed_steps": [],
+      "input_mode": "query_only",
+      "case_ids": [
+        "e001",
+        "e002",
+        "e003",
+        "e004",
+        "e005",
+        "e006",
+        "e007",
+        "e008",
+        "e009",
+        "e010",
+        "e011",
+        "e012",
+        "e013",
+        "e014",
+        "e015",
+        "e016",
+        "e017",
+        "e018",
+        "e028",
+        "e029",
+        "e030"
+      ],
+      "denominator": 21,
+      "failed_case_checks": [],
+      "expectations": {
+        "e001": {
+          "horizon": "now",
+          "urgency": "high",
+          "intent": "recommend",
+          "shopping": false
+        },
+        "e002": {
+          "horizon": "today",
+          "urgency": "high",
+          "intent": "recommend",
+          "shopping": false
+        },
+        "e003": {
+          "horizon": "now",
+          "urgency": "high",
+          "intent": "recommend",
+          "shopping": false
+        },
+        "e004": {
+          "horizon": "unknown",
+          "urgency": "high",
+          "intent": "recommend",
+          "shopping": false
+        },
+        "e005": {
+          "horizon": "now",
+          "urgency": "high",
+          "intent": "recommend",
+          "shopping": false
+        },
+        "e006": {
+          "horizon": "today",
+          "urgency": "high",
+          "intent": "recommend",
+          "shopping": false
+        },
+        "e007": {
+          "horizon": "now",
+          "urgency": "high",
+          "intent": "recommend",
+          "shopping": false
+        },
+        "e008": {
+          "horizon": "unknown",
+          "urgency": "high",
+          "intent": "recommend",
+          "shopping": false
+        },
+        "e009": {
+          "horizon": "soon",
+          "urgency": "medium",
+          "intent": "fill_gap",
+          "shopping": true
+        },
+        "e010": {
+          "horizon": "planned",
+          "urgency": "low",
+          "intent": "fill_gap",
+          "shopping": true
+        },
+        "e011": {
+          "horizon": "soon",
+          "urgency": "medium",
+          "intent": "browse",
+          "shopping": true
+        },
+        "e012": {
+          "horizon": "planned",
+          "urgency": "low",
+          "intent": "fill_gap",
+          "shopping": true
+        },
+        "e013": {
+          "horizon": "planned",
+          "urgency": "low",
+          "intent": "fill_gap",
+          "shopping": true
+        },
+        "e014": {
+          "horizon": "soon",
+          "urgency": "medium",
+          "intent": "recommend",
+          "shopping": false
+        },
+        "e015": {
+          "horizon": "planned",
+          "urgency": "low",
+          "intent": "recommend",
+          "shopping": false
+        },
+        "e016": {
+          "horizon": "soon",
+          "urgency": "medium",
+          "intent": "recommend",
+          "shopping": false
+        },
+        "e017": {
+          "horizon": "planned",
+          "urgency": "low",
+          "intent": "recommend",
+          "shopping": false
+        },
+        "e018": {
+          "horizon": "planned",
+          "urgency": "low",
+          "intent": "recommend",
+          "shopping": false
+        },
+        "e028": {
+          "horizon": "soon",
+          "urgency": "medium",
+          "intent": "vent",
+          "shopping": false
+        },
+        "e029": {
+          "horizon": "unknown",
+          "urgency": "high",
+          "intent": "vent",
+          "shopping": false
+        },
+        "e030": {
+          "horizon": "unknown",
+          "urgency": "high",
+          "intent": "vent",
+          "shopping": false
+        }
+      }
+    },
+    "AUDIT-NO-DEADLINE": {
+      "status": "PASS",
+      "evidence": "query-only no-deadline wardrobe/catalog audits fail closed to unknown/high with actual and traced Catalog zero",
+      "checks": [
+        "audit_query_only_unknown",
+        "audit_unknown_to_high",
+        "audit_scene_and_ui_shopping_false",
+        "audit_actual_catalog_zero",
+        "audit_trace_catalog_zero"
+      ],
+      "failed_steps": [],
+      "input_mode": "query_only",
+      "case_ids": [
+        "e020",
+        "e023",
+        "audit_given_wardrobe"
+      ],
+      "denominator": 3,
+      "failed_case_checks": []
+    },
+    "AC-03": {
+      "status": "PASS",
+      "evidence": "same-session two-request unknown-deadline workflow with Catalog trace",
+      "checks": [
+        "first_unknown_asks_one_question",
+        "second_unknown_does_not_repeat",
+        "both_high_shopping_false_ui_false",
+        "both_catalog_zero"
+      ],
+      "failed_steps": []
+    },
+    "AC-04": {
+      "status": "PASS",
+      "evidence": "propose-confirm no_high_heels memory, implicit reuse and independent recall oracle",
+      "checks": [
+        "memory_propose_without_commit",
+        "memory_confirm_commit",
+        "new_query_omits_preference",
+        "confirmed_memory_hit_without_reasking",
+        "known_heel_filtered",
+        "unknown_heel_evidence_filtered",
+        "ranker_lists_exclude_unsafe_shoes",
+        "outfits_and_alternatives_exclude_unsafe_shoes",
+        "evidence_safe_shoe_remains"
+      ],
+      "failed_steps": []
+    },
+    "AC-05": {
+      "status": "PASS",
+      "evidence": "e019/e020/e021 owned exact STATUS_* recall filters, ranker absence and independent output hard oracle",
+      "checks": [
+        "availability_fixture_status_matches",
+        "status_reason_present_in_trace_filters",
+        "status_items_absent_from_rule_bm25_dense_rrf",
+        "independent_hard_oracle_zero"
+      ],
+      "failed_steps": []
+    },
+    "AC-06": {
+      "status": "PASS",
+      "evidence": "30-case direction contract AND deterministic one-combo sparse interview wardrobe",
+      "checks": [
+        "at_most_three_directions",
+        "unordered_item_sets_distinct",
+        "exactly_one_primary_when_nonempty",
+        "reason_risk_alternatives_present",
+        "less_than_three_has_explicit_gap",
+        "honest_gap_case_observed",
+        "exactly_one_complete_interview_direction",
+        "explicit_honest_gap",
+        "all_ids_current_owner_grounded",
+        "independent_hard_oracle_zero",
+        "taboo_not_relaxed",
+        "taboo_candidate_filtered_before_rankers",
+        "taboo_candidate_absent_from_outfits_and_alternatives",
+        "counterfactual_second_combo_proven",
+        "high_shopping_ui_false",
+        "catalog_actual_and_trace_zero"
+      ],
+      "failed_steps": []
+    },
+    "AC-07": {
+      "status": "PASS",
+      "evidence": "feedback propose-confirm-apply-delete lifecycle AND causal structured-similar shoe rank demotion",
+      "checks": [
+        "like_session_only",
+        "propose_without_commit",
+        "before_confirm_not_applied",
+        "confirm_applies_only_to_relevant_scene",
+        "unrelated_scene_not_targeted",
+        "delete_restores_eligibility",
+        "propose_without_commit",
+        "independent_metadata_similarity_3_of_5",
+        "before_confirm_no_policy",
+        "confirm_excludes_exact_target",
+        "same_universe_fixed_penalty_and_risk_rank_never_improves",
+        "same_universe_safe_score_unchanged",
+        "end_to_end_similar_risk_scores_decrease",
+        "end_to_end_safe_relative_margin_improves",
+        "unrelated_scene_not_affected",
+        "trace_policy_counts_without_private_ids",
+        "delete_restores_preconfirm_ranks_and_scores"
+      ],
+      "failed_steps": []
+    },
+    "AC-10": {
+      "status": "PASS",
+      "evidence": "normal garment/Mock-product grounding oracle AND adversarial unknown/cross-owner garment rejection",
+      "checks": [
+        "normal_garment_and_catalog_output_hallucinations_zero",
+        "unknown_id_rejected",
+        "cross_owner_id_rejected",
+        "non_whitelist_reason_count_two",
+        "illegal_ids_not_reflected"
+      ],
+      "failed_steps": []
+    },
+    "AC-11": {
+      "status": "PASS",
+      "evidence": "30-case upper gate with actual search invocation spy AND forced secondary Catalog guard",
+      "checks": [
+        "upper_shopping_false_ui_false",
+        "upper_trace_attempted_false_call_zero",
+        "upper_actual_catalog_invocations_zero",
+        "upper_attempted_false_call_zero",
+        "secondary_forced_call_zero",
+        "secondary_explicit_block_reason",
+        "normal_and_forced_suggestions_empty"
+      ],
+      "failed_steps": []
+    },
+    "AC-14": {
+      "status": "PASS",
+      "evidence": "in-process verified-visual reject/replay/version inheritance workflow",
+      "checks": [
+        "at_most_two_adjustments",
+        "canonical_trouser_cuff_single",
+        "no_ankle_rejection_boundary_preserved",
+        "accept_current_state_closed_alternative",
+        "reject_creates_decision_not_fake_version",
+        "decided_token_replay_blocked",
+        "canonical_not_reproposed",
+        "future_version_inherits_rejection",
+        "decision_replayable_in_chain",
+        "user_modified_not_partial"
+      ],
+      "failed_steps": []
+    },
+    "AC-13": {
+      "status": "PASS",
+      "evidence": "strict Vision fail-closed matrix AND exact interview v1-adjust-v2-rescore-Final chain",
+      "checks": [
+        "limited_asset_all_null",
+        "exact_grok_4_5_full_region_numeric_success",
+        "server_owned_evidence_text",
+        "model_mismatch_all_null",
+        "malformed_all_null",
+        "free_text_all_null",
+        "slot_mismatch_all_null",
+        "extra_field_all_null",
+        "partial_all_null",
+        "http_error_all_null",
+        "interview_reliable_modern_context",
+        "owned_sufficient_image_before_v1",
+        "v1_numeric_keep_point_one_to_two_adjustments",
+        "adjustments_bind_expected_dimensions_and_visual_evidence",
+        "accepted_adjustment_and_adjusted_image_create_v2",
+        "v1_immutable_v2_parent_index_correct",
+        "v2_rescore_has_nonzero_parent_comparison",
+        "chain_traceable_and_comparable",
+        "satisfied_final_preserves_v2_score",
+        "post_final_score_adjust_create_blocked",
+        "owners_ids_and_traces_grounded"
+      ],
+      "failed_steps": []
+    },
+    "AC-16": {
+      "status": "PASS",
+      "evidence": "independent closed-term scans of qualitative and MockTransport numeric user-visible scorecard text",
+      "checks": [
+        "exact_six_dimensions",
+        "no_asset_all_scores_null",
+        "no_visual_adjustment_without_evidence",
+        "outfit_only_subject_boundary",
+        "keep_point_present",
+        "qualitative_visible_text_closed_scan",
+        "numeric_visible_text_closed_scan"
+      ],
+      "failed_steps": []
+    },
+    "AC-17": {
+      "status": "PASS",
+      "evidence": "qualitative/no-score satisfaction=1 Final AND actual exact-78 numeric Final with post-final locks",
+      "checks": [
+        "satisfaction_one_finalizes",
+        "advice_stopped",
+        "post_final_adjustment_rejected",
+        "independent_six_dimension_exact_78_precondition",
+        "actual_numeric_scorecard_exact_78",
+        "final_scorecard_id_and_total_preserved",
+        "satisfaction_one_finalizes",
+        "advice_stopped",
+        "post_final_score_adjust_create_blocked"
+      ],
+      "failed_steps": []
+    },
+    "SAFE-RAIN": {
+      "status": "PASS",
+      "evidence": "rain outer/top/bag orchestration plus empty-gap direct Catalog guard",
+      "checks": [
+        "rain_requires_outer",
+        "all_unverified_outers_filtered_before_rule_bm25_dense_rrf",
+        "outfits_zero_with_explicit_gap",
+        "low_outer_top_bag_catalog_items_zero",
+        "empty_gap_direct_catalog_items_zero",
+        "high_catalog_invocations_zero"
+      ],
+      "failed_steps": []
+    },
+    "SAFE-CPA-PRIVACY": {
+      "status": "PASS",
+      "evidence": "in-process CPA method spy for e028/e029/e030, email, phone and vent",
+      "checks": [
+        "e028_e029_e030_provider_zero",
+        "email_provider_zero",
+        "phone_provider_zero",
+        "explicit_vent_provider_zero",
+        "blocked_trace_attempted_false_reason_code",
+        "ordinary_query_provider_one"
+      ],
+      "failed_steps": []
+    },
+    "OBS-05": {
+      "status": "PASS",
+      "evidence": "deterministic LLM/Dense/Catalog/Vision four-leg degradation matrix",
+      "checks": [
+        "llm_failure_attempted",
+        "llm_rule_fallback_legal_recommendation",
+        "dense_forced_failure",
+        "dense_rule_bm25_rrf_legal_recommendation",
+        "catalog_forced_failure_actual_invocation",
+        "catalog_no_products_wardrobe_or_safe_gap_continues",
+        "vision_forced_failure",
+        "vision_qualitative_all_null_no_adjustment"
+      ],
+      "failed_steps": [],
+      "legs": {
+        "llm": {
+          "status": "PASS",
+          "failed_steps": []
+        },
+        "dense": {
+          "status": "PASS",
+          "failed_steps": []
+        },
+        "catalog": {
+          "status": "PASS",
+          "failed_steps": []
+        },
+        "vision": {
+          "status": "PASS",
+          "failed_steps": []
+        }
+      }
+    },
+    "RESPONSE-VALIDATION-ALIGNMENT": {
+      "status": "PASS",
+      "evidence": "service OutfitValidation booleans compared with independent hard/slot/grounding oracle",
+      "checks": [
+        "all_reported_validation_flags_match_independent_oracle"
+      ],
+      "failed_steps": []
+    },
+    "CATALOG-ORACLE": {
+      "status": "PASS",
+      "evidence": "query-derived explicit-gap call requirement plus independent full-inventory eligibility, actual/Trace invocation, filtered-reason coverage, fixture/actual-return grounding, forbidden truth and no-gap Catalog zero; allowed_catalog is a non-authoritative legacy generator witness",
+      "checks": [
+        "catalog_call_requirement_derived_from_query_text",
+        "e009_e013_explicit_gap_requires_actual_and_trace_call",
+        "independent_full_inventory_eligibility_oracle",
+        "eligible_nonempty_requires_suggestions_subset_eligible",
+        "eligible_empty_requires_safe_empty_suggestions",
+        "catalog_trace_covers_every_ineligible_item_with_auditable_reason",
+        "all_nonmandatory_cases_actual_and_trace_catalog_zero",
+        "catalog_fixture_and_actual_return_grounding",
+        "catalog_independent_constraints",
+        "catalog_forbidden_eval_truth",
+        "allowed_catalog_legacy_generator_candidate_witness_non_gating",
+        "catalog_inventory_conditioned_presence_or_safe_absence"
+      ],
+      "failed_steps": []
+    },
+    "AC-01": {
+      "status": "PASS",
+      "evidence": "structured 30-case gate aggregate AND exact single mixed-emotion interview Given",
+      "checks": [
+        "structured_horizon_to_urgency_threshold",
+        "high_shopping_false_catalog_zero",
+        "direction_primary_reason_risk_alternatives",
+        "controlled_supportive_first_line",
+        "single_exact_given",
+        "today_high_interview_reliable_modern",
+        "supportive_first_line",
+        "one_to_three_grounded_formal_directions",
+        "exactly_one_primary",
+        "reason_risk_alternatives",
+        "shopping_ui_false",
+        "actual_and_trace_catalog_zero"
+      ],
+      "failed_steps": []
+    }
+  },
+  "ac_matrix": [
+    {
+      "ac": "AC-01",
+      "status": "PASS",
+      "evidence": "structured 30-case gate aggregate AND exact single mixed-emotion interview Given",
+      "checks": [
+        "structured_horizon_to_urgency_threshold",
+        "high_shopping_false_catalog_zero",
+        "direction_primary_reason_risk_alternatives",
+        "controlled_supportive_first_line",
+        "single_exact_given",
+        "today_high_interview_reliable_modern",
+        "supportive_first_line",
+        "one_to_three_grounded_formal_directions",
+        "exactly_one_primary",
+        "reason_risk_alternatives",
+        "shopping_ui_false",
+        "actual_and_trace_catalog_zero"
+      ],
+      "failed_steps": []
+    },
+    {
+      "ac": "AC-03",
+      "status": "PASS",
+      "evidence": "same-session two-request unknown-deadline workflow with Catalog trace",
+      "checks": [
+        "first_unknown_asks_one_question",
+        "second_unknown_does_not_repeat",
+        "both_high_shopping_false_ui_false",
+        "both_catalog_zero"
+      ],
+      "failed_steps": []
+    },
+    {
+      "ac": "AC-04",
+      "status": "PASS",
+      "evidence": "propose-confirm no_high_heels memory, implicit reuse and independent recall oracle",
+      "checks": [
+        "memory_propose_without_commit",
+        "memory_confirm_commit",
+        "new_query_omits_preference",
+        "confirmed_memory_hit_without_reasking",
+        "known_heel_filtered",
+        "unknown_heel_evidence_filtered",
+        "ranker_lists_exclude_unsafe_shoes",
+        "outfits_and_alternatives_exclude_unsafe_shoes",
+        "evidence_safe_shoe_remains"
+      ],
+      "failed_steps": []
+    },
+    {
+      "ac": "AC-05",
+      "status": "PASS",
+      "evidence": "e019/e020/e021 owned exact STATUS_* recall filters, ranker absence and independent output hard oracle",
+      "checks": [
+        "availability_fixture_status_matches",
+        "status_reason_present_in_trace_filters",
+        "status_items_absent_from_rule_bm25_dense_rrf",
+        "independent_hard_oracle_zero"
+      ],
+      "failed_steps": []
+    },
+    {
+      "ac": "AC-06",
+      "status": "PASS",
+      "evidence": "30-case direction contract AND deterministic one-combo sparse interview wardrobe",
+      "checks": [
+        "at_most_three_directions",
+        "unordered_item_sets_distinct",
+        "exactly_one_primary_when_nonempty",
+        "reason_risk_alternatives_present",
+        "less_than_three_has_explicit_gap",
+        "honest_gap_case_observed",
+        "exactly_one_complete_interview_direction",
+        "explicit_honest_gap",
+        "all_ids_current_owner_grounded",
+        "independent_hard_oracle_zero",
+        "taboo_not_relaxed",
+        "taboo_candidate_filtered_before_rankers",
+        "taboo_candidate_absent_from_outfits_and_alternatives",
+        "counterfactual_second_combo_proven",
+        "high_shopping_ui_false",
+        "catalog_actual_and_trace_zero"
+      ],
+      "failed_steps": []
+    },
+    {
+      "ac": "AC-07",
+      "status": "PASS",
+      "evidence": "feedback propose-confirm-apply-delete lifecycle AND causal structured-similar shoe rank demotion",
+      "checks": [
+        "like_session_only",
+        "propose_without_commit",
+        "before_confirm_not_applied",
+        "confirm_applies_only_to_relevant_scene",
+        "unrelated_scene_not_targeted",
+        "delete_restores_eligibility",
+        "propose_without_commit",
+        "independent_metadata_similarity_3_of_5",
+        "before_confirm_no_policy",
+        "confirm_excludes_exact_target",
+        "same_universe_fixed_penalty_and_risk_rank_never_improves",
+        "same_universe_safe_score_unchanged",
+        "end_to_end_similar_risk_scores_decrease",
+        "end_to_end_safe_relative_margin_improves",
+        "unrelated_scene_not_affected",
+        "trace_policy_counts_without_private_ids",
+        "delete_restores_preconfirm_ranks_and_scores"
+      ],
+      "failed_steps": []
+    },
+    {
+      "ac": "AC-10",
+      "status": "PASS",
+      "evidence": "normal garment/Mock-product grounding oracle AND adversarial unknown/cross-owner garment rejection",
+      "checks": [
+        "normal_garment_and_catalog_output_hallucinations_zero",
+        "unknown_id_rejected",
+        "cross_owner_id_rejected",
+        "non_whitelist_reason_count_two",
+        "illegal_ids_not_reflected"
+      ],
+      "failed_steps": []
+    },
+    {
+      "ac": "AC-11",
+      "status": "PASS",
+      "evidence": "30-case upper gate with actual search invocation spy AND forced secondary Catalog guard",
+      "checks": [
+        "upper_shopping_false_ui_false",
+        "upper_trace_attempted_false_call_zero",
+        "upper_actual_catalog_invocations_zero",
+        "upper_attempted_false_call_zero",
+        "secondary_forced_call_zero",
+        "secondary_explicit_block_reason",
+        "normal_and_forced_suggestions_empty"
+      ],
+      "failed_steps": []
+    },
+    {
+      "ac": "AC-13",
+      "status": "PASS",
+      "evidence": "strict Vision fail-closed matrix AND exact interview v1-adjust-v2-rescore-Final chain",
+      "checks": [
+        "limited_asset_all_null",
+        "exact_grok_4_5_full_region_numeric_success",
+        "server_owned_evidence_text",
+        "model_mismatch_all_null",
+        "malformed_all_null",
+        "free_text_all_null",
+        "slot_mismatch_all_null",
+        "extra_field_all_null",
+        "partial_all_null",
+        "http_error_all_null",
+        "interview_reliable_modern_context",
+        "owned_sufficient_image_before_v1",
+        "v1_numeric_keep_point_one_to_two_adjustments",
+        "adjustments_bind_expected_dimensions_and_visual_evidence",
+        "accepted_adjustment_and_adjusted_image_create_v2",
+        "v1_immutable_v2_parent_index_correct",
+        "v2_rescore_has_nonzero_parent_comparison",
+        "chain_traceable_and_comparable",
+        "satisfied_final_preserves_v2_score",
+        "post_final_score_adjust_create_blocked",
+        "owners_ids_and_traces_grounded"
+      ],
+      "failed_steps": []
+    },
+    {
+      "ac": "AC-14",
+      "status": "PASS",
+      "evidence": "in-process verified-visual reject/replay/version inheritance workflow",
+      "checks": [
+        "at_most_two_adjustments",
+        "canonical_trouser_cuff_single",
+        "no_ankle_rejection_boundary_preserved",
+        "accept_current_state_closed_alternative",
+        "reject_creates_decision_not_fake_version",
+        "decided_token_replay_blocked",
+        "canonical_not_reproposed",
+        "future_version_inherits_rejection",
+        "decision_replayable_in_chain",
+        "user_modified_not_partial"
+      ],
+      "failed_steps": []
+    },
+    {
+      "ac": "AC-16",
+      "status": "PASS",
+      "evidence": "independent closed-term scans of qualitative and MockTransport numeric user-visible scorecard text",
+      "checks": [
+        "exact_six_dimensions",
+        "no_asset_all_scores_null",
+        "no_visual_adjustment_without_evidence",
+        "outfit_only_subject_boundary",
+        "keep_point_present",
+        "qualitative_visible_text_closed_scan",
+        "numeric_visible_text_closed_scan"
+      ],
+      "failed_steps": []
+    },
+    {
+      "ac": "AC-17",
+      "status": "PASS",
+      "evidence": "qualitative/no-score satisfaction=1 Final AND actual exact-78 numeric Final with post-final locks",
+      "checks": [
+        "satisfaction_one_finalizes",
+        "advice_stopped",
+        "post_final_adjustment_rejected",
+        "independent_six_dimension_exact_78_precondition",
+        "actual_numeric_scorecard_exact_78",
+        "final_scorecard_id_and_total_preserved",
+        "satisfaction_one_finalizes",
+        "advice_stopped",
+        "post_final_score_adjust_create_blocked"
+      ],
+      "failed_steps": []
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "e001",
+      "bucket": "urgent_no_shop",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "now",
+      "actual_horizon": "now",
+      "expected_intent": "recommend",
+      "actual_intent": "recommend",
+      "expected_urgency": "high",
+      "actual_urgency": "high",
+      "shopping_allowed": false,
+      "catalog_calls": 0,
+      "catalog_invocations": 0,
+      "catalog_reference_count": 0,
+      "outfit_count": 3,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": true,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": false,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [],
+          "occasion": null,
+          "minimum_formality": 0,
+          "season": null,
+          "event_window_days": 0,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "mid",
+          "taboo_colors": [
+            "purple"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [],
+        "expected_ineligible_reasons_by_id": {},
+        "trace_filtered_reasons_by_id": {},
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [],
+        "overlap_ids": [],
+        "overlap_count": 0,
+        "has_overlap": false,
+        "overlap_ratio": 0.0,
+        "release_gating": false
+      }
+    },
+    {
+      "case_id": "e002",
+      "bucket": "urgent_no_shop",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "today",
+      "actual_horizon": "today",
+      "expected_intent": "recommend",
+      "actual_intent": "recommend",
+      "expected_urgency": "high",
+      "actual_urgency": "high",
+      "shopping_allowed": false,
+      "catalog_calls": 0,
+      "catalog_invocations": 0,
+      "catalog_reference_count": 0,
+      "outfit_count": 3,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": true,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": false,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [],
+          "occasion": "travel",
+          "minimum_formality": 0,
+          "season": null,
+          "event_window_days": 0,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "high",
+          "taboo_colors": [
+            "yellow"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [],
+        "expected_ineligible_reasons_by_id": {},
+        "trace_filtered_reasons_by_id": {},
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [],
+        "overlap_ids": [],
+        "overlap_count": 0,
+        "has_overlap": false,
+        "overlap_ratio": 0.0,
+        "release_gating": false
+      }
+    },
+    {
+      "case_id": "e003",
+      "bucket": "urgent_no_shop",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "now",
+      "actual_horizon": "now",
+      "expected_intent": "recommend",
+      "actual_intent": "recommend",
+      "expected_urgency": "high",
+      "actual_urgency": "high",
+      "shopping_allowed": false,
+      "catalog_calls": 0,
+      "catalog_invocations": 0,
+      "catalog_reference_count": 0,
+      "outfit_count": 3,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": true,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": false,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [],
+          "occasion": "school",
+          "minimum_formality": 0,
+          "season": null,
+          "event_window_days": 0,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "low",
+          "taboo_colors": [
+            "orange"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [],
+        "expected_ineligible_reasons_by_id": {},
+        "trace_filtered_reasons_by_id": {},
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [],
+        "overlap_ids": [],
+        "overlap_count": 0,
+        "has_overlap": false,
+        "overlap_ratio": 0.0,
+        "release_gating": false
+      }
+    },
+    {
+      "case_id": "e004",
+      "bucket": "urgent_no_shop",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "unknown",
+      "actual_horizon": "unknown",
+      "expected_intent": "recommend",
+      "actual_intent": "recommend",
+      "expected_urgency": "high",
+      "actual_urgency": "high",
+      "shopping_allowed": false,
+      "catalog_calls": 0,
+      "catalog_invocations": 0,
+      "catalog_reference_count": 0,
+      "outfit_count": 3,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": true,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": false,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [],
+          "occasion": null,
+          "minimum_formality": 0,
+          "season": null,
+          "event_window_days": null,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "mid",
+          "taboo_colors": [
+            "purple"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [],
+        "expected_ineligible_reasons_by_id": {},
+        "trace_filtered_reasons_by_id": {},
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [],
+        "overlap_ids": [],
+        "overlap_count": 0,
+        "has_overlap": false,
+        "overlap_ratio": 0.0,
+        "release_gating": false
+      }
+    },
+    {
+      "case_id": "e005",
+      "bucket": "urgent_no_shop",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "now",
+      "actual_horizon": "now",
+      "expected_intent": "recommend",
+      "actual_intent": "recommend",
+      "expected_urgency": "high",
+      "actual_urgency": "high",
+      "shopping_allowed": false,
+      "catalog_calls": 0,
+      "catalog_invocations": 0,
+      "catalog_reference_count": 0,
+      "outfit_count": 3,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": true,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": false,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [],
+          "occasion": null,
+          "minimum_formality": 0,
+          "season": null,
+          "event_window_days": null,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "high",
+          "taboo_colors": [
+            "yellow"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [],
+        "expected_ineligible_reasons_by_id": {},
+        "trace_filtered_reasons_by_id": {},
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [],
+        "overlap_ids": [],
+        "overlap_count": 0,
+        "has_overlap": false,
+        "overlap_ratio": 0.0,
+        "release_gating": false
+      }
+    },
+    {
+      "case_id": "e006",
+      "bucket": "urgent_no_shop",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "today",
+      "actual_horizon": "today",
+      "expected_intent": "recommend",
+      "actual_intent": "recommend",
+      "expected_urgency": "high",
+      "actual_urgency": "high",
+      "shopping_allowed": false,
+      "catalog_calls": 0,
+      "catalog_invocations": 0,
+      "catalog_reference_count": 0,
+      "outfit_count": 3,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": true,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": false,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [],
+          "occasion": null,
+          "minimum_formality": 0,
+          "season": null,
+          "event_window_days": 0,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "low",
+          "taboo_colors": [
+            "orange"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [],
+        "expected_ineligible_reasons_by_id": {},
+        "trace_filtered_reasons_by_id": {},
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [],
+        "overlap_ids": [],
+        "overlap_count": 0,
+        "has_overlap": false,
+        "overlap_ratio": 0.0,
+        "release_gating": false
+      }
+    },
+    {
+      "case_id": "e007",
+      "bucket": "urgent_no_shop",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "now",
+      "actual_horizon": "now",
+      "expected_intent": "vent",
+      "actual_intent": "vent",
+      "expected_urgency": "high",
+      "actual_urgency": "high",
+      "shopping_allowed": false,
+      "catalog_calls": 0,
+      "catalog_invocations": 0,
+      "catalog_reference_count": 0,
+      "outfit_count": 3,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": true,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": false,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [],
+          "occasion": "meeting",
+          "minimum_formality": 3,
+          "season": null,
+          "event_window_days": 0,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "mid",
+          "taboo_colors": [
+            "purple"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [],
+        "expected_ineligible_reasons_by_id": {},
+        "trace_filtered_reasons_by_id": {},
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [],
+        "overlap_ids": [],
+        "overlap_count": 0,
+        "has_overlap": false,
+        "overlap_ratio": 0.0,
+        "release_gating": false
+      }
+    },
+    {
+      "case_id": "e008",
+      "bucket": "urgent_no_shop",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "unknown",
+      "actual_horizon": "unknown",
+      "expected_intent": "recommend",
+      "actual_intent": "recommend",
+      "expected_urgency": "high",
+      "actual_urgency": "high",
+      "shopping_allowed": false,
+      "catalog_calls": 0,
+      "catalog_invocations": 0,
+      "catalog_reference_count": 0,
+      "outfit_count": 3,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": true,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": false,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [],
+          "occasion": null,
+          "minimum_formality": 0,
+          "season": null,
+          "event_window_days": null,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "high",
+          "taboo_colors": [
+            "yellow"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [],
+        "expected_ineligible_reasons_by_id": {},
+        "trace_filtered_reasons_by_id": {},
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [],
+        "overlap_ids": [],
+        "overlap_count": 0,
+        "has_overlap": false,
+        "overlap_ratio": 0.0,
+        "release_gating": false
+      }
+    },
+    {
+      "case_id": "e009",
+      "bucket": "conditional_buy",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "soon",
+      "actual_horizon": "soon",
+      "expected_intent": "fill_gap",
+      "actual_intent": "fill_gap",
+      "expected_urgency": "medium",
+      "actual_urgency": "medium",
+      "shopping_allowed": true,
+      "catalog_calls": 1,
+      "catalog_invocations": 1,
+      "catalog_reference_count": 1,
+      "outfit_count": 2,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": null,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": true,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [
+            "shoes"
+          ],
+          "occasion": "interview",
+          "minimum_formality": 3,
+          "season": null,
+          "event_window_days": 7,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "mid",
+          "taboo_colors": [
+            "purple"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [
+          "c033"
+        ],
+        "expected_ineligible_reasons_by_id": {
+          "c001": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c002": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c003": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c004": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c005": [
+            "DELIVERY_BUFFER_MISSED",
+            "FORMALITY_BELOW_REQUIRED",
+            "OCCASION_MISMATCH"
+          ],
+          "c006": [
+            "DELIVERY_BUFFER_MISSED",
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c007": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c008": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c009": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c010": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH",
+            "OUT_OF_STOCK"
+          ],
+          "c011": [
+            "DELIVERY_BUFFER_MISSED",
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c012": [
+            "DELIVERY_BUFFER_MISSED"
+          ],
+          "c013": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c014": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c015": [
+            "BUDGET_EXCEEDED",
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c016": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c017": [
+            "DELIVERY_BUFFER_MISSED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c018": [
+            "DELIVERY_BUFFER_MISSED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c019": [
+            "FORMALITY_BELOW_REQUIRED",
+            "OCCASION_MISMATCH"
+          ],
+          "c020": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH",
+            "OUT_OF_STOCK"
+          ],
+          "c021": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c022": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c023": [
+            "DELIVERY_BUFFER_MISSED",
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c024": [
+            "DELIVERY_BUFFER_MISSED",
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c025": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c026": [
+            "FORMALITY_BELOW_REQUIRED",
+            "OCCASION_MISMATCH"
+          ],
+          "c027": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c028": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c029": [
+            "DELIVERY_BUFFER_MISSED",
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c030": [
+            "DELIVERY_BUFFER_MISSED",
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH",
+            "OUT_OF_STOCK"
+          ],
+          "c031": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c032": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c034": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c035": [
+            "DELIVERY_BUFFER_MISSED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c036": [
+            "BUDGET_EXCEEDED",
+            "DELIVERY_BUFFER_MISSED",
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c037": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c038": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c039": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c040": [
+            "FORMALITY_BELOW_REQUIRED",
+            "OCCASION_MISMATCH",
+            "OUT_OF_STOCK"
+          ],
+          "c041": [
+            "DELIVERY_BUFFER_MISSED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c042": [
+            "DELIVERY_BUFFER_MISSED",
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c043": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c044": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c045": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c046": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c047": [
+            "DELIVERY_BUFFER_MISSED",
+            "FORMALITY_BELOW_REQUIRED",
+            "OCCASION_MISMATCH"
+          ],
+          "c048": [
+            "DELIVERY_BUFFER_MISSED",
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c049": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c050": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH",
+            "OUT_OF_STOCK"
+          ]
+        },
+        "trace_filtered_reasons_by_id": {
+          "c001": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c002": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c003": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c004": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c005": [
+            "OCCASION_MISMATCH"
+          ],
+          "c006": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c007": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c008": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c009": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c010": [
+            "OUT_OF_STOCK"
+          ],
+          "c011": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c012": [
+            "DELIVERY_BUFFER_MISSED"
+          ],
+          "c013": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c014": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c015": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c016": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c017": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c018": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c019": [
+            "OCCASION_MISMATCH"
+          ],
+          "c020": [
+            "OUT_OF_STOCK"
+          ],
+          "c021": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c022": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c023": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c024": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c025": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c026": [
+            "OCCASION_MISMATCH"
+          ],
+          "c027": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c028": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c029": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c030": [
+            "OUT_OF_STOCK"
+          ],
+          "c031": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c032": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c034": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c035": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c036": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c037": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c038": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c039": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c040": [
+            "OUT_OF_STOCK"
+          ],
+          "c041": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c042": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c043": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c044": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c045": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c046": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c047": [
+            "OCCASION_MISMATCH"
+          ],
+          "c048": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c049": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c050": [
+            "OUT_OF_STOCK"
+          ]
+        },
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [
+          "c033"
+        ],
+        "overlap_ids": [
+          "c033"
+        ],
+        "overlap_count": 1,
+        "has_overlap": true,
+        "overlap_ratio": 1.0,
+        "release_gating": false
+      }
+    },
+    {
+      "case_id": "e010",
+      "bucket": "conditional_buy",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "planned",
+      "actual_horizon": "planned",
+      "expected_intent": "buy",
+      "actual_intent": "fill_gap",
+      "expected_urgency": "low",
+      "actual_urgency": "low",
+      "shopping_allowed": true,
+      "catalog_calls": 1,
+      "catalog_invocations": 1,
+      "catalog_reference_count": 2,
+      "outfit_count": 3,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": null,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": true,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [
+            "outer"
+          ],
+          "occasion": "travel",
+          "minimum_formality": 0,
+          "season": null,
+          "event_window_days": 30,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "high",
+          "taboo_colors": [
+            "yellow"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [
+          "c008",
+          "c029"
+        ],
+        "expected_ineligible_reasons_by_id": {
+          "c001": [
+            "OCCASION_MISMATCH"
+          ],
+          "c002": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c003": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c004": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c005": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c006": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c007": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c009": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c010": [
+            "GAP_SLOT_MISMATCH",
+            "OUT_OF_STOCK"
+          ],
+          "c011": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c012": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c013": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c014": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c015": [
+            "OCCASION_MISMATCH"
+          ],
+          "c016": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c017": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c018": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c019": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c020": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH",
+            "OUT_OF_STOCK"
+          ],
+          "c021": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c022": [
+            "OCCASION_MISMATCH"
+          ],
+          "c023": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c024": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c025": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c026": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c027": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c028": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c030": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH",
+            "OUT_OF_STOCK"
+          ],
+          "c031": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c032": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c033": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c034": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c035": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c036": [
+            "OCCASION_MISMATCH"
+          ],
+          "c037": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c038": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c039": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c040": [
+            "GAP_SLOT_MISMATCH",
+            "OUT_OF_STOCK"
+          ],
+          "c041": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c042": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c043": [
+            "OCCASION_MISMATCH"
+          ],
+          "c044": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c045": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c046": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c047": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c048": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c049": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c050": [
+            "OUT_OF_STOCK"
+          ]
+        },
+        "trace_filtered_reasons_by_id": {
+          "c001": [
+            "OCCASION_MISMATCH"
+          ],
+          "c002": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c003": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c004": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c005": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c006": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c007": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c009": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c010": [
+            "OUT_OF_STOCK"
+          ],
+          "c011": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c012": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c013": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c014": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c015": [
+            "OCCASION_MISMATCH"
+          ],
+          "c016": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c017": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c018": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c019": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c020": [
+            "OUT_OF_STOCK"
+          ],
+          "c021": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c022": [
+            "OCCASION_MISMATCH"
+          ],
+          "c023": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c024": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c025": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c026": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c027": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c028": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c030": [
+            "OUT_OF_STOCK"
+          ],
+          "c031": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c032": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c033": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c034": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c035": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c036": [
+            "OCCASION_MISMATCH"
+          ],
+          "c037": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c038": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c039": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c040": [
+            "OUT_OF_STOCK"
+          ],
+          "c041": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c042": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c043": [
+            "OCCASION_MISMATCH"
+          ],
+          "c044": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c045": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c046": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c047": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c048": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c049": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c050": [
+            "OUT_OF_STOCK"
+          ]
+        },
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [
+          "c008",
+          "c029"
+        ],
+        "overlap_ids": [
+          "c008",
+          "c029"
+        ],
+        "overlap_count": 2,
+        "has_overlap": true,
+        "overlap_ratio": 1.0,
+        "release_gating": false
+      }
+    },
+    {
+      "case_id": "e011",
+      "bucket": "conditional_buy",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "soon",
+      "actual_horizon": "soon",
+      "expected_intent": "browse",
+      "actual_intent": "browse",
+      "expected_urgency": "medium",
+      "actual_urgency": "medium",
+      "shopping_allowed": true,
+      "catalog_calls": 1,
+      "catalog_invocations": 1,
+      "catalog_reference_count": 0,
+      "outfit_count": 3,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": null,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": true,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [
+            "shoes"
+          ],
+          "occasion": "sports",
+          "minimum_formality": 0,
+          "season": null,
+          "event_window_days": 7,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "low",
+          "taboo_colors": [
+            "orange"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [],
+        "expected_ineligible_reasons_by_id": {
+          "c001": [
+            "BUDGET_EXCEEDED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c002": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c003": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c004": [
+            "BUDGET_EXCEEDED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c005": [
+            "BUDGET_EXCEEDED",
+            "DELIVERY_BUFFER_MISSED"
+          ],
+          "c006": [
+            "DELIVERY_BUFFER_MISSED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c007": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c008": [
+            "BUDGET_EXCEEDED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c009": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c010": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH",
+            "OUT_OF_STOCK"
+          ],
+          "c011": [
+            "DELIVERY_BUFFER_MISSED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c012": [
+            "DELIVERY_BUFFER_MISSED",
+            "OCCASION_MISMATCH"
+          ],
+          "c013": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c014": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c015": [
+            "BUDGET_EXCEEDED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c016": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c017": [
+            "DELIVERY_BUFFER_MISSED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c018": [
+            "DELIVERY_BUFFER_MISSED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c019": [
+            "OCCASION_MISMATCH"
+          ],
+          "c020": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH",
+            "OUT_OF_STOCK"
+          ],
+          "c021": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c022": [
+            "BUDGET_EXCEEDED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c023": [
+            "DELIVERY_BUFFER_MISSED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c024": [
+            "DELIVERY_BUFFER_MISSED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c025": [
+            "BUDGET_EXCEEDED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c026": [
+            "BUDGET_EXCEEDED"
+          ],
+          "c027": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c028": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c029": [
+            "BUDGET_EXCEEDED",
+            "DELIVERY_BUFFER_MISSED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c030": [
+            "DELIVERY_BUFFER_MISSED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH",
+            "OUT_OF_STOCK"
+          ],
+          "c031": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c032": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c033": [
+            "OCCASION_MISMATCH"
+          ],
+          "c034": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c035": [
+            "DELIVERY_BUFFER_MISSED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c036": [
+            "BUDGET_EXCEEDED",
+            "DELIVERY_BUFFER_MISSED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c037": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c038": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c039": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c040": [
+            "OCCASION_MISMATCH",
+            "OUT_OF_STOCK"
+          ],
+          "c041": [
+            "DELIVERY_BUFFER_MISSED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c042": [
+            "DELIVERY_BUFFER_MISSED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c043": [
+            "BUDGET_EXCEEDED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c044": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c045": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c046": [
+            "BUDGET_EXCEEDED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c047": [
+            "DELIVERY_BUFFER_MISSED"
+          ],
+          "c048": [
+            "DELIVERY_BUFFER_MISSED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c049": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c050": [
+            "BUDGET_EXCEEDED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH",
+            "OUT_OF_STOCK"
+          ]
+        },
+        "trace_filtered_reasons_by_id": {
+          "c001": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c002": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c003": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c004": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c005": [
+            "BUDGET_EXCEEDED"
+          ],
+          "c006": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c007": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c008": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c009": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c010": [
+            "OUT_OF_STOCK"
+          ],
+          "c011": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c012": [
+            "OCCASION_MISMATCH"
+          ],
+          "c013": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c014": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c015": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c016": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c017": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c018": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c019": [
+            "OCCASION_MISMATCH"
+          ],
+          "c020": [
+            "OUT_OF_STOCK"
+          ],
+          "c021": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c022": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c023": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c024": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c025": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c026": [
+            "BUDGET_EXCEEDED"
+          ],
+          "c027": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c028": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c029": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c030": [
+            "OUT_OF_STOCK"
+          ],
+          "c031": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c032": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c033": [
+            "OCCASION_MISMATCH"
+          ],
+          "c034": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c035": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c036": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c037": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c038": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c039": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c040": [
+            "OUT_OF_STOCK"
+          ],
+          "c041": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c042": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c043": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c044": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c045": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c046": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c047": [
+            "DELIVERY_BUFFER_MISSED"
+          ],
+          "c048": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c049": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c050": [
+            "OUT_OF_STOCK"
+          ]
+        },
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [
+          "c019",
+          "c033"
+        ],
+        "overlap_ids": [],
+        "overlap_count": 0,
+        "has_overlap": false,
+        "overlap_ratio": 0.0,
+        "release_gating": false
+      }
+    },
+    {
+      "case_id": "e012",
+      "bucket": "conditional_buy",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "planned",
+      "actual_horizon": "planned",
+      "expected_intent": "fill_gap",
+      "actual_intent": "fill_gap",
+      "expected_urgency": "low",
+      "actual_urgency": "low",
+      "shopping_allowed": true,
+      "catalog_calls": 1,
+      "catalog_invocations": 1,
+      "catalog_reference_count": 0,
+      "outfit_count": 3,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": null,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": true,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [
+            "bag"
+          ],
+          "occasion": "party",
+          "minimum_formality": 0,
+          "season": null,
+          "event_window_days": 21,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "mid",
+          "taboo_colors": [
+            "purple"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [],
+        "expected_ineligible_reasons_by_id": {
+          "c001": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c002": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c003": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c004": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c005": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c006": [
+            "OCCASION_MISMATCH"
+          ],
+          "c007": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c008": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c009": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c010": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH",
+            "OUT_OF_STOCK"
+          ],
+          "c011": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c012": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c013": [
+            "OCCASION_MISMATCH"
+          ],
+          "c014": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c015": [
+            "BUDGET_EXCEEDED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c016": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c017": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c018": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c019": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c020": [
+            "OUT_OF_STOCK"
+          ],
+          "c021": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c022": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c023": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c024": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c025": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c026": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c027": [
+            "OCCASION_MISMATCH"
+          ],
+          "c028": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c029": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c030": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH",
+            "OUT_OF_STOCK"
+          ],
+          "c031": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c032": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c033": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c034": [
+            "OCCASION_MISMATCH"
+          ],
+          "c035": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c036": [
+            "BUDGET_EXCEEDED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c037": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c038": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c039": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c040": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH",
+            "OUT_OF_STOCK"
+          ],
+          "c041": [
+            "OCCASION_MISMATCH"
+          ],
+          "c042": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c043": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c044": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c045": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c046": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c047": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c048": [
+            "OCCASION_MISMATCH"
+          ],
+          "c049": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c050": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH",
+            "OUT_OF_STOCK"
+          ]
+        },
+        "trace_filtered_reasons_by_id": {
+          "c001": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c002": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c003": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c004": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c005": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c006": [
+            "OCCASION_MISMATCH"
+          ],
+          "c007": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c008": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c009": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c010": [
+            "OUT_OF_STOCK"
+          ],
+          "c011": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c012": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c013": [
+            "OCCASION_MISMATCH"
+          ],
+          "c014": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c015": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c016": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c017": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c018": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c019": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c020": [
+            "OUT_OF_STOCK"
+          ],
+          "c021": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c022": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c023": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c024": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c025": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c026": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c027": [
+            "OCCASION_MISMATCH"
+          ],
+          "c028": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c029": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c030": [
+            "OUT_OF_STOCK"
+          ],
+          "c031": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c032": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c033": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c034": [
+            "OCCASION_MISMATCH"
+          ],
+          "c035": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c036": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c037": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c038": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c039": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c040": [
+            "OUT_OF_STOCK"
+          ],
+          "c041": [
+            "OCCASION_MISMATCH"
+          ],
+          "c042": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c043": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c044": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c045": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c046": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c047": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c048": [
+            "OCCASION_MISMATCH"
+          ],
+          "c049": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c050": [
+            "OUT_OF_STOCK"
+          ]
+        },
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [
+          "c006",
+          "c027"
+        ],
+        "overlap_ids": [],
+        "overlap_count": 0,
+        "has_overlap": false,
+        "overlap_ratio": 0.0,
+        "release_gating": false
+      }
+    },
+    {
+      "case_id": "e013",
+      "bucket": "conditional_buy",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "planned",
+      "actual_horizon": "planned",
+      "expected_intent": "buy",
+      "actual_intent": "fill_gap",
+      "expected_urgency": "low",
+      "actual_urgency": "low",
+      "shopping_allowed": true,
+      "catalog_calls": 1,
+      "catalog_invocations": 1,
+      "catalog_reference_count": 3,
+      "outfit_count": 2,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": null,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": true,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [
+            "top"
+          ],
+          "occasion": "meeting",
+          "minimum_formality": 3,
+          "season": null,
+          "event_window_days": 14,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "high",
+          "taboo_colors": [
+            "yellow"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [
+          "c002",
+          "c023",
+          "c044"
+        ],
+        "expected_ineligible_reasons_by_id": {
+          "c001": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c003": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c004": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c005": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c006": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c007": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c008": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c009": [
+            "FORMALITY_BELOW_REQUIRED",
+            "OCCASION_MISMATCH"
+          ],
+          "c010": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH",
+            "OUT_OF_STOCK"
+          ],
+          "c011": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c012": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c013": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c014": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c015": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c016": [
+            "FORMALITY_BELOW_REQUIRED",
+            "OCCASION_MISMATCH"
+          ],
+          "c017": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c018": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c019": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c020": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH",
+            "OUT_OF_STOCK"
+          ],
+          "c021": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c022": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c024": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c025": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c026": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c027": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c028": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c029": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c030": [
+            "FORMALITY_BELOW_REQUIRED",
+            "OCCASION_MISMATCH",
+            "OUT_OF_STOCK"
+          ],
+          "c031": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c032": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c033": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c034": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c035": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c036": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c037": [
+            "FORMALITY_BELOW_REQUIRED",
+            "OCCASION_MISMATCH"
+          ],
+          "c038": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c039": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c040": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH",
+            "OUT_OF_STOCK"
+          ],
+          "c041": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c042": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c043": [
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c045": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c046": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c047": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c048": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c049": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH"
+          ],
+          "c050": [
+            "FORMALITY_BELOW_REQUIRED",
+            "GAP_SLOT_MISMATCH",
+            "OCCASION_MISMATCH",
+            "OUT_OF_STOCK"
+          ]
+        },
+        "trace_filtered_reasons_by_id": {
+          "c001": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c003": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c004": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c005": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c006": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c007": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c008": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c009": [
+            "OCCASION_MISMATCH"
+          ],
+          "c010": [
+            "OUT_OF_STOCK"
+          ],
+          "c011": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c012": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c013": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c014": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c015": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c016": [
+            "OCCASION_MISMATCH"
+          ],
+          "c017": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c018": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c019": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c020": [
+            "OUT_OF_STOCK"
+          ],
+          "c021": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c022": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c024": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c025": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c026": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c027": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c028": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c029": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c030": [
+            "OUT_OF_STOCK"
+          ],
+          "c031": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c032": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c033": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c034": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c035": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c036": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c037": [
+            "OCCASION_MISMATCH"
+          ],
+          "c038": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c039": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c040": [
+            "OUT_OF_STOCK"
+          ],
+          "c041": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c042": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c043": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c045": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c046": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c047": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c048": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c049": [
+            "GAP_SLOT_MISMATCH"
+          ],
+          "c050": [
+            "OUT_OF_STOCK"
+          ]
+        },
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [
+          "c002",
+          "c023"
+        ],
+        "overlap_ids": [
+          "c002",
+          "c023"
+        ],
+        "overlap_count": 2,
+        "has_overlap": true,
+        "overlap_ratio": 1.0,
+        "release_gating": false
+      }
+    },
+    {
+      "case_id": "e014",
+      "bucket": "weather_season_formality",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "soon",
+      "actual_horizon": "soon",
+      "expected_intent": "recommend",
+      "actual_intent": "recommend",
+      "expected_urgency": "medium",
+      "actual_urgency": "medium",
+      "shopping_allowed": false,
+      "catalog_calls": 0,
+      "catalog_invocations": 0,
+      "catalog_reference_count": 0,
+      "outfit_count": 3,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": null,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": false,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [],
+          "occasion": "commute",
+          "minimum_formality": 0,
+          "season": null,
+          "event_window_days": 1,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "mid",
+          "taboo_colors": [
+            "purple"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [],
+        "expected_ineligible_reasons_by_id": {},
+        "trace_filtered_reasons_by_id": {},
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [],
+        "overlap_ids": [],
+        "overlap_count": 0,
+        "has_overlap": false,
+        "overlap_ratio": 0.0,
+        "release_gating": false
+      }
+    },
+    {
+      "case_id": "e015",
+      "bucket": "weather_season_formality",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "planned",
+      "actual_horizon": "planned",
+      "expected_intent": "recommend",
+      "actual_intent": "recommend",
+      "expected_urgency": "low",
+      "actual_urgency": "low",
+      "shopping_allowed": false,
+      "catalog_calls": 0,
+      "catalog_invocations": 0,
+      "catalog_reference_count": 0,
+      "outfit_count": 3,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": null,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": false,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [],
+          "occasion": "meeting",
+          "minimum_formality": 3,
+          "season": null,
+          "event_window_days": 30,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "high",
+          "taboo_colors": [
+            "yellow"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [],
+        "expected_ineligible_reasons_by_id": {},
+        "trace_filtered_reasons_by_id": {},
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [],
+        "overlap_ids": [],
+        "overlap_count": 0,
+        "has_overlap": false,
+        "overlap_ratio": 0.0,
+        "release_gating": false
+      }
+    },
+    {
+      "case_id": "e016",
+      "bucket": "weather_season_formality",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "soon",
+      "actual_horizon": "soon",
+      "expected_intent": "recommend",
+      "actual_intent": "recommend",
+      "expected_urgency": "medium",
+      "actual_urgency": "medium",
+      "shopping_allowed": false,
+      "catalog_calls": 0,
+      "catalog_invocations": 0,
+      "catalog_reference_count": 0,
+      "outfit_count": 3,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": null,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": false,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [],
+          "occasion": null,
+          "minimum_formality": 0,
+          "season": null,
+          "event_window_days": null,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "low",
+          "taboo_colors": [
+            "orange"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [],
+        "expected_ineligible_reasons_by_id": {},
+        "trace_filtered_reasons_by_id": {},
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [],
+        "overlap_ids": [],
+        "overlap_count": 0,
+        "has_overlap": false,
+        "overlap_ratio": 0.0,
+        "release_gating": false
+      }
+    },
+    {
+      "case_id": "e017",
+      "bucket": "weather_season_formality",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "planned",
+      "actual_horizon": "planned",
+      "expected_intent": "recommend",
+      "actual_intent": "recommend",
+      "expected_urgency": "low",
+      "actual_urgency": "low",
+      "shopping_allowed": false,
+      "catalog_calls": 0,
+      "catalog_invocations": 0,
+      "catalog_reference_count": 0,
+      "outfit_count": 1,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": null,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": false,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [],
+          "occasion": "interview",
+          "minimum_formality": 3,
+          "season": "autumn",
+          "event_window_days": null,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "mid",
+          "taboo_colors": [
+            "purple"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [],
+        "expected_ineligible_reasons_by_id": {},
+        "trace_filtered_reasons_by_id": {},
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [],
+        "overlap_ids": [],
+        "overlap_count": 0,
+        "has_overlap": false,
+        "overlap_ratio": 0.0,
+        "release_gating": false
+      }
+    },
+    {
+      "case_id": "e018",
+      "bucket": "weather_season_formality",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "planned",
+      "actual_horizon": "planned",
+      "expected_intent": "recommend",
+      "actual_intent": "recommend",
+      "expected_urgency": "low",
+      "actual_urgency": "low",
+      "shopping_allowed": false,
+      "catalog_calls": 0,
+      "catalog_invocations": 0,
+      "catalog_reference_count": 0,
+      "outfit_count": 0,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": null,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": false,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [],
+          "occasion": null,
+          "minimum_formality": 0,
+          "season": "winter",
+          "event_window_days": null,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "high",
+          "taboo_colors": [
+            "yellow"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [],
+        "expected_ineligible_reasons_by_id": {},
+        "trace_filtered_reasons_by_id": {},
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [],
+        "overlap_ids": [],
+        "overlap_count": 0,
+        "has_overlap": false,
+        "overlap_ratio": 0.0,
+        "release_gating": false
+      }
+    },
+    {
+      "case_id": "e019",
+      "bucket": "taboo_stock_availability",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "planned",
+      "actual_horizon": "planned",
+      "expected_intent": "recommend",
+      "actual_intent": "recommend",
+      "expected_urgency": "low",
+      "actual_urgency": "low",
+      "shopping_allowed": false,
+      "catalog_calls": 0,
+      "catalog_invocations": 0,
+      "catalog_reference_count": 0,
+      "outfit_count": 3,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": null,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": false,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [],
+          "occasion": null,
+          "minimum_formality": 0,
+          "season": null,
+          "event_window_days": null,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "mid",
+          "taboo_colors": [
+            "purple"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [],
+        "expected_ineligible_reasons_by_id": {},
+        "trace_filtered_reasons_by_id": {},
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [],
+        "overlap_ids": [],
+        "overlap_count": 0,
+        "has_overlap": false,
+        "overlap_ratio": 0.0,
+        "release_gating": false
+      }
+    },
+    {
+      "case_id": "e020",
+      "bucket": "taboo_stock_availability",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "planned",
+      "actual_horizon": "planned",
+      "expected_intent": "fill_gap",
+      "actual_intent": "recommend",
+      "expected_urgency": "low",
+      "actual_urgency": "low",
+      "shopping_allowed": false,
+      "catalog_calls": 0,
+      "catalog_invocations": 0,
+      "catalog_reference_count": 0,
+      "outfit_count": 3,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": null,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": false,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [],
+          "occasion": null,
+          "minimum_formality": 0,
+          "season": null,
+          "event_window_days": null,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "high",
+          "taboo_colors": [
+            "yellow"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [],
+        "expected_ineligible_reasons_by_id": {},
+        "trace_filtered_reasons_by_id": {},
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [
+          "c001"
+        ],
+        "overlap_ids": [],
+        "overlap_count": 0,
+        "has_overlap": false,
+        "overlap_ratio": 0.0,
+        "release_gating": false
+      }
+    },
+    {
+      "case_id": "e021",
+      "bucket": "taboo_stock_availability",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "planned",
+      "actual_horizon": "planned",
+      "expected_intent": "buy",
+      "actual_intent": "recommend",
+      "expected_urgency": "low",
+      "actual_urgency": "low",
+      "shopping_allowed": false,
+      "catalog_calls": 0,
+      "catalog_invocations": 0,
+      "catalog_reference_count": 0,
+      "outfit_count": 3,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": null,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": false,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [],
+          "occasion": null,
+          "minimum_formality": 0,
+          "season": null,
+          "event_window_days": null,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "low",
+          "taboo_colors": [
+            "orange"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [],
+        "expected_ineligible_reasons_by_id": {},
+        "trace_filtered_reasons_by_id": {},
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [
+          "c005"
+        ],
+        "overlap_ids": [],
+        "overlap_count": 0,
+        "has_overlap": false,
+        "overlap_ratio": 0.0,
+        "release_gating": false
+      }
+    },
+    {
+      "case_id": "e022",
+      "bucket": "taboo_stock_availability",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "planned",
+      "actual_horizon": "planned",
+      "expected_intent": "recommend",
+      "actual_intent": "recommend",
+      "expected_urgency": "low",
+      "actual_urgency": "low",
+      "shopping_allowed": false,
+      "catalog_calls": 0,
+      "catalog_invocations": 0,
+      "catalog_reference_count": 0,
+      "outfit_count": 3,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": null,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": false,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [],
+          "occasion": null,
+          "minimum_formality": 0,
+          "season": null,
+          "event_window_days": null,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "mid",
+          "taboo_colors": [
+            "purple"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [],
+        "expected_ineligible_reasons_by_id": {},
+        "trace_filtered_reasons_by_id": {},
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [],
+        "overlap_ids": [],
+        "overlap_count": 0,
+        "has_overlap": false,
+        "overlap_ratio": 0.0,
+        "release_gating": false
+      }
+    },
+    {
+      "case_id": "e023",
+      "bucket": "taboo_stock_availability",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "planned",
+      "actual_horizon": "planned",
+      "expected_intent": "buy",
+      "actual_intent": "recommend",
+      "expected_urgency": "low",
+      "actual_urgency": "low",
+      "shopping_allowed": false,
+      "catalog_calls": 0,
+      "catalog_invocations": 0,
+      "catalog_reference_count": 0,
+      "outfit_count": 3,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": null,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": false,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [],
+          "occasion": null,
+          "minimum_formality": 0,
+          "season": null,
+          "event_window_days": null,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "high",
+          "taboo_colors": [
+            "yellow"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [],
+        "expected_ineligible_reasons_by_id": {},
+        "trace_filtered_reasons_by_id": {},
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [
+          "c003"
+        ],
+        "overlap_ids": [],
+        "overlap_count": 0,
+        "has_overlap": false,
+        "overlap_ratio": 0.0,
+        "release_gating": false
+      }
+    },
+    {
+      "case_id": "e024",
+      "bucket": "grounding",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "planned",
+      "actual_horizon": "planned",
+      "expected_intent": "recommend",
+      "actual_intent": "recommend",
+      "expected_urgency": "low",
+      "actual_urgency": "low",
+      "shopping_allowed": false,
+      "catalog_calls": 0,
+      "catalog_invocations": 0,
+      "catalog_reference_count": 0,
+      "outfit_count": 3,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": null,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": false,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [],
+          "occasion": null,
+          "minimum_formality": 0,
+          "season": null,
+          "event_window_days": null,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "mid",
+          "taboo_colors": [
+            "purple"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [],
+        "expected_ineligible_reasons_by_id": {},
+        "trace_filtered_reasons_by_id": {},
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [],
+        "overlap_ids": [],
+        "overlap_count": 0,
+        "has_overlap": false,
+        "overlap_ratio": 0.0,
+        "release_gating": false
+      }
+    },
+    {
+      "case_id": "e025",
+      "bucket": "grounding",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "planned",
+      "actual_horizon": "planned",
+      "expected_intent": "recommend",
+      "actual_intent": "recommend",
+      "expected_urgency": "low",
+      "actual_urgency": "low",
+      "shopping_allowed": false,
+      "catalog_calls": 0,
+      "catalog_invocations": 0,
+      "catalog_reference_count": 0,
+      "outfit_count": 3,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": null,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": false,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [],
+          "occasion": "travel",
+          "minimum_formality": 0,
+          "season": null,
+          "event_window_days": null,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "high",
+          "taboo_colors": [
+            "yellow"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [],
+        "expected_ineligible_reasons_by_id": {},
+        "trace_filtered_reasons_by_id": {},
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [],
+        "overlap_ids": [],
+        "overlap_count": 0,
+        "has_overlap": false,
+        "overlap_ratio": 0.0,
+        "release_gating": false
+      }
+    },
+    {
+      "case_id": "e026",
+      "bucket": "grounding",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "planned",
+      "actual_horizon": "planned",
+      "expected_intent": "recommend",
+      "actual_intent": "recommend",
+      "expected_urgency": "low",
+      "actual_urgency": "low",
+      "shopping_allowed": false,
+      "catalog_calls": 0,
+      "catalog_invocations": 0,
+      "catalog_reference_count": 0,
+      "outfit_count": 3,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": null,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": false,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [],
+          "occasion": null,
+          "minimum_formality": 0,
+          "season": null,
+          "event_window_days": null,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "low",
+          "taboo_colors": [
+            "orange"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [],
+        "expected_ineligible_reasons_by_id": {},
+        "trace_filtered_reasons_by_id": {},
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [],
+        "overlap_ids": [],
+        "overlap_count": 0,
+        "has_overlap": false,
+        "overlap_ratio": 0.0,
+        "release_gating": false
+      }
+    },
+    {
+      "case_id": "e027",
+      "bucket": "grounding",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "planned",
+      "actual_horizon": "planned",
+      "expected_intent": "recommend",
+      "actual_intent": "recommend",
+      "expected_urgency": "low",
+      "actual_urgency": "low",
+      "shopping_allowed": false,
+      "catalog_calls": 0,
+      "catalog_invocations": 0,
+      "catalog_reference_count": 0,
+      "outfit_count": 3,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": null,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": false,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [],
+          "occasion": null,
+          "minimum_formality": 0,
+          "season": null,
+          "event_window_days": null,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "mid",
+          "taboo_colors": [
+            "purple"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [],
+        "expected_ineligible_reasons_by_id": {},
+        "trace_filtered_reasons_by_id": {},
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [],
+        "overlap_ids": [],
+        "overlap_count": 0,
+        "has_overlap": false,
+        "overlap_ratio": 0.0,
+        "release_gating": false
+      }
+    },
+    {
+      "case_id": "e028",
+      "bucket": "support_safety",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "soon",
+      "actual_horizon": "soon",
+      "expected_intent": "vent",
+      "actual_intent": "vent",
+      "expected_urgency": "medium",
+      "actual_urgency": "medium",
+      "shopping_allowed": false,
+      "catalog_calls": 0,
+      "catalog_invocations": 0,
+      "catalog_reference_count": 0,
+      "outfit_count": 0,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": null,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": false,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [],
+          "occasion": null,
+          "minimum_formality": 0,
+          "season": null,
+          "event_window_days": 1,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "mid",
+          "taboo_colors": [
+            "purple"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [],
+        "expected_ineligible_reasons_by_id": {},
+        "trace_filtered_reasons_by_id": {},
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [],
+        "overlap_ids": [],
+        "overlap_count": 0,
+        "has_overlap": false,
+        "overlap_ratio": 0.0,
+        "release_gating": false
+      }
+    },
+    {
+      "case_id": "e029",
+      "bucket": "support_safety",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "unknown",
+      "actual_horizon": "unknown",
+      "expected_intent": "vent",
+      "actual_intent": "vent",
+      "expected_urgency": "high",
+      "actual_urgency": "high",
+      "shopping_allowed": false,
+      "catalog_calls": 0,
+      "catalog_invocations": 0,
+      "catalog_reference_count": 0,
+      "outfit_count": 0,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": true,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": false,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [],
+          "occasion": null,
+          "minimum_formality": 0,
+          "season": null,
+          "event_window_days": null,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "high",
+          "taboo_colors": [
+            "yellow"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [],
+        "expected_ineligible_reasons_by_id": {},
+        "trace_filtered_reasons_by_id": {},
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [],
+        "overlap_ids": [],
+        "overlap_count": 0,
+        "has_overlap": false,
+        "overlap_ratio": 0.0,
+        "release_gating": false
+      }
+    },
+    {
+      "case_id": "e030",
+      "bucket": "support_safety",
+      "input_mode": "structured_scene_fields",
+      "expected_horizon": "unknown",
+      "actual_horizon": "unknown",
+      "expected_intent": "vent",
+      "actual_intent": "vent",
+      "expected_urgency": "high",
+      "actual_urgency": "high",
+      "shopping_allowed": false,
+      "catalog_calls": 0,
+      "catalog_invocations": 0,
+      "catalog_reference_count": 0,
+      "outfit_count": 0,
+      "checks": {
+        "urgency": true,
+        "high_urgency_gate": true,
+        "all_ids_grounded": true,
+        "hard_constraints": true,
+        "slot_complete": true,
+        "reported_validation_matches_oracle": true,
+        "direction_contract": true,
+        "catalog_ids_grounded_in_fixture_and_tool_return": true,
+        "catalog_constraints_and_eval_truth": true,
+        "catalog_call_required_by_explicit_gap": false,
+        "catalog_explicit_gap_actual_and_trace_call": true,
+        "catalog_eligible_inventory_presence_contract": true,
+        "catalog_actual_return_subset_independent_eligible": true,
+        "catalog_inventory_trace_covers_ineligible": true,
+        "catalog_no_gap_actual_and_trace_zero": true,
+        "catalog_legacy_generator_witness_non_gating": true
+      },
+      "catalog_inventory_oracle": {
+        "oracle": "independent_fixture_query_inventory_v1",
+        "context": {
+          "required_slots": [],
+          "occasion": null,
+          "minimum_formality": 0,
+          "season": null,
+          "event_window_days": null,
+          "delivery_safety_buffer_days": 1,
+          "budget_policy": "low",
+          "taboo_colors": [
+            "orange"
+          ],
+          "weather_requirement": null
+        },
+        "eligible_ids": [],
+        "expected_ineligible_reasons_by_id": {},
+        "trace_filtered_reasons_by_id": {},
+        "trace_missing_or_reason_mismatch_ids": []
+      },
+      "catalog_legacy_generator_candidate_witness": {
+        "source_field": "allowed_catalog",
+        "semantics": "legacy_generator_candidate_witness",
+        "authoritative": false,
+        "exhaustive": false,
+        "witness_ids": [],
+        "overlap_ids": [],
+        "overlap_count": 0,
+        "has_overlap": false,
+        "overlap_ratio": 0.0,
+        "release_gating": false
+      }
+    }
+  ],
+  "report_paths": {
+    "json": "reports/eval/r1_demo_v1.json",
+    "markdown": "reports/eval/r1_demo_v1.md"
+  },
+  "privacy": {
+    "raw_queries_included": false,
+    "images_or_base64_included": false,
+    "credentials_included": false
+  }
+}

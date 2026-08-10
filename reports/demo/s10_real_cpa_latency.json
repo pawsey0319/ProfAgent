@@ -1,0 +1,65 @@
+{
+  "measured_at": "2026-08-10",
+  "base_url": "http://127.0.0.1:8000",
+  "environment": "torch128",
+  "model_contract": {
+    "requested_model": "grok4.5",
+    "transport_model": "grok-4.5-high",
+    "reported_model_allowlist": [
+      "grok-4.5-high",
+      "grok-4.5-build"
+    ]
+  },
+  "dialogue": [
+    {
+      "case": "hello",
+      "request_id": "s10-real-hello-20260810-42e6a226105d4ea1ae0684b899440bdb",
+      "trace_id": "trace_350866b9c5594c0c",
+      "wall_seconds": 15.970,
+      "provider_latency_ms": 15912.02,
+      "status": "ok",
+      "generation_source": "cpa",
+      "resolved_model": "grok-4.5-build",
+      "model_verified": true,
+      "conversation_mode": "stylist_chat",
+      "action": "chat"
+    },
+    {
+      "case": "near_term_date_with_mild_emotion",
+      "request_id": "s10-real-date-20260810-d077ca77eb4c4dc4afd76fefaeaa6d0d",
+      "trace_id": "trace_26568af2592c",
+      "wall_seconds": 38.057,
+      "provider_latency_ms": 38014.74,
+      "status": "ok",
+      "generation_source": "cpa",
+      "resolved_model": "grok-4.5-build",
+      "model_verified": true,
+      "conversation_mode": "styling_active",
+      "action": "recommend",
+      "event_horizon": "today",
+      "urgency": "high",
+      "shopping_allowed": false,
+      "shopping_cta": false,
+      "outfit_count": 3,
+      "all_ids_grounded": true,
+      "hard_constraints_passed": true,
+      "catalog_attempted": false,
+      "catalog_call_count": 0,
+      "mild_emotion_mentions": 1
+    }
+  ],
+  "static_2d": {
+    "preview_id": "preview_a9ccd4887b13416cb68c2c55464c0dc5",
+    "wall_seconds": 0.229,
+    "status": "degraded",
+    "attempted": true,
+    "image_url": null,
+    "resolved_model": null,
+    "model_verified": false,
+    "identity": "not_assessed",
+    "owned_garment_count": 5,
+    "external_item_count": 0,
+    "direct_cpa_http_status": 400,
+    "direct_cpa_error": "Model grok-4.5-high is not supported on /v1/images/generations or /v1/images/edits."
+  }
+}

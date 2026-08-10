@@ -4,3 +4,10 @@ __pycache__/
 *.pyc
 *.egg-info/
 artifacts/
+.env
+.env.*
+!.env.example
+config.local.json
+*.key
+*.pem
+reports/runtime/

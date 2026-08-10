@@ -3,13 +3,19 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "profagent-data"
+name = "profagent-r1-demo"
 version = "0.1.0"
-description = "Synthetic data contracts and fixtures for a supportive stylist agent"
+description = "Grounded ProfAgent R1 stylist demo"
 requires-python = ">=3.10"
 dependencies = [
+  "fastapi>=0.115,<1",
+  "httpx>=0.27,<1",
   "jsonschema>=4.22,<5",
+  "Pillow>=11,<13",
+  "pydantic>=2.10,<3",
+  "python-multipart>=0.0.18,<1",
   "PyYAML>=6,<7",
+  "uvicorn>=0.32,<1",
 ]
 
 [project.optional-dependencies]
@@ -19,3 +25,6 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["profagent*"]

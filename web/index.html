@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="ProfAgent R1 Stylist Demo：从场景理解到衣橱穿搭方向的可解释决策。">
+  <title>ProfAgent · 私人穿搭团队</title>
+  <link rel="stylesheet" href="./styles.css?v=s10-high-model-refrozen-20260810">
+  <script defer src="./dialogue_runtime.js?v=s10-high-model-refrozen-20260810"></script>
+  <script defer src="./fixtures.js?v=s10-high-model-refrozen-20260810"></script>
+  <script defer src="./app.js?v=s10-high-model-refrozen-20260810"></script>
+</head>
+<body>
+  <a class="skip-link" href="#studio">跳到 Stylist Studio</a>
+
+  <header class="site-header">
+    <a class="brand" href="#team-home" aria-label="ProfAgent 首页">
+      <span class="brand-mark" aria-hidden="true">P</span>
+      <span>
+        <strong>ProfAgent</strong>
+        <small>personal_team</small>
+      </span>
+    </a>
+    <nav class="primary-nav" aria-label="主要导航">
+      <a href="#team-home">团队</a>
+      <a href="#studio">Studio</a>
+      <a href="#cocreation">共创</a>
+      <a href="#wardrobe">衣橱</a>
+      <a href="#memory">记忆</a>
+    </nav>
+    <div class="header-actions">
+      <span id="source-badge" class="source-badge" data-state="checking">正在连接</span>
+      <button id="debug-toggle" class="button button-quiet button-small" type="button" aria-controls="debug-panel" aria-expanded="false">
+        调试 / 评测
+      </button>
+    </div>
+  </header>
+
+  <div id="source-notice" class="source-notice" role="status" aria-live="polite">
+    <div>
+      <strong id="source-title">正在联系 Stylist</strong>
+      <span id="source-detail">连接状态确认后即可开始对话。</span>
+    </div>
+    <button id="retry-api" class="button button-quiet button-small" type="button" hidden>重试 API</button>
+  </div>
+
+  <main>
+    <section id="team-home" class="section section-team" aria-labelledby="team-heading">
+      <div class="section-kicker">TEAM HOME</div>
+      <div class="section-heading-row">
+        <div>
+          <h1 id="team-heading">你的私人团队</h1>
+          <p>每项专业任务都有明确成员、边界与当前状态。</p>
+        </div>
+        <span class="status-pill status-ready"><span aria-hidden="true">●</span> R1 可用</span>
+      </div>
+
+      <div class="team-grid">
+        <article class="team-card team-identity-card">
+          <p class="eyebrow">团队身份</p>
+          <h2 id="team-name">personal_team</h2>
+          <p id="team-description" class="muted">围绕你的具体任务协作；R1 当前只上线一位专业成员。</p>
+          <dl class="identity-list">
+            <div><dt>Team ID</dt><dd>personal_team</dd></div>
+            <div><dt>成员状态</dt><dd id="team-member-count">1 位已上线</dd></div>
+            <div><dt>共享原则</dt><dd>转交前逐字段确认</dd></div>
+          </dl>
+        </article>
+
+        <article class="team-card member-card">
+          <div class="member-topline">
+            <div class="avatar" aria-hidden="true">S</div>
+            <div>
+              <p class="eyebrow">首位专业成员</p>
+              <h2 id="member-name">你的私人明星穿搭师</h2>
+            </div>
+            <span class="status-pill status-ready"><span aria-hidden="true">●</span> 已上线</span>
+          </div>
+          <p id="member-boundary" class="member-boundary">负责穿搭场景理解、衣橱组合和可解释建议；不是销售、治疗师或真人造型师。</p>
+          <div id="member-capabilities" class="chip-list" aria-label="Stylist 能力"></div>
+          <p class="contract-note"><strong>会话归属：</strong><span class="mono">personal_team · stylist</span></p>
+        </article>
+
+        <article class="team-card current-task-card">
+          <p class="eyebrow">当前任务</p>
+          <div class="task-state">
+            <span id="task-index" class="task-index" aria-hidden="true">01</span>
+            <div>
+              <h2 id="current-task-title">等待你的场景</h2>
+              <p id="current-task-detail">告诉 Stylist 场合、时间和希望表达的感觉。</p>
+            </div>
+          </div>
+          <div class="progress-track" aria-label="任务进度">
+            <span id="task-progress" style="width: 16%"></span>
+          </div>
+          <p id="session-ownership" class="muted small">尚未开始连续会话</p>
+        </article>
+      </div>
+
+      <div class="boundary-strip" aria-label="未上线能力说明">
+        <strong>团队边界</strong>
+        <div id="unavailable-capabilities" class="boundary-items"></div>
+        <p>需要跨成员协作时，将先展示拟共享字段并征得授权；当前不会发生隐藏转交。</p>
+      </div>
+    </section>
+
+    <section id="studio" class="section section-studio" aria-labelledby="studio-heading">
+      <div class="section-kicker">STYLIST STUDIO</div>
+      <div class="section-heading-row">
+        <div>
+          <h2 id="studio-heading">和你的私人 Stylist 继续聊</h2>
+          <p>可以先聊聊天；准备好后，再自然地告诉我这次想解决的穿搭。</p>
+        </div>
+        <div class="session-state" aria-live="polite">
+          <span class="session-dot" aria-hidden="true"></span>
+          <span id="session-state-label">等待输入</span>
+        </div>
+      </div>
+
+      <div class="studio-layout is-chat-only">
+        <div class="conversation-panel">
+          <div class="conversation-heading">
+            <div>
+              <p class="eyebrow">当前成员</p>
+              <strong>Stylist</strong>
+              <span id="conversation-origin" class="conversation-origin">正在确认 CPA 状态</span>
+            </div>
+            <div class="conversation-actions">
+              <span class="mono small">personal_team:stylist</span>
+              <button id="new-task" class="button button-quiet button-small" type="button">开始新任务</button>
+            </div>
+          </div>
+          <div id="conversation" class="conversation" aria-live="polite" aria-label="Stylist 对话">
+            <article class="message message-assistant">
+              <span class="message-author">Stylist</span>
+              <p>嗨，我在。我们可以先随便聊聊；你想开始搭配时，再告诉我场合、时间或今天最在意的感觉。</p>
+            </article>
+          </div>
+
+          <div id="suggested-replies" class="suggested-replies" aria-label="建议回复" hidden></div>
+
+          <form id="scene-form" class="composer chat-composer">
+            <label for="scene-input">和 Stylist 说点什么</label>
+            <textarea id="scene-input" name="message" rows="4" maxlength="500" placeholder="可以先聊聊天，也可以直接说：我今天下午要面试……" required></textarea>
+            <div class="example-row" aria-label="对话快捷输入">
+              <button class="text-chip" type="button" data-example="先聊聊天">先聊聊天</button>
+              <button class="text-chip" type="button" data-example="我今天下午面试，有点紧张，想显得可靠但别太老气。">今天要搭配</button>
+              <button class="text-chip" type="button" data-example="帮我准备一次重要见面。">重要见面</button>
+            </div>
+            <div class="composer-footer">
+              <span id="composer-hint">中文首发 · Enter 换行，Ctrl/⌘ + Enter 提交</span>
+              <button id="scene-submit" class="button button-primary" type="submit">
+                <span>发送给 Stylist</span><span aria-hidden="true">→</span>
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <aside id="scene-panel" class="scene-panel" aria-labelledby="scene-summary-heading" hidden>
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">CURRENT CONTEXT</p>
+              <h3 id="scene-summary-heading">我理解的是</h3>
+            </div>
+            <span id="scene-source" class="mini-badge">待解析</span>
+          </div>
+          <dl id="scene-summary" class="scene-summary">
+            <div><dt>场合</dt><dd>待确认</dd></div>
+            <div><dt>发生时间</dt><dd>待确认</dd></div>
+            <div><dt>紧迫度</dt><dd>待确认</dd></div>
+            <div><dt>使用范围</dt><dd>现有衣橱优先</dd></div>
+          </dl>
+          <div class="scene-constraints">
+            <p class="eyebrow">当前约束</p>
+            <div id="constraint-chips" class="chip-list"><span class="chip">解析后显示</span></div>
+          </div>
+          <div id="local-guard" class="guard-note" hidden>
+            <span class="guard-icon" aria-hidden="true">✓</span>
+            <div><strong>今天先用你已有的衣服</strong><p>我们会守住时间与明确边界，不显示临时购物建议。</p></div>
+          </div>
+        </aside>
+      </div>
+
+      <section id="recommendation-section" class="recommendation-section" aria-labelledby="directions-heading" hidden>
+        <div class="recommendation-lead">
+          <div>
+            <p class="eyebrow">INITIAL DIRECTIONS</p>
+            <h3 id="directions-heading">先从这些方向里选一个</h3>
+          </div>
+          <p id="direction-count-note" class="muted">最多展示三个合法方向。</p>
+        </div>
+        <div id="gap-explanation" class="gap-note" hidden></div>
+        <div id="direction-grid" class="direction-grid"></div>
+        <article id="active-look" class="active-look" hidden aria-live="polite"></article>
+        <div id="allowed-shopping-zone"></div>
+      </section>
+    </section>
+
+    <section id="cocreation" class="section section-cocreation" aria-labelledby="cocreation-heading" hidden>
+      <div class="section-kicker">ACTIVE LOOK · CO-CREATION</div>
+      <div class="section-heading-row">
+        <div>
+          <h2 id="cocreation-heading">围绕同一套穿搭继续改</h2>
+          <p>上传静态当前穿搭图、查看情境评分、一次处理最多两项调整，并保留完整版本轨迹。</p>
+        </div>
+        <span id="cocreation-state" class="status-pill status-neutral" role="status" aria-live="polite">等待选择方向</span>
+      </div>
+
+      <article id="look-overview" class="work-card look-overview" aria-labelledby="look-overview-heading">
+        <div>
+          <p class="eyebrow">CURRENT LOOK</p>
+          <h3 id="look-overview-heading">尚未建立 Active Look</h3>
+          <div id="look-overview-items" class="outfit-items"></div>
+          <p id="look-overview-note" class="muted">选定一个方向后由服务端建立不可变 v1。</p>
+        </div>
+        <div id="look-overview-status" class="look-status-stack"></div>
+      </article>
+
+      <div class="cocreate-grid">
+        <article class="work-card upload-card">
+          <div class="work-card-heading">
+            <div><p class="eyebrow">STATIC UPLOAD</p><h3>上传当前穿搭静态图</h3></div>
+            <span class="mini-badge">2D 图片</span>
+          </div>
+          <form id="asset-form" class="stack-form">
+            <label for="asset-file">PNG / JPEG / WebP，最大 5 MB</label>
+            <input id="asset-file" name="file" type="file" accept="image/png,image/jpeg,image/webp" required disabled>
+            <label for="asset-angle">拍摄角度</label>
+            <select id="asset-angle" name="angle" disabled>
+              <option value="front">正面</option>
+              <option value="side">侧面</option>
+              <option value="detail">细节</option>
+            </select>
+            <button id="asset-submit" class="button button-primary" type="submit" disabled>同意上传并绑定新版本</button>
+          </form>
+          <figure id="asset-preview-wrap" class="asset-preview" hidden>
+            <img id="asset-preview" alt="用户选择的当前穿搭静态预览">
+            <figcaption id="asset-status">仅在本机以临时 Blob URL 预览，不写入 Debug 或浏览器存储。</figcaption>
+          </figure>
+          <div class="asset-consent-note">
+            <strong>用途与同意</strong>
+            <p>主动点击上传，即表示你明确同意仅将这张图片用于本次穿搭视觉评估；不会用于评价本人，也不会进入长期记忆。启用视觉能力时，原图会发送到已配置的 CPA Grok 视觉服务，仅用于评估本次穿搭的衣物区域。</p>
+            <p>视觉能力未启用、模型未精确回显，或调用失败时，系统不会猜测图片内容，只提供定性结果。</p>
+            <strong>保存策略</strong>
+            <p>R1 保存策略为服务端返回的 <code>memory_ephemeral</code>（仅进程内，进程结束即清除）。Trace 只记录不可回显的资产 ID、技术质量与耗时，不记录原图或 base64。</p>
+          </div>
+          <div class="asset-list-wrap">
+            <h4>当前 Look 的图片</h4>
+            <div id="asset-list" class="asset-list"><p class="empty-state compact">当前 Look 尚未绑定图片。</p></div>
+          </div>
+          <p id="asset-operation-status" class="guard-note compact" role="status" aria-live="polite" hidden></p>
+        </article>
+
+        <article class="work-card scorecard-card">
+          <div class="work-card-heading">
+            <div><p class="eyebrow">SCORECARD</p><h3>这套穿搭在当前目标下</h3></div>
+            <button id="score-request" class="button button-secondary button-small" type="button" disabled>重新评估</button>
+          </div>
+          <div id="scorecard-summary" class="scorecard-summary">
+            <p class="empty-state compact">上传图片后由服务端评估；证据不足时不显示数值。</p>
+          </div>
+          <div id="scorecard-grid" class="scorecard-grid"></div>
+          <div id="missing-evidence" class="evidence-note" hidden></div>
+        </article>
+      </div>
+
+      <article id="preview2d-card" class="work-card preview2d-card" aria-labelledby="preview2d-heading">
+        <div class="work-card-heading">
+          <div><p class="eyebrow">CPA · STATIC 2D</p><h3 id="preview2d-heading">生成这套 Look 的 2D 参考图</h3></div>
+          <span id="preview2d-origin" class="mini-badge">等待生成</span>
+        </div>
+        <p>仅生成中性模特/平铺效果，用于判断整体风格与场景感觉；未评估身份一致性，也不代表精确尺码、面料触感或真实垂坠。</p>
+        <div class="preview2d-actions">
+          <button id="preview2d-generate" class="button button-primary" type="button" disabled>生成 2D 静态参考图</button>
+          <button id="preview2d-delete" class="button button-danger" type="button" hidden>删除生成图</button>
+        </div>
+        <p class="muted small">点击生成即明确同意仅将当前 Look 的衣物与场景描述用于本次 CPA 2D 生成；不会发送身份图像，输出为中性模特/平铺，无需选择模型。</p>
+        <div id="preview2d-status" class="preview2d-status" role="status" aria-live="polite">建立 Look 后即可生成。</div>
+        <figure id="preview2d-result" class="preview2d-result" hidden>
+          <div class="preview2d-image-wrap">
+            <img id="preview2d-image" alt="AI 生成的当前 Look 中性模特或平铺 2D 静态参考图">
+            <span class="ai-image-label">AI 生成 · 视觉参考</span>
+          </div>
+          <figcaption id="preview2d-caption"></figcaption>
+        </figure>
+      </article>
+
+      <div class="cocreate-grid cocreate-grid-lower">
+        <article class="work-card adjustment-card">
+          <div class="work-card-heading">
+            <div><p class="eyebrow">ADJUSTMENTS</p><h3>这一轮只处理最关键的 1–2 项</h3></div>
+            <span id="adjustment-count" class="mini-badge">0 项</span>
+          </div>
+          <div id="adjustment-list" class="adjustment-list">
+            <p class="empty-state compact">获得评分卡后显示可验证调整。</p>
+          </div>
+          <details id="user-modify-details" class="user-modify-details">
+            <summary>我已经按自己的方式修改</summary>
+            <form id="user-modify-form" class="stack-form">
+              <p class="muted small">仅从当前可用衣橱按名称选择；内部 ID 不会在普通界面显示。</p>
+              <div id="user-modify-fields" class="modify-fields"></div>
+              <button id="user-modify-submit" class="button button-secondary" type="submit" disabled>提交当前衣橱组合</button>
+            </form>
+          </details>
+        </article>
+
+        <article class="work-card finalize-card">
+          <div class="work-card-heading">
+            <div><p class="eyebrow">SATISFIED</p><h3>满意就直接定稿</h3></div>
+            <span id="final-status" class="mini-badge">始终可用</span>
+          </div>
+          <p>定稿不受系统分数限制；确认后停止继续挑问题。</p>
+          <form id="finalize-form" class="stack-form">
+            <label for="satisfaction">这次满意度</label>
+            <select id="satisfaction" name="satisfaction" disabled>
+              <option value="5">5 · 很满意</option>
+              <option value="4">4 · 满意</option>
+              <option value="3">3 · 可以出门</option>
+              <option value="2">2 · 仍有保留</option>
+              <option value="1">1 · 只保存当前决定</option>
+            </select>
+            <label for="final-reason">可选说明</label>
+            <textarea id="final-reason" rows="3" maxlength="300" placeholder="例如：这样最像我，也适合今天的场合。" disabled></textarea>
+            <button id="finalize-submit" class="button button-primary" type="submit" disabled>满意定稿</button>
+          </form>
+        </article>
+      </div>
+
+      <article class="work-card version-card">
+        <div class="work-card-heading">
+          <div><p class="eyebrow">VERSION TRAIL</p><h3>v1 → vN → Final</h3></div>
+          <span class="mini-badge">回退会创建新版本</span>
+        </div>
+        <div id="version-timeline" class="version-timeline" aria-label="不可变 Look 版本轨迹"><p class="empty-state compact">建立 Look 后显示不可变版本链。</p></div>
+        <div class="compare-controls">
+          <label for="compare-left">版本 A<select id="compare-left" disabled></select></label>
+          <span aria-hidden="true">↔</span>
+          <label for="compare-right">版本 B<select id="compare-right" disabled></select></label>
+        </div>
+        <div id="version-comparison" class="version-comparison" aria-label="Look 版本比较结果" aria-live="polite"></div>
+      </article>
+    </section>
+
+    <section id="wardrobe" class="section section-wardrobe" aria-labelledby="wardrobe-heading">
+      <div class="section-kicker">WARDROBE</div>
+      <div class="section-heading-row">
+        <div>
+          <h2 id="wardrobe-heading">衣橱工作台</h2>
+          <p>状态与季节会参与筛选；普通模式不显示内部衣物 ID。</p>
+        </div>
+        <div class="wardrobe-count"><strong id="wardrobe-visible-count">0</strong><span>件当前显示</span></div>
+      </div>
+
+      <form id="wardrobe-filters" class="filter-bar" aria-label="筛选衣橱">
+        <label>类别
+          <select id="filter-slot" name="slot">
+            <option value="all">全部类别</option>
+            <option value="outer">外套</option><option value="top">上装</option><option value="bottom">下装</option>
+            <option value="dress">连衣裙</option><option value="shoes">鞋</option><option value="bag">包</option><option value="accessory">配饰</option>
+          </select>
+        </label>
+        <label>状态
+          <select id="filter-status" name="status">
+            <option value="all">全部状态</option>
+            <option value="available">可用</option><option value="laundry">清洗中</option>
+            <option value="reserved">已预留</option><option value="unavailable">不可用</option>
+          </select>
+        </label>
+        <label>季节
+          <select id="filter-season" name="season">
+            <option value="all">全部季节</option>
+            <option value="spring">春</option><option value="summer">夏</option><option value="autumn">秋</option><option value="winter">冬</option>
+          </select>
+        </label>
+        <button id="reset-filters" class="button button-quiet" type="button">重置</button>
+      </form>
+      <div id="wardrobe-grid" class="wardrobe-grid" aria-live="polite"></div>
+    </section>
+
+    <section id="memory" class="section section-memory" aria-labelledby="memory-heading">
+      <div class="section-kicker">MEMORY CONTROL</div>
+      <div class="section-heading-row">
+        <div>
+          <h2 id="memory-heading">由你决定什么值得记住</h2>
+          <p>所有长期记忆先提议、再确认、最后提交；Shared 与 Stylist 命名空间明确分开。</p>
+        </div>
+        <span id="memory-api-state" class="status-pill status-neutral" role="status">等待 API</span>
+      </div>
+      <div class="memory-grid">
+        <article class="work-card">
+          <div class="work-card-heading"><div><p class="eyebrow">PROPOSE</p><h3>提出一条记忆</h3></div></div>
+          <form id="memory-propose-form" class="stack-form">
+            <label for="memory-namespace">可见范围</label>
+            <select id="memory-namespace" disabled><option value="stylist">仅 Stylist</option><option value="shared">团队共享</option></select>
+            <label for="memory-type">类型</label>
+            <select id="memory-type" disabled><option value="constraint">长期约束</option><option value="preference">穿搭偏好</option></select>
+            <label for="memory-content">受控模板</label>
+            <select id="memory-content" disabled></select>
+            <p class="form-help">R1 只接受服务端批准的精确语义模板，不保存任意自由文本。</p>
+            <label class="check-row"><input id="memory-sensitive" type="checkbox" disabled> 这条内容可能敏感（默认不写入）</label>
+            <button id="memory-propose-submit" class="button button-primary" type="submit" disabled>仅创建待确认提议</button>
+          </form>
+          <p id="memory-write-status" class="guard-note compact" role="status" hidden></p>
+        </article>
+        <article class="work-card">
+          <div class="work-card-heading"><div><p class="eyebrow">PENDING</p><h3>待你确认</h3></div></div>
+          <div id="memory-pending-list" class="memory-list"><p class="empty-state compact">暂无待确认提议。</p></div>
+        </article>
+        <article class="work-card">
+          <div class="work-card-heading"><div><p class="eyebrow">COMMITTED</p><h3>已提交记忆</h3></div></div>
+          <div id="memory-committed-list" class="memory-list"><p class="empty-state compact">暂无已提交记忆。</p></div>
+        </article>
+      </div>
+    </section>
+
+    <section class="section next-stage" aria-labelledby="next-stage-heading">
+      <div>
+        <p class="section-kicker">PRODUCT BOUNDARY</p>
+        <h2 id="next-stage-heading">当前只提供可验证的静态共创</h2>
+        <p>CPA 2D 参考图已经接入；更高维展示不提供入口，也不会创建相关任务。</p>
+      </div>
+      <ul class="future-list" aria-label="能力范围">
+        <li><span>CPA 静态 2D 参考图</span><strong>已接入</strong></li>
+        <li><span>第二位专业成员</span><strong>未上线</strong></li>
+        <li><span>更高维展示</span><strong>未立项</strong></li>
+      </ul>
+    </section>
+
+    <section id="debug-panel" class="section debug-panel" aria-labelledby="debug-heading" hidden>
+      <div class="section-kicker">DEBUG / EVALUATION</div>
+      <div class="section-heading-row">
+        <div>
+          <h2 id="debug-heading">Trace 与运行证据</h2>
+          <p>仅在 Debug 模式显示内部 ID、过滤原因、Provider 与 Catalog 调用记录。</p>
+        </div>
+        <span class="status-pill status-neutral">开发视图</span>
+      </div>
+      <div id="debug-metrics" class="debug-metrics"></div>
+      <div class="debug-grid">
+        <article class="debug-card">
+          <h3>过滤与门控</h3>
+          <ul id="filter-reasons" class="trace-list"><li>提交场景后显示。</li></ul>
+        </article>
+        <article class="debug-card">
+          <h3>固定评测</h3>
+          <p><strong>固定评测已上线</strong></p>
+          <p class="muted">为避免浏览器 UI 阻塞，建议在命令行运行；本页面不提供假运行按钮。</p>
+          <p><code>conda run -n torch128 python -m profagent.eval</code></p>
+          <p class="muted">报告：<code>reports/eval/r1_demo_v1.json</code> · <code>reports/eval/r1_demo_v1.md</code></p>
+          <ul>
+            <li>UrgencyAcc ≥ 95%</li>
+            <li>高急切度 ShoppingGateAcc = 100%</li>
+            <li>Slot Completeness ≥ 95%</li>
+          </ul>
+        </article>
+        <article class="debug-card">
+          <h3>版本与关联 Trace</h3>
+          <ul id="debug-related" class="trace-list"><li>建立 Look 后显示。</li></ul>
+        </article>
+      </div>
+      <details class="trace-details">
+        <summary>查看已清洗 Trace JSON</summary>
+        <pre id="trace-json">{}</pre>
+      </details>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <p><strong>ProfAgent R1 Demo</strong> · 中文首发 · 数据版本 <span class="mono">fixtures_v1.0</span></p>
+    <p>建议只评价“当前穿搭 × 当前目标”，不评价人。</p>
+  </footer>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
