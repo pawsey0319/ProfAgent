@@ -1,7 +1,7 @@
 # ProfAgent R1 Demo BUILD LOG
 
 > 唯一需求权威：`docs/PRD.md`（v1.11）。
-> 当前状态：**R1 DoD Demo 子集及 S6–S10 本地实现、验收与真实 CPA 计时已关闭；等待按 `AGENTS.md` 确认模型 ID 后执行 Grok 增量对抗复核与 Codex 最终收拢。**
+> 当前状态：**R1 DoD Demo 子集及 S6–S10 本地实现、验收与真实 CPA 计时已关闭；S11 已冻结本地小模型、专用 Grok 2D 图片链路和 RRF 软记忆检索的后续架构决策，但尚未实施；等待按 `AGENTS.md` 确认模型 ID 后执行 Grok 增量对抗复核与 Codex 最终收拢。**
 > 目标：交付可运行的 R1 Stylist MVP Demo，并通过 PRD 23.1 的 Demo 子集验收。
 
 ## 0. 基线与执行约束
@@ -364,6 +364,44 @@ CPA Grok 生图仍限定为可选 `static_2d` Provider Adapter：
 - 完整 `Scene→Recommend→Look→Static2D` 真实调用使用 high transport，墙钟 `0.229s` 返回诚实 `degraded`、无 image URL、identity=`not_assessed`；直接 CPA 能力响应为 HTTP 400，明确该模型不支持 `/images/generations`。实现没有自动切换到代理建议的其他图像模型。
 - 证据写入 `reports/demo/s10_real_cpa_latency.json` 与 `.md`。本地实现、测试和 Codex reviewer 已关闭；用户要求的最终 Grok + Codex 增量相互验证尚需按 `AGENTS.md` 先确认本次外部审查模型 ID，不得提前宣称联合审查完成。
 
+### S11 — 上线架构决策：本地模型、专用 Grok 2D 与持久化记忆（2026-08-10，已冻结决策、未实施）
+
+本阶段仅记录用户确认的后续上线方向和只读技术判断，不改变已关闭的 R1 DoD，不代表这些能力已经上线。任何实现均须另立里程碑、合同、迁移方案和独立评测；3D/360°/视频、真实支付及其他既有 R2+ 红线保持不变。
+
+#### S11A — 本地小模型分层部署路线（后续委托 `backend`，`tester` 建立对照评测）
+
+- **目标**：降低当前真实 CPA 对话约 `15.970s–38.057s` 的延迟和稳定调用成本，同时保留 CPA 在复杂、多义、长对话和低置信度场景中的质量兜底；不以本地模型替代确定性购物门控、ID 白名单、HardFilter、Memory commit 或输出 Validator。
+- **候选路线**：先以中文和结构化输出能力较强的 `4B` 与 `9B` 级开放权重模型建立双候选基线，当前建议评测 `Qwen3.5-4B` 与 `Qwen3.5-9B`；生产服务优先使用 vLLM 暴露 OpenAI-compatible API，非思考模式、短上下文、受控最大输出与 JSON Schema。候选名称属于评测起点，不在取得本项目证据前冻结为唯一生产模型。
+- **分层职责**：规则层继续权威处理安全和业务门控；本地模型承担 Scene/意图/轻情绪承接/槽位补全/结构化 JSON/普通 Stylist 对话/Memory proposal；本地输出低置信度、超时、合同失败或涉及复杂情绪和高歧义时才路由 CPA。移动端首版调用服务端部署，不把安全关键推荐放到端侧模型。
+- **不得破坏**：本地模型与 CPA 均须通过同一服务端全量 Validator；不得因追求低延迟放宽购物门控、人物评价、ID、硬约束、敏感记忆或 3D/video 边界；本地失败必须走确定性安全路径或明确 CPA 兜底，不得伪称本地/CPA 成功。
+- **对应 AC**：AC-01/03/04/05/10/11/12/16/17，OBS-03/05，SAFE-04/08。
+- **进入实现前验收口径**：在固定 30 条评测外新增真实中文对话、结构化合同、长短会话和情绪样例；目标端到端 P95 `<=5s`、JSON 合同通过率 `>=99%`，并保持高急 Shopping Gate `100%`、Catalog `0`、衣物 ID 幻觉 `0`、硬约束违反 `0`。只有对照评测证明质量与安全达到门槛后，才允许逐步提高本地路由占比；微调/LoRA 排在基线评测之后。
+
+#### S11B — 专用 Grok 2D 双资产链路（后续委托 `backend` + `frontend`，`reviewer` 审查身份与资产边界）
+
+- **用户确认**：用户已有 Grok 订阅并希望直接使用其生图能力。产品接入时仍须确认 CPA 或 xAI API 实际开放的图片 endpoint、图片模型 ID、授权与计费；消费者订阅额度不得未经验证就当作可自动化调用的 API 权限。图片 Provider 必须独立配置和精确验证，不再把文本 transport `grok-4.5-high` 发送到 `/images/generations`。
+- **资产初始化目标**：衣橱导入时将原始服装图去背景、裁切并标准化为透明服装资产，必要时使用 Grok 图片编辑统一角度、光照和背景，但不得凭文本重造并改变颜色、印花、材质或结构；用户授权后生成并由用户确认稳定的虚拟人物形象。数据库只保存 `garment_asset_id/avatar_version_id`、来源、版本、授权、状态和对象存储 URL，图片二进制进入对象存储而非关系库大字段。
+- **按 Look 生成两种输出**：① 使用透明白名单服装资产进行确定性排版，生成可核对 ID、数量和颜色的统一套装图/Look Sheet；② 将已确认 Avatar 与 Look Sheet 作为参考图交给专用 Grok 图片编辑 Provider，生成上身效果图。多件衣物先合成为一张 Look Sheet，再与 Avatar 一起送入图片编辑，避免参考图数量限制和逐件编辑漂移。
+- **产品边界**：确定性套装图是商品/衣橱事实呈现；上身效果图只能标记为 `visualization_only`，不得宣称精确尺码、面料垂坠、身体变化或真实合身度。用户照片和 Avatar 必须有显式授权、版本、TTL/删除与访问控制；评分继续只评价穿搭，不评价人。
+- **运行方式**：图片生成使用独立异步任务、幂等 job、对象存储和完成通知，不阻塞 `/dialogue/turn`；失败回退到确定性套装图/衣物卡，不静默切换未经授权的图片模型。高急切度仍不得因此出现购物 CTA，2D 生图不得扩展成 3D/360°/视频。
+- **对应 AC/安全边界**：AC-10/11/13/15/16/17，SAFE-01/03/04/08，OBS-03/05；属于实验性 R2 2D 纵切，不计入当前 R1 完成门槛。
+- **进入实现前验收口径**：每张套装图全部 item ID 来自当前 Look；生成图逐件核对颜色/类别/关键结构且无额外衣物；Avatar 未被替换、明显瘦身/增高或身份漂移；生成失败可回退；资产删除可传播；Trace 只记录受控 ID/版本/耗时/错误码，不记录原始人像或图片正文。
+
+#### S11C — PostgreSQL 真值 + RRF 软记忆召回（后续委托 `backend`，`tester` 建立 Memory eval）
+
+- **保持不变的持久化架构**：PostgreSQL 继续作为用户、会话、Look 版本、Memory `propose→confirm→commit`、撤回/删除、授权和审计的唯一真值；对象存储保存图片；Redis 可用于任务、缓存和锁；知识图谱仅作为已确认关系的可重建投影，不能解决进程重启，也不能成为唯一记忆库。
+- **只读参考结论**：邻接项目 `personalized-shopping-copilot` 已实现 `BGE-M3 Dense + BM25 + Rule → weighted RRF(k=60) → Cross-Encoder/MMR`，RRF 分数为 `sum(weight_i / (k + rank_i))` 并保留各分支排名。其既有 20 条对照显示 Dense 整体优于 Rule、但 Rule 在部分查询获胜，证明多路互补；32 条 formal RRF 消融的部分最佳值为 `Precision@3=0.4896`、`MRR=0.7349`、`Recall@20=0.6927`。由于数据集和标注不同，这些数字只支持架构候选，不得直接宣称 ProfAgent Memory 已提升。
+- **硬记忆不进 RRF**：已确认禁忌、敏感授权、拒绝且不得重复的建议、删除/过期/superseded 状态及其他安全关键事实必须先通过 PostgreSQL 精确过滤和直接加载，召回排序不得漏掉、恢复或覆盖它们。
+- **软记忆使用 RRF**：仅对已按 `user_id + confirmed + 未删除 + 未过期 + sensitivity ACL` 过滤后的情景/偏好/反馈摘要并行执行 Dense 语义召回、BM25 精确词召回、Recency 与 Importance 排名，再以 weighted RRF 融合；融合候选可用轻量 Cross-Encoder 重排后选 Top 3–5 注入 Stylist。初始 `k=60` 与权重只作可复现实验基线，必须用 ProfAgent 自有评测调优。
+- **为什么选择 RRF**：它按名次融合异构检索器，不要求直接比较 BM25、向量相似度、时间和重要性分数的数值尺度；但 RRF 不是向量数据库、不是持久化层，也不负责事务、授权、删除或硬约束。
+- **对应 AC/安全边界**：AC-12/13/14/17，MEM-01/02/03，SAFE-04/08，OBS-01/03/05。
+- **进入实现前验收口径**：建立 ProfAgent Memory 专用真值集并比较 `Dense-only`、`BM25-only`、`Dense+BM25 RRF`、`RRF+rerank`；至少报告 Recall@5/10、MRR、过期/撤回污染率、敏感未确认泄漏率、硬记忆漏召回、拒绝建议重复率和 P95 延迟。硬记忆漏召回、未授权/已删除记忆返回和拒绝建议重复均必须为 `0`，否则不得上线。
+
+#### S11 退出状态
+
+- 当前仅完成架构判断与 BUILD_LOG 冻结，**没有**新增本地模型服务、Grok 图片 Provider、异步图片任务、PostgreSQL/Redis/对象存储、向量索引、RRF Memory 或知识图谱生产实现。
+- 后续开始编码前，supervisor 必须先更新 PRD/API Contract/数据迁移与威胁模型，并按 `backend`/`frontend` → `reviewer` → `tester` 顺序执行；不能使用本节计划反向宣称 GitHub 当前 R1 Demo 已具备移动端持久化或真实上身试穿。
+
 ## 2. 并行与冲突控制
 
 1. S0 先冻结合同，之后 S1A/S1B、S2A/S2B 才并行。
@@ -378,3 +416,6 @@ CPA Grok 生图仍限定为可选 `static_2d` Provider Adapter：
 2. 环境统一为 `torch128`；Stylist 与静态 2D 生图通过 CPA 使用用户指定 `grok4.5`，无需再次询问模型。
 3. 用户在 2026-08-06 明确要求本 Demo 的对话与静态 2D 生图都调用 CPA；S6 因此启用一条实验性 R2 `static_2d` 纵切，但不把它混入或放宽 R1 DoD。3D/360°/视频仍是硬红线。
 4. 最终由 Grok + Codex 独立审查并相互验证，Codex supervisor 依据 PRD 与本地可复现证据收拢结束。
+5. 用户在 2026-08-10 确认后续采用“确定性规则 + 本地小模型主路由 + CPA 复杂任务兜底”的模型部署路线；候选模型须先在 ProfAgent 固定安全与对话集上对照评测，未达门槛不得替换当前链路。
+6. 用户确认 2D 需要同时覆盖衣橱虚拟服装/虚拟人物资产初始化、统一套装图和上身效果图；实现改用独立配置并验证的 Grok 图片 Provider，文本模型不再承担生图。该能力仍为实验性 R2 2D，不扩展至 3D/视频。
+7. 用户确认移动端持久化主体保持 PostgreSQL/对象存储/可选 Redis/知识图谱投影不变，并参考 `personalized-shopping-copilot` 将 weighted RRF 用于软记忆多路融合；硬记忆继续走精确数据库路径，不受 RRF 排名支配。
