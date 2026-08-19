@@ -17,13 +17,26 @@ from profagent.config import (
 )
 from profagent.dialogue import DialogueConflict
 from profagent.models import DialogueTurnInput
-from profagent.providers import GrokLLMProvider
+from profagent.providers import GrokLLMProvider, ProviderUnavailable
 from profagent.scene import SceneParser
 
 
 def expect(response, status: int = 200) -> dict:
     assert response.status_code == status, response.text
     return response.json()
+
+
+def test_text_model_configuration_drift_fails_closed_without_auto_switch(
+    monkeypatch, offline_settings
+) -> None:
+    monkeypatch.setenv("PROFAGENT_GROK_MODEL", "grok4.5")
+    with pytest.raises(ValueError, match="exactly grok4.6"):
+        Settings.from_env()
+    with pytest.raises(ValueError, match="frozen CPA contract"):
+        GrokLLMProvider(replace(offline_settings, grok_model="grok4.5"))
+    provider = GrokLLMProvider(offline_settings)
+    with pytest.raises(ProviderUnavailable, match="not allowlisted"):
+        provider._verify_reported_model("grok-4.6", "dialogue")
 
 
 def turn(
@@ -100,7 +113,7 @@ def test_cpa_generated_chat_reply_uses_persona_and_has_no_scene(
             200,
             request=httpx.Request("POST", url),
             json={
-                "model": "grok-4.5-build",
+                "model": "grok-4.6-build",
                 "choices": [
                     {
                         "message": {
@@ -127,7 +140,7 @@ def test_cpa_generated_chat_reply_uses_persona_and_has_no_scene(
         assert response["assistant_message"] == "当然可以。今天你想从哪件小事聊起？"
         assert response["provider"]["status"] == "ok"
         assert response["provider"]["generation_source"] == "cpa"
-        assert response["provider"]["resolved_model"] == "grok-4.5-build"
+        assert response["provider"]["resolved_model"] == "grok-4.6-build"
         assert response["scene"] is None
         assert captured["persona"] == {
             "persona_id": "stylist",
@@ -153,7 +166,7 @@ def test_private_current_turn_is_minimized_and_never_enters_followup_history(
             200,
             request=httpx.Request("POST", url),
             json={
-                "model": "grok-4.5-high",
+                "model": "grok-4.6-high",
                 "choices": [
                     {
                         "message": {
@@ -213,7 +226,7 @@ def test_sensitive_current_turn_and_followup_history_are_content_free(
             200,
             request=httpx.Request("POST", url),
             json={
-                "model": "grok-4.5-build",
+                "model": "grok-4.6-build",
                 "choices": [{"message": {"content": json.dumps(content)}}],
             },
         )
@@ -259,7 +272,7 @@ def test_high_urgency_provider_shopping_prose_is_rejected_and_catalog_stays_zero
             200,
             request=httpx.Request("POST", url),
             json={
-                "model": "grok-4.5-high",
+                "model": "grok-4.6-high",
                 "choices": [
                     {
                         "message": {
@@ -317,7 +330,7 @@ def test_normal_styling_turn_uses_cpa_reply_then_server_grounded_recommendation(
             200,
             request=httpx.Request("POST", url),
             json={
-                "model": "grok-4.5-build",
+                "model": "grok-4.6-build",
                 "choices": [
                     {
                         "message": {
@@ -352,7 +365,7 @@ def test_normal_styling_turn_uses_cpa_reply_then_server_grounded_recommendation(
         assert response["assistant_message"] == (
             "今天时间紧，我先从现有衣橱里给你一个可靠、利落的首选方向。"
         )
-        assert response["scene"]["backend"] == "grok4.5"
+        assert response["scene"]["backend"] == "grok4.6"
         assert response["scene"]["shopping_allowed"] is False
         assert response["recommendation"]["outfits"]
         assert response["recommendation"]["shopping_suggestions"] == []
@@ -362,7 +375,7 @@ def test_normal_styling_turn_uses_cpa_reply_then_server_grounded_recommendation(
             for outfit in response["recommendation"]["outfits"]
         )
         trace = get_trace(client, response)
-        assert trace["provider"]["resolved_model"] == "grok-4.5-build"
+        assert trace["provider"]["resolved_model"] == "grok-4.6-build"
         assert trace["provider"]["generation_source"] == "cpa"
         assert trace["catalog"]["call_count"] == 0
 
@@ -864,9 +877,9 @@ def test_single_flight_same_request_calls_support_cpa_once(
             {
                 "attempted": True,
                 "status": "ok",
-                "requested_model": "grok4.5",
-                "transport_model": "grok-4.5-high",
-                "resolved_model": "grok-4.5-high",
+                "requested_model": "grok4.6",
+                "transport_model": "grok-4.6-high",
+                "resolved_model": "grok-4.6-high",
                 "model_verified": True,
                 "input_contract": "stylist_dialogue_minimized_v1",
                 "output_contract": "stylist_dialogue_structured_v1",
@@ -987,7 +1000,7 @@ def test_support_and_safety_cases_attempt_cpa_once_with_sensitive_minimization(
             200,
             request=httpx.Request("POST", url),
             json={
-                "model": "grok-4.5-build",
+                "model": "grok-4.6-build",
                 "choices": [{"message": {"content": json.dumps(content)}}],
             },
         )
@@ -1000,7 +1013,7 @@ def test_support_and_safety_cases_attempt_cpa_once_with_sensitive_minimization(
         assert response["action"] == "support"
         assert calls == 1
         assert response["provider"]["attempted"] is True
-        assert response["provider"]["resolved_model"] == "grok-4.5-build"
+        assert response["provider"]["resolved_model"] == "grok-4.6-build"
         if expected_mode == "safety_response":
             assert captured[0]["current_turn"]["kind"] in {
                 "safety_summary",
@@ -1036,7 +1049,7 @@ def test_dialogue_cpa_receives_persona_minimal_profile_and_bounded_context(
             200,
             request=httpx.Request("POST", url),
             json={
-                "model": "grok-4.5-high",
+                "model": "grok-4.6-high",
                 "choices": [
                     {
                         "message": {
@@ -1066,7 +1079,7 @@ def test_dialogue_cpa_receives_persona_minimal_profile_and_bounded_context(
             client, "今天是我第一次和女朋友约会，有点儿紧张，先不推荐"
         )
         assert response["action"] == "support"
-        assert captured["body"]["model"] == "grok-4.5-high"
+        assert captured["body"]["model"] == "grok-4.6-high"
         assert set(captured["summary"]) == {
             "persona",
             "profile",
@@ -1094,7 +1107,7 @@ def test_dialogue_cpa_receives_persona_minimal_profile_and_bounded_context(
         trace = get_trace(client, response)
         provider = trace["provider"]
         assert provider["status"] == "ok"
-        assert provider["resolved_model"] == "grok-4.5-high"
+        assert provider["resolved_model"] == "grok-4.6-high"
         assert provider["model_verified"] is True
         assert "女朋友" not in json.dumps(trace, ensure_ascii=False)
         assert_no_tools(client, response)
@@ -1105,7 +1118,10 @@ def test_dialogue_cpa_receives_persona_minimal_profile_and_bounded_context(
     [
         ("slow", "CPA_INTERACTION_BUDGET_EXCEEDED"),
         ("wrong_model_old_alias", "CPA_MODEL_VERIFICATION_FAILED"),
+        ("wrong_model_old_transport", "CPA_MODEL_VERIFICATION_FAILED"),
+        ("wrong_model_old_build", "CPA_MODEL_VERIFICATION_FAILED"),
         ("wrong_model_prefix", "CPA_MODEL_VERIFICATION_FAILED"),
+        ("wrong_model_private_metadata", "CPA_MODEL_VERIFICATION_FAILED"),
         ("violating_output", "CPA_DIALOGUE_OUTPUT_REJECTED"),
     ],
 )
@@ -1127,8 +1143,11 @@ def test_support_cpa_failure_or_violation_falls_back_locally(
             raise AssertionError("unreachable")
         model = {
             "wrong_model_old_alias": "grok-4.5",
-            "wrong_model_prefix": "grok-4.5-high-preview",
-        }.get(failure, "grok-4.5-high")
+            "wrong_model_old_transport": "grok-4.5-high",
+            "wrong_model_old_build": "grok-4.5-build",
+            "wrong_model_prefix": "grok-4.6-high-preview",
+            "wrong_model_private_metadata": "private-upstream-model-routing-metadata",
+        }.get(failure, "grok-4.6-high")
         content = (
             json.dumps(
                 {
@@ -1170,6 +1189,11 @@ def test_support_cpa_failure_or_violation_falls_back_locally(
         assert provider["status"] == "fallback"
         assert provider["reason_code"] == expected_reason
         assert provider["resolved_model"] is None
+        if failure == "wrong_model_private_metadata":
+            serialized = json.dumps(
+                {"response": response, "trace": trace}, ensure_ascii=False
+            )
+            assert "private-upstream-model-routing-metadata" not in serialized
         assert_no_tools(client, response)
 
 
@@ -1188,7 +1212,7 @@ def test_chat_synonyms_attempt_exactly_one_cpa_without_scene_or_deadline(
         calls += 1
         context = json.loads(kwargs["json"]["messages"][1]["content"])
         assert url.endswith("/chat/completions")
-        assert kwargs["json"]["model"] == "grok-4.5-high"
+        assert kwargs["json"]["model"] == "grok-4.6-high"
         assert kwargs["json"]["max_tokens"] <= 800
         assert context["session"]["scene"] is None
         assert context["policy"] == {
@@ -1203,7 +1227,7 @@ def test_chat_synonyms_attempt_exactly_one_cpa_without_scene_or_deadline(
             200,
             request=httpx.Request("POST", url),
             json={
-                "model": "grok-4.5-build",
+                "model": "grok-4.6-build",
                 "choices": [
                     {
                         "message": {
@@ -1259,7 +1283,7 @@ def test_each_new_turn_calls_cpa_once_receipt_retry_and_context_are_bounded(
             200,
             request=httpx.Request("POST", url),
             json={
-                "model": "grok-4.5-high",
+                "model": "grok-4.6-high",
                 "choices": [
                     {
                         "message": {
@@ -1368,7 +1392,7 @@ def test_expired_dialogue_session_never_reaches_cpa_or_reuses_history(
             200,
             request=httpx.Request("POST", url),
             json={
-                "model": "grok-4.5-high",
+                "model": "grok-4.6-high",
                 "choices": [
                     {
                         "message": {
@@ -1421,7 +1445,7 @@ def test_user_and_history_prompt_injection_cannot_override_server_policy(
             200,
             request=httpx.Request("POST", url),
             json={
-                "model": "grok-4.5-high",
+                "model": "grok-4.6-high",
                 "choices": [
                     {
                         "message": {
@@ -1512,7 +1536,7 @@ def test_provider_prompt_injection_output_fails_closed_without_side_effects(
             200,
             request=httpx.Request("POST", url),
             json={
-                "model": "grok-4.5-high",
+                "model": "grok-4.6-high",
                 "choices": [
                     {"message": {"content": json.dumps(content, ensure_ascii=False)}}
                 ],
@@ -1588,7 +1612,7 @@ def test_dialogue_bad_json_extra_fields_and_oversize_are_explicit_fallbacks(
             200,
             request=httpx.Request("POST", url),
             json={
-                "model": "grok-4.5-high",
+                "model": "grok-4.6-high",
                 "choices": [{"message": {"content": content}}],
             },
         )
@@ -1654,7 +1678,7 @@ def test_dialogue_output_validator_rejects_unsafe_or_unbounded_model_copy(
             200,
             request=httpx.Request("POST", url),
             json={
-                "model": "grok-4.5-build",
+                "model": "grok-4.6-build",
                 "choices": [{"message": {"content": json.dumps(content)}}],
             },
         )
@@ -1695,7 +1719,7 @@ def test_dialogue_rejects_all_internal_garment_and_catalog_ids(
             200,
             request=httpx.Request("POST", url),
             json={
-                "model": "grok-4.5-build",
+                "model": "grok-4.6-build",
                 "choices": [{"message": {"content": json.dumps(content)}}],
             },
         )
@@ -1749,7 +1773,7 @@ def test_health_preserves_exact_actual_build_separately_from_transport_alias(
             200,
             request=httpx.Request("POST", url),
             json={
-                "model": "grok-4.5-build",
+                "model": "grok-4.6-build",
                 "choices": [{"message": {"content": json.dumps(content)}}],
             },
         )
@@ -1758,7 +1782,7 @@ def test_health_preserves_exact_actual_build_separately_from_transport_alias(
         return httpx.Response(
             200,
             request=httpx.Request("GET", url),
-            json={"data": [{"id": "grok-4.5-high"}]},
+            json={"data": [{"id": "grok-4.6-high"}]},
         )
 
     monkeypatch.setattr(httpx.AsyncClient, "post", dialogue_post)
@@ -1766,16 +1790,22 @@ def test_health_preserves_exact_actual_build_separately_from_transport_alias(
     app = create_app(settings)
     with TestClient(app) as client:
         response = turn(client, "先聊聊天")
-        assert response["provider"]["resolved_model"] == "grok-4.5-build"
+        assert response["provider"]["resolved_model"] == "grok-4.6-build"
         health = client.get("/health").json()["providers"]["llm"]
-        assert health["transport_model"] == "grok-4.5-high"
-        assert health["resolved_model"] == "grok-4.5-build"
+        assert health["transport_model"] == "grok-4.6-high"
+        assert health["resolved_model"] == "grok-4.6-build"
         assert health["chat_model_verified"] is True
 
 
 @pytest.mark.parametrize(
     "advertised_model",
-    ["grok-4.5", "grok-4.5-build", "grok-4.5-high-preview"],
+    [
+        "grok-4.5",
+        "grok-4.5-high",
+        "grok-4.5-build",
+        "grok-4.6-build",
+        "grok-4.6-high-preview",
+    ],
 )
 def test_health_requires_exact_high_transport_advertisement(
     monkeypatch, offline_settings, advertised_model: str
@@ -1783,7 +1813,7 @@ def test_health_requires_exact_high_transport_advertisement(
     provider = GrokLLMProvider(
         replace(offline_settings, cpa_text_enabled=True)
     )
-    provider._verify_reported_model("grok-4.5-build", "dialogue")
+    provider._verify_reported_model("grok-4.6-build", "dialogue")
 
     async def models_get(_self, url, **_kwargs):
         return httpx.Response(
@@ -1794,10 +1824,10 @@ def test_health_requires_exact_high_transport_advertisement(
 
     monkeypatch.setattr(httpx.AsyncClient, "get", models_get)
     health = asyncio.run(provider.health())
-    assert health["transport_model"] == "grok-4.5-high"
+    assert health["transport_model"] == "grok-4.6-high"
     assert health["catalog_model_advertised"] is False
     assert health["chat_model_verified"] is True
-    assert health["resolved_model"] == "grok-4.5-build"
+    assert health["resolved_model"] == "grok-4.6-build"
     assert health["available"] is False
     assert health["reason"] == "resolved_model_not_advertised"
 
@@ -1831,7 +1861,7 @@ def test_dialogue_accepts_one_whole_json_object_or_fence_then_runs_strict_contra
             200,
             request=httpx.Request("POST", url),
             json={
-                "model": "grok-4.5-build",
+                "model": "grok-4.6-build",
                 "choices": [{"message": {"content": content}}],
             },
         )
@@ -1843,7 +1873,7 @@ def test_dialogue_accepts_one_whole_json_object_or_fence_then_runs_strict_contra
         assert calls == 1
         assert response["provider"]["status"] == "ok"
         assert response["provider"]["generation_source"] == "cpa"
-        assert response["provider"]["resolved_model"] == "grok-4.5-build"
+        assert response["provider"]["resolved_model"] == "grok-4.6-build"
         assert response["assistant_message"] == "当然可以，我们先轻松聊聊。"
 
 
@@ -1894,7 +1924,7 @@ def test_dialogue_rejects_non_exact_fences_without_poisoning_next_turn(
             200,
             request=httpx.Request("POST", url),
             json={
-                "model": "grok-4.5-build",
+                "model": "grok-4.6-build",
                 "choices": [{"message": {"content": content}}],
             },
         )
@@ -1962,7 +1992,7 @@ def test_dialogue_safety_rejection_does_not_open_transport_circuit(
             200,
             request=httpx.Request("POST", url),
             json={
-                "model": "grok-4.5-build",
+                "model": "grok-4.6-build",
                 "choices": [
                     {
                         "message": {
@@ -2029,7 +2059,7 @@ def test_dangerous_copy_inside_valid_json_fence_still_fails_closed(
             200,
             request=httpx.Request("POST", url),
             json={
-                "model": "grok-4.5-build",
+                "model": "grok-4.6-build",
                 "choices": [{"message": {"content": content}}],
             },
         )

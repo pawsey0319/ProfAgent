@@ -12,7 +12,8 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from profagent.app import create_app
-from profagent.providers import GrokLLMProvider, ProviderUnavailable
+from profagent.image_provider import GrokImageProvider
+from profagent.providers import ProviderUnavailable
 
 
 def _png() -> bytes:
@@ -77,13 +78,17 @@ def test_static_2d_uses_server_look_ids_and_owner_bound_image_lifecycle(
         return image, "image/png", {
             "attempted": True,
             "status": "ok",
-            "requested_model": "grok4.5",
-            "transport_model": "grok-4.5-high",
-            "resolved_model": "grok-4.5-build",
+            "requested_model": "grok-imagine-image-quality",
+            "transport_model": "grok-imagine-image-quality",
+            "request_model_pinned": True,
+            "cpa_trace_verified": True,
+            "model_reported": True,
+            "resolved_model": "grok-imagine-image-quality",
             "model_verified": True,
+            "verification_basis": "reported_model_exact",
         }
 
-    services.llm.generate_static_2d = generated
+    services.image_provider.generate_static_2d = generated
     with TestClient(app) as client:
         scene, look = _look(client)
         payload = {
@@ -106,10 +111,14 @@ def test_static_2d_uses_server_look_ids_and_owner_bound_image_lifecycle(
         assert preview["provider"] == {
             "status": "ok",
             "attempted": True,
-            "requested_model": "grok4.5",
-            "transport_model": "grok-4.5-high",
-            "resolved_model": "grok-4.5-build",
+            "requested_model": "grok-imagine-image-quality",
+            "transport_model": "grok-imagine-image-quality",
+            "request_model_pinned": True,
+            "cpa_trace_verified": True,
+            "model_reported": True,
+            "resolved_model": "grok-imagine-image-quality",
             "model_verified": True,
+            "verification_basis": "reported_model_exact",
             "degraded": False,
             "reason_code": None,
         }
@@ -171,13 +180,13 @@ def test_static_2d_rejects_prohibited_modes_and_client_item_injection_before_pro
         calls += 1
         raise AssertionError("provider must not be called")
 
-    services.llm.generate_static_2d = forbidden
+    services.image_provider.generate_static_2d = forbidden
     with TestClient(app) as client:
         health = client.get("/health").json()
         assert health["capabilities"]["static_2d"] is False
         assert health["capabilities"]["video"] is False
         assert health["capabilities"]["three_d"] is False
-        assert health["providers"]["static_2d"]["transport_model"] == "grok-4.5-high"
+        assert health["providers"]["static_2d"]["transport_model"] == "grok-imagine-image-quality"
         scene, look = _look(client)
         base = {
             "user_id": "u01",
@@ -210,10 +219,10 @@ def test_static_2d_provider_failure_is_explicit_degradation(
 
     async def unavailable(_prompt: str):
         raise ProviderUnavailable(
-            "offline", reason_code="CPA_PROVIDER_UNAVAILABLE"
+            "offline", reason_code="CPA_IMAGE_PROVIDER_UNAVAILABLE"
         )
 
-    services.llm.generate_static_2d = unavailable
+    services.image_provider.generate_static_2d = unavailable
     with TestClient(app) as client:
         scene, look = _look(client)
         response = client.post(
@@ -236,101 +245,404 @@ def test_static_2d_provider_failure_is_explicit_degradation(
         assert preview["fallback"]["type"] == "flat_lay_and_text"
 
 
-def test_cpa_static_2d_adapter_requests_frozen_model_and_accepts_allowlisted_build(
+def test_cpa_static_2d_adapter_requests_frozen_model_and_accepts_exact_image_model(
     monkeypatch, offline_settings
 ) -> None:
-    settings = replace(offline_settings, cpa_text_enabled=True)
-    provider = GrokLLMProvider(settings)
+    settings = replace(offline_settings, cpa_image_enabled=True)
+    provider = GrokImageProvider(settings)
     image = _png()
     captured: dict = {}
+    raw_receipt = "cpa-image-reported-receipt-secret-1"
 
-    async def image_post(_self, url, **kwargs):
-        captured["url"] = url
-        captured["body"] = kwargs["json"]
+    def image_post(request: httpx.Request):
+        captured["url"] = str(request.url)
+        captured["body"] = json.loads(request.content)
         return httpx.Response(
             200,
-            request=httpx.Request("POST", url),
+            headers={"x-cpa-trace-id": raw_receipt},
             json={
-                "model": "grok-4.5-build",
+                "model": "grok-imagine-image-quality",
                 "data": [{"b64_json": base64.b64encode(image).decode("ascii")}],
             },
         )
 
-    monkeypatch.setattr(httpx.AsyncClient, "post", image_post)
+    provider.set_transport(httpx.MockTransport(image_post))
     body, media_type, metadata = asyncio.run(
         provider.generate_static_2d("single static 2D outfit")
     )
     assert captured["url"].endswith("/images/generations")
     assert captured["body"] == {
-        "model": "grok-4.5-high",
+        "model": "grok-imagine-image-quality",
         "prompt": "single static 2D outfit",
         "n": 1,
         "size": "1024x1024",
         "response_format": "b64_json",
     }
+    serialized_request = json.dumps(captured["body"], sort_keys=True)
+    assert "grok4.6" not in serialized_request
+    assert "grok-4.6-high" not in serialized_request
     assert body == image
     assert media_type == "image/png"
-    assert metadata["resolved_model"] == "grok-4.5-build"
+    assert metadata["resolved_model"] == "grok-imagine-image-quality"
     assert metadata["model_verified"] is True
-    assert provider.resolved_model is None
-    image_health = provider.image_health()
+    assert metadata["model_reported"] is True
+    assert metadata["request_model_pinned"] is True
+    assert metadata["cpa_trace_verified"] is True
+    assert metadata["verification_basis"] == "reported_model_exact"
+    assert provider.resolved_model == "grok-imagine-image-quality"
+    image_health = provider.health()
     assert image_health["available"] is True
-    assert image_health["resolved_model"] == "grok-4.5-build"
+    assert image_health["resolved_model"] == "grok-imagine-image-quality"
     assert image_health["model_verified"] is True
+    assert raw_receipt not in json.dumps(metadata)
+    assert raw_receipt not in json.dumps(image_health)
+
+
+def test_cpa_static_2d_accepts_unreported_model_only_with_verified_receipt(
+    offline_settings,
+) -> None:
+    settings = replace(offline_settings, cpa_image_enabled=True)
+    provider = GrokImageProvider(settings)
+    image = _png()
+    raw_receipt = "cpa-image-receipt-secret-7"
+
+    def image_post(_request: httpx.Request):
+        return httpx.Response(
+            200,
+            headers={"x-cpa-trace-id": raw_receipt},
+            json={"data": [{"b64_json": base64.b64encode(image).decode("ascii")}]},
+        )
+
+    provider.set_transport(httpx.MockTransport(image_post))
+    body, media_type, metadata = asyncio.run(
+        provider.generate_static_2d("single static 2D outfit")
+    )
+    assert body == image
+    assert media_type == "image/png"
+    assert metadata["request_model_pinned"] is True
+    assert metadata["cpa_trace_verified"] is True
+    assert metadata["model_reported"] is False
+    assert metadata["model_verified"] is False
+    assert metadata["resolved_model"] is None
+    assert metadata["verification_basis"] == "exact_request_with_cpa_trace"
+    health = provider.health()
+    assert health["available"] is True
+    assert health["status"] == "ok"
+    assert health["model_reported"] is False
+    assert health["model_verified"] is False
+    assert health["resolved_model"] is None
+    assert health["verification_basis"] == "exact_request_with_cpa_trace"
+    assert raw_receipt not in json.dumps(metadata)
+    assert raw_receipt not in json.dumps(health)
+
+
+@pytest.mark.parametrize(
+    "reported_model",
+    [None, "", 123, "grok-4.5-high", "grok-imagine-image-quality-preview"],
+)
+def test_cpa_static_2d_rejects_present_but_nonexact_model(
+    offline_settings, reported_model
+) -> None:
+    provider = GrokImageProvider(replace(offline_settings, cpa_image_enabled=True))
+    image = _png()
+
+    def image_post(_request: httpx.Request):
+        return httpx.Response(
+            200,
+            headers={"x-cpa-trace-id": "cpa-image-wrong-model-1"},
+            json={
+                "model": reported_model,
+                "data": [{"b64_json": base64.b64encode(image).decode("ascii")}],
+            },
+        )
+
+    provider.set_transport(httpx.MockTransport(image_post))
+    with pytest.raises(ProviderUnavailable) as captured:
+        asyncio.run(provider.generate_static_2d("single static 2D outfit"))
+    assert captured.value.reason_code == "CPA_IMAGE_MODEL_VERIFICATION_FAILED"
+    health = provider.health()
+    assert health["model_reported"] is True
+    assert health["cpa_trace_verified"] is True
+    assert health["model_verified"] is False
+    assert health["resolved_model"] is None
+    assert health["verification_basis"] is None
+
+
+@pytest.mark.parametrize(
+    "receipt_headers",
+    [
+        {},
+        {"x-cpa-trace-id": ""},
+        {"x-cpa-trace-id": "contains space"},
+        {"x-cpa-trace-id": "x" * 129},
+        [
+            ("x-cpa-trace-id", "cpa-image-duplicate-a"),
+            ("x-cpa-trace-id", "cpa-image-duplicate-b"),
+        ],
+    ],
+)
+def test_cpa_static_2d_rejects_missing_unsafe_or_duplicate_receipt_even_if_model_exact(
+    offline_settings, receipt_headers
+) -> None:
+    provider = GrokImageProvider(replace(offline_settings, cpa_image_enabled=True))
+    image = _png()
+
+    def image_post(_request: httpx.Request):
+        return httpx.Response(
+            200,
+            headers=receipt_headers,
+            json={
+                "model": "grok-imagine-image-quality",
+                "data": [{"b64_json": base64.b64encode(image).decode("ascii")}],
+            },
+        )
+
+    provider.set_transport(httpx.MockTransport(image_post))
+    with pytest.raises(ProviderUnavailable) as captured:
+        asyncio.run(provider.generate_static_2d("single static 2D outfit"))
+    assert captured.value.reason_code == "CPA_IMAGE_TRACE_VERIFICATION_FAILED"
+    health = provider.health()
+    assert health["model_reported"] is True
+    assert health["cpa_trace_verified"] is False
+    assert health["model_verified"] is False
+    assert health["resolved_model"] is None
+
+
+def test_cpa_static_2d_rejects_unreported_model_without_receipt(
+    offline_settings,
+) -> None:
+    provider = GrokImageProvider(replace(offline_settings, cpa_image_enabled=True))
+    image = _png()
+    provider.set_transport(
+        httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200,
+                json={
+                    "data": [{"b64_json": base64.b64encode(image).decode("ascii")}]
+                },
+            )
+        )
+    )
+    with pytest.raises(ProviderUnavailable) as captured:
+        asyncio.run(provider.generate_static_2d("single static 2D outfit"))
+    assert captured.value.reason_code == "CPA_IMAGE_TRACE_VERIFICATION_FAILED"
+    health = provider.health()
+    assert health["model_reported"] is False
+    assert health["model_verified"] is False
+    assert health["resolved_model"] is None
+
+
+@pytest.mark.parametrize(
+    "envelope_template",
+    [
+        '{{"model":"grok-imagine-image-quality","model":"grok-imagine-image-quality","data":[{{"b64_json":"{payload}"}}]}}',
+        '{{"model":"grok-imagine-image-quality","data":[{{"b64_json":"{payload}"}}],"data":[{{"b64_json":"{payload}"}}]}}',
+        '{{"model":"grok-imagine-image-quality","data":[{{"b64_json":"{payload}","b64_json":"{payload}"}}]}}',
+        '{{"model":"grok-imagine-image-quality","data":[{{"url":"https://cdn.example/one","url":"https://cdn.example/two"}}]}}',
+    ],
+    ids=["model", "data", "b64_json", "url"],
+)
+def test_cpa_static_2d_rejects_duplicate_security_relevant_json_keys_without_leak(
+    offline_settings, envelope_template: str
+) -> None:
+    provider = GrokImageProvider(replace(offline_settings, cpa_image_enabled=True))
+    payload = base64.b64encode(_png()).decode("ascii")
+    raw_receipt = "cpa-image-duplicate-json-secret-1"
+    raw_envelope = envelope_template.format(payload=payload).encode("utf-8")
+
+    provider.set_transport(
+        httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200,
+                headers={
+                    "content-type": "application/json",
+                    "x-cpa-trace-id": raw_receipt,
+                },
+                content=raw_envelope,
+            )
+        )
+    )
+    with pytest.raises(ProviderUnavailable) as captured:
+        asyncio.run(provider.generate_static_2d("single static 2D outfit"))
+    assert captured.value.reason_code == "CPA_IMAGE_OUTPUT_REJECTED"
+    health_text = json.dumps(provider.health(), ensure_ascii=False)
+    assert raw_receipt not in health_text
+    assert payload[:80] not in health_text
+
+
+@pytest.mark.parametrize(
+    "duplicate_case",
+    ["wrong_then_exact", "exact_then_wrong", "data", "b64_body", "url_body"],
+)
+def test_cpa_static_2d_rejects_duplicate_json_keys_recursively(
+    offline_settings, duplicate_case: str
+) -> None:
+    provider = GrokImageProvider(replace(offline_settings, cpa_image_enabled=True))
+    encoded = base64.b64encode(_png()).decode("ascii")
+    item = f'{{"b64_json":"{encoded}"}}'
+    if duplicate_case == "wrong_then_exact":
+        raw = (
+            '{"model":"grok-4.5-high",'
+            '"model":"grok-imagine-image-quality",'
+            f'"data":[{item}]}}'
+        )
+    elif duplicate_case == "exact_then_wrong":
+        raw = (
+            '{"model":"grok-imagine-image-quality",'
+            '"model":"grok-4.5-high",'
+            f'"data":[{item}]}}'
+        )
+    elif duplicate_case == "data":
+        raw = (
+            '{"model":"grok-imagine-image-quality",'
+            f'"data":[{item}],"data":[{item}]}}'
+        )
+    elif duplicate_case == "b64_body":
+        raw = (
+            '{"model":"grok-imagine-image-quality","data":['
+            f'{{"b64_json":"{encoded}","b64_json":"{encoded}"}}]}}'
+        )
+    else:
+        raw = (
+            '{"model":"grok-imagine-image-quality","data":['
+            '{"url":"https://cdn.example/a","url":"https://cdn.example/b"}]}'
+        )
+
+    provider.set_transport(
+        httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200,
+                content=raw.encode("utf-8"),
+                headers={
+                    "content-type": "application/json",
+                    "x-cpa-trace-id": "cpa-image-duplicate-json-1",
+                },
+            )
+        )
+    )
+    with pytest.raises(ProviderUnavailable) as captured:
+        asyncio.run(provider.generate_static_2d("single static 2D outfit"))
+    assert captured.value.reason_code == "CPA_IMAGE_OUTPUT_REJECTED"
+    health_text = json.dumps(provider.health())
+    assert "grok-4.5-high" not in health_text
+    assert encoded[:80] not in health_text
 
 
 def test_static_2d_success_does_not_authenticate_text_health(
     monkeypatch, offline_settings
 ) -> None:
-    settings = replace(offline_settings, cpa_text_enabled=True)
-    provider = GrokLLMProvider(settings)
+    app = create_app(replace(offline_settings, cpa_image_enabled=True))
+    provider = app.state.services.image_provider
     image = _png()
 
-    async def image_post(_self, url, **_kwargs):
+    def image_post(_request: httpx.Request):
         return httpx.Response(
             200,
-            request=httpx.Request("POST", url),
+            headers={"x-cpa-trace-id": "cpa-image-text-isolation-1"},
             json={
-                "model": "grok-4.5-build",
+                "model": "grok-imagine-image-quality",
                 "data": [{"b64_json": base64.b64encode(image).decode("ascii")}],
             },
         )
 
-    async def models_get(_self, url, **_kwargs):
-        return httpx.Response(
-            200,
-            request=httpx.Request("GET", url),
-            json={"data": [{"id": "grok-4.5-high"}]},
-        )
-
-    monkeypatch.setattr(httpx.AsyncClient, "post", image_post)
-    monkeypatch.setattr(httpx.AsyncClient, "get", models_get)
+    provider.set_transport(httpx.MockTransport(image_post))
     asyncio.run(provider.generate_static_2d("single static 2D outfit"))
-    text_health = asyncio.run(provider.health())
+    text_health = asyncio.run(app.state.services.llm.health())
     assert text_health["chat_model_verified"] is False
     assert text_health["resolved_model"] is None
     assert text_health["available"] is False
-    assert provider.image_health()["resolved_model"] == "grok-4.5-build"
+    assert provider.health()["resolved_model"] == "grok-imagine-image-quality"
 
 
-def test_cpa_static_2d_adapter_rejects_response_envelope_over_7_5mib(
-    monkeypatch, offline_settings
+def test_static_2d_unreported_model_api_health_and_trace_are_honest_and_redacted(
+    offline_settings,
 ) -> None:
-    settings = replace(offline_settings, cpa_text_enabled=True)
-    provider = GrokLLMProvider(settings)
+    enabled_settings = replace(offline_settings, cpa_image_enabled=True)
+    app = create_app(enabled_settings)
+    services = app.state.services
+    image = _png()
+    raw_receipt = "cpa-image-private-receipt-123"
 
-    async def oversized_post(_self, url, **_kwargs):
+    def image_post(_request: httpx.Request):
         return httpx.Response(
             200,
-            request=httpx.Request("POST", url),
-            content=b'{' + b'"padding":"' + (b"x" * (15 * 1024 * 1024 // 2)) + b'"}',
+            headers={"x-cpa-trace-id": raw_receipt},
+            json={"data": [{"b64_json": base64.b64encode(image).decode("ascii")}]},
+        )
+
+    services.image_provider.set_transport(httpx.MockTransport(image_post))
+    with TestClient(app) as client:
+        scene, look = _look(client)
+        response = client.post(
+            "/preview/static-2d",
+            json={
+                "user_id": "u01",
+                "styling_session_id": scene["styling_session_id"],
+                "look_version_id": look["look_version_id"],
+                "render_mode": "static_2d",
+                "consent": True,
+                "request_id": "s12r-unreported-image-model",
+            },
+        )
+        assert response.status_code == 200, response.text
+        preview = response.json()
+        assert preview["status"] == "succeeded"
+        assert preview["provider"]["request_model_pinned"] is True
+        assert preview["provider"]["cpa_trace_verified"] is True
+        assert preview["provider"]["model_reported"] is False
+        assert preview["provider"]["model_verified"] is False
+        assert preview["provider"]["resolved_model"] is None
+        assert preview["provider"]["verification_basis"] == (
+            "exact_request_with_cpa_trace"
+        )
+
+        health = client.get("/health").json()
+        image_health = health["providers"]["static_2d"]
+        assert health["capabilities"]["static_2d"] is True
+        assert image_health["available"] is True
+        assert image_health["request_model_pinned"] is True
+        assert image_health["cpa_trace_verified"] is True
+        assert image_health["model_reported"] is False
+        assert image_health["model_verified"] is False
+        assert image_health["resolved_model"] is None
+        assert image_health["verification_basis"] == "exact_request_with_cpa_trace"
+        assert health["providers"]["llm"]["chat_model_verified"] is False
+
+        trace = client.get(
+            f"/trace/{preview['trace_id']}", params={"user_id": "u01"}
+        ).json()["trace"]
+        assert trace["provider"]["cpa_trace_verified"] is True
+        assert trace["provider"]["model_reported"] is False
+        assert trace["provider"]["model_verified"] is False
+        assert trace["provider"]["resolved_model"] is None
+        assert trace["provider"]["verification_basis"] == (
+            "exact_request_with_cpa_trace"
+        )
+        combined = json.dumps(
+            {"preview": preview, "health": health, "trace": trace},
+            ensure_ascii=False,
+        )
+        assert raw_receipt not in combined
+        assert base64.b64encode(image).decode("ascii")[:80] not in combined
+
+
+def test_cpa_static_2d_adapter_rejects_response_envelope_over_8mib(
+    monkeypatch, offline_settings
+) -> None:
+    settings = replace(offline_settings, cpa_image_enabled=True)
+    provider = GrokImageProvider(settings)
+
+    def oversized_post(_request: httpx.Request):
+        return httpx.Response(
+            200,
+            content=b'{' + b'"padding":"' + (b"x" * (9 * 1024 * 1024)) + b'"}',
             headers={"content-type": "application/json"},
         )
 
-    monkeypatch.setattr(httpx.AsyncClient, "post", oversized_post)
+    provider.set_transport(httpx.MockTransport(oversized_post))
     with pytest.raises(ProviderUnavailable) as captured:
         asyncio.run(provider.generate_static_2d("single static 2D outfit"))
-    assert captured.value.reason_code == "CPA_PREVIEW_OUTPUT_REJECTED"
+    assert captured.value.reason_code == "CPA_IMAGE_OUTPUT_REJECTED"
 
 
 def test_static_2d_endpoint_calls_real_cpa_transport_once_without_identity_bytes(
@@ -342,18 +654,19 @@ def test_static_2d_endpoint_calls_real_cpa_transport_once_without_identity_bytes
     identity_image = _png()
     captured: dict = {}
     calls = 0
+    raw_receipt = "cpa-image-endpoint-receipt-secret-1"
 
-    async def image_post(_self, url, **kwargs):
+    def image_post(request: httpx.Request):
         nonlocal calls
         calls += 1
-        captured["url"] = url
-        captured["body"] = kwargs["json"]
-        captured["headers"] = kwargs["headers"]
+        captured["url"] = str(request.url)
+        captured["body"] = json.loads(request.content)
+        captured["headers"] = dict(request.headers)
         return httpx.Response(
             200,
-            request=httpx.Request("POST", url),
+            headers={"x-cpa-trace-id": raw_receipt},
             json={
-                "model": "grok-4.5-build",
+                "model": "grok-imagine-image-quality",
                 "data": [
                     {"b64_json": base64.b64encode(generated_image).decode("ascii")}
                 ],
@@ -376,12 +689,12 @@ def test_static_2d_endpoint_calls_real_cpa_transport_once_without_identity_bytes
         assert identity.status_code == 200, identity.text
         identity_asset_id = identity.json()["asset_id"]
 
-        services.llm.settings = replace(
+        services.image_provider.settings = replace(
             offline_settings,
-            cpa_text_enabled=True,
+            cpa_image_enabled=True,
             cpa_api_key="s6-secret-do-not-log",
         )
-        monkeypatch.setattr(httpx.AsyncClient, "post", image_post)
+        services.image_provider.set_transport(httpx.MockTransport(image_post))
         response = client.post(
             "/preview/static-2d",
             json={
@@ -398,7 +711,7 @@ def test_static_2d_endpoint_calls_real_cpa_transport_once_without_identity_bytes
         preview = response.json()
         assert calls == 1
         assert captured["url"].endswith("/images/generations")
-        assert captured["body"]["model"] == "grok-4.5-high"
+        assert captured["body"]["model"] == "grok-imagine-image-quality"
         assert captured["body"]["n"] == 1
         assert captured["body"]["response_format"] == "b64_json"
         serialized_request = json.dumps(captured["body"], ensure_ascii=False)
@@ -411,10 +724,14 @@ def test_static_2d_endpoint_calls_real_cpa_transport_once_without_identity_bytes
         assert preview["fidelity"]["identity"] == "not_assessed"
         assert preview["provider"]["status"] == "ok"
         assert preview["provider"]["attempted"] is True
-        assert preview["provider"]["requested_model"] == "grok4.5"
-        assert preview["provider"]["transport_model"] == "grok-4.5-high"
-        assert preview["provider"]["resolved_model"] == "grok-4.5-build"
+        assert preview["provider"]["requested_model"] == "grok-imagine-image-quality"
+        assert preview["provider"]["transport_model"] == "grok-imagine-image-quality"
+        assert preview["provider"]["resolved_model"] == "grok-imagine-image-quality"
         assert preview["provider"]["model_verified"] is True
+        assert preview["provider"]["model_reported"] is True
+        assert preview["provider"]["request_model_pinned"] is True
+        assert preview["provider"]["cpa_trace_verified"] is True
+        assert preview["provider"]["verification_basis"] == "reported_model_exact"
 
         shown = client.get(preview["image_url"])
         assert shown.status_code == 200
@@ -427,16 +744,21 @@ def test_static_2d_endpoint_calls_real_cpa_transport_once_without_identity_bytes
         assert trace_response.status_code == 200
         trace = trace_response.json()["trace"]
         assert trace["provider"]["status"] == "ok"
-        assert trace["provider"]["requested_model"] == "grok4.5"
-        assert trace["provider"]["transport_model"] == "grok-4.5-high"
-        assert trace["provider"]["resolved_model"] == "grok-4.5-build"
+        assert trace["provider"]["requested_model"] == "grok-imagine-image-quality"
+        assert trace["provider"]["transport_model"] == "grok-imagine-image-quality"
+        assert trace["provider"]["resolved_model"] == "grok-imagine-image-quality"
         assert trace["provider"]["model_verified"] is True
+        assert trace["provider"]["model_reported"] is True
+        assert trace["provider"]["request_model_pinned"] is True
+        assert trace["provider"]["cpa_trace_verified"] is True
+        assert trace["provider"]["verification_basis"] == "reported_model_exact"
         assert trace["provider"]["prompt_logged"] is False
         assert trace["provider"]["base64_logged"] is False
         assert trace["validator"]["identity_asset_sent_to_provider"] is False
         trace_text = json.dumps(trace, ensure_ascii=False)
         forbidden = [
             "s6-secret-do-not-log",
+            raw_receipt,
             base64.b64encode(identity_image).decode("ascii")[:80],
             base64.b64encode(generated_image).decode("ascii")[:80],
             captured["body"]["prompt"],
@@ -468,7 +790,7 @@ def test_static_2d_unknown_cross_owner_stale_and_tampered_requests_are_preprovid
         calls += 1
         raise AssertionError("invalid preview input must not call provider")
 
-    services.llm.generate_static_2d = forbidden
+    services.image_provider.generate_static_2d = forbidden
     with TestClient(app) as client:
         scene, look = _look(client)
         base = {
@@ -515,10 +837,10 @@ def test_static_2d_unknown_cross_owner_stale_and_tampered_requests_are_preprovid
 @pytest.mark.parametrize(
     ("failure", "expected_reason"),
     [
-        ("wrong_model_old_alias", "CPA_MODEL_VERIFICATION_FAILED"),
-        ("wrong_model_prefix", "CPA_MODEL_VERIFICATION_FAILED"),
-        ("bad_mime", "CPA_PREVIEW_OUTPUT_REJECTED"),
-        ("oversize", "CPA_PREVIEW_OUTPUT_REJECTED"),
+        ("wrong_model_old_alias", "CPA_IMAGE_MODEL_VERIFICATION_FAILED"),
+        ("wrong_model_prefix", "CPA_IMAGE_MODEL_VERIFICATION_FAILED"),
+        ("bad_mime", "CPA_IMAGE_OUTPUT_REJECTED"),
+        ("oversize", "CPA_IMAGE_OUTPUT_REJECTED"),
     ],
 )
 def test_static_2d_wrong_model_bad_mime_and_oversize_degrade_explicitly(
@@ -529,25 +851,21 @@ def test_static_2d_wrong_model_bad_mime_and_oversize_degrade_explicitly(
     calls = 0
     valid = _png()
 
-    async def image_post(_self, url, **kwargs):
+    def image_post(request: httpx.Request):
         nonlocal calls
         calls += 1
         if failure in {"wrong_model_old_alias", "wrong_model_prefix"}:
-            model = (
-                "grok-4.5"
-                if failure == "wrong_model_old_alias"
-                else "grok-4.5-high-preview"
-            )
+            model = "grok-4.5-high" if failure == "wrong_model_old_alias" else "grok-imagine-image-quality-preview"
             body = valid
         elif failure == "bad_mime":
-            model = "grok-4.5-high"
+            model = "grok-imagine-image-quality"
             body = b"not-a-supported-image"
         else:
-            model = "grok-4.5-high"
+            model = "grok-imagine-image-quality"
             body = b"x" * (5 * 1024 * 1024 + 1)
         return httpx.Response(
             200,
-            request=httpx.Request("POST", url),
+            headers={"x-cpa-trace-id": "cpa-image-negative-1"},
             json={
                 "model": model,
                 "data": [{"b64_json": base64.b64encode(body).decode("ascii")}],
@@ -556,12 +874,12 @@ def test_static_2d_wrong_model_bad_mime_and_oversize_degrade_explicitly(
 
     with TestClient(app) as client:
         scene, look = _look(client)
-        services.llm.settings = replace(
+        services.image_provider.settings = replace(
             offline_settings,
-            cpa_text_enabled=True,
+            cpa_image_enabled=True,
             cpa_api_key="s6-preview-failure-secret",
         )
-        monkeypatch.setattr(httpx.AsyncClient, "post", image_post)
+        services.image_provider.set_transport(httpx.MockTransport(image_post))
         response = client.post(
             "/preview/static-2d",
             json={

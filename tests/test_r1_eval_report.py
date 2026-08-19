@@ -51,13 +51,13 @@ def _assert_safe_report(report: dict) -> None:
     assert all(metric["status"] == "PASS" for metric in report["metrics"].values())
     assert {entry["ac"] for entry in report["ac_matrix"]} == REQUIRED_ACS
     assert report["versions"]["model"] == {
-        "logical": "grok4.5",
-        "transport": "grok-4.5-high",
+        "logical": "grok4.6",
+        "transport": "grok-4.6-high",
         "evaluation_mode": "offline_rule_fallback",
         "external_calls": 0,
     }
     assert report["versions"]["providers"] == {
-        "llm": "cpa_text_grok4.5_v1|offline_rule_fallback",
+        "llm": "cpa_text_grok4.6_v1|offline_rule_fallback",
         "dense": "hashed_dense_v1|disabled_fixture_baseline",
         "catalog": "fixtures_v1.0_mock",
         "vision": "garment_visibility_codes_v2|httpx_mock_only",
@@ -297,7 +297,16 @@ def test_frozen_eval_writes_stable_json_and_markdown(project_root: Path) -> None
     assert "diagnostic only" in markdown
 
     report_files = sorted(path.name for path in json_path.parent.iterdir() if path.is_file())
-    assert report_files == ["r1_demo_v1.json", "r1_demo_v1.md"]
+    assert report_files == [
+        "r1_demo_v1.json",
+        "r1_demo_v1.md",
+        "s12_memory_image_v1.json",
+        "s12_memory_image_v1.md",
+        "s13_text46_catalog_display_v1.json",
+        "s13_text46_catalog_display_v1.md",
+        "s14_continuity_preview_v1.json",
+        "s14_continuity_preview_v1.md",
+    ]
 
 
 def test_eval_run_endpoint_returns_same_stable_contract(offline_settings) -> None:

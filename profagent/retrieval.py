@@ -339,6 +339,7 @@ class HybridRetriever:
         result: FilterResult,
         favorite_colors: Iterable[str],
         memory_signals: Iterable[MemorySignal] = (),
+        soft_memory_terms: Iterable[str] = (),
     ) -> tuple[list[Garment], dict[str, Any], list[dict[str, Any]]]:
         eligible_by_id = {item.garment_id: item for item in result.eligible}
         eligible_ids = set(eligible_by_id)
@@ -346,6 +347,7 @@ class HybridRetriever:
             item.garment_id: (
                 f"{item.name} {item.search_text} slot:{item.slot} "
                 f"occasion:{' '.join(item.occasions)} style:{' '.join(item.styles)} "
+                f"fit:{item.fit} color:{item.color} "
                 f"formal:{item.formal} warmth:{item.warmth}"
             )
             for item in result.eligible
@@ -364,6 +366,13 @@ class HybridRetriever:
             f"{scene.query_text} occasion:{scene.occasion} "
             f"goal:{' '.join(scene.goals)} weather:{scene.constraints.weather_requirement}"
         )
+        controlled_soft_terms = tuple(
+            term
+            for term in soft_memory_terms
+            if re.fullmatch(r"(?:fit|style|comfort):[a-z_]+", term)
+        )
+        if controlled_soft_terms:
+            semantic_query += " " + " ".join(controlled_soft_terms)
         bm25 = self._bm25(semantic_query, documents)
         fallback_events: list[dict[str, Any]] = []
         dense: list[tuple[str, float]] = []
@@ -404,6 +413,7 @@ class HybridRetriever:
             "rrf_k": 60,
             "post_fusion_intersection": True,
             "final_ranking_stage": "post_rrf_memory_policy_v1",
+            "soft_memory_term_count": len(controlled_soft_terms),
             "memory_rerank": memory_rerank,
         }
         return ranked_items, trace, fallback_events

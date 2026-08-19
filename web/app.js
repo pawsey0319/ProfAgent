@@ -3,19 +3,27 @@
 
   const fixtures = window.PROFAGENT_FIXTURES;
   const dialogueRuntime = window.PROFAGENT_DIALOGUE_RUNTIME;
+  const imageAssetRuntime = window.PROFAGENT_IMAGE_ASSET_RUNTIME;
+  const recommendationPreviewRuntime = window.PROFAGENT_RECOMMENDATION_PREVIEW_RUNTIME;
   if (!dialogueRuntime) throw new Error("Dialogue runtime 未加载");
+  if (!imageAssetRuntime) throw new Error("Image asset runtime 未加载");
+  if (!recommendationPreviewRuntime) throw new Error("Recommendation preview runtime 未加载");
   const dialogueGuard = dialogueRuntime.createInFlightGuard();
   const dialogueTraceGuard = dialogueRuntime.createInFlightGuard();
+  const recommendationPreviewGuard = dialogueRuntime.createInFlightGuard();
   const userId = "u01";
-  const UI_BUILD_VERSION = "s10-high-model-refrozen-20260810";
+  const UI_BUILD_VERSION = "s14-recommendation-preview-accordion-20260819";
   const DEFAULT_REQUEST_TIMEOUT_MS = 12000;
   const DIALOGUE_TURN_TIMEOUT_MS = 125000;
   const PREVIEW_2D_TIMEOUT_MS = 50000;
+  const RECOMMENDATION_PREVIEW_TIMEOUT_MS = 125000;
   const state = {
     source: "checking",
     health: null,
     team: null,
     wardrobe: null,
+    wardrobeCatalogAssets: new Map(),
+    wardrobeCatalogManifestState: "loading",
     scene: null,
     recommendation: null,
     trace: null,
@@ -31,6 +39,7 @@
     dialogueProvider: null,
     localReplacements: [],
     directionFeedback: new Map(),
+    recommendationPreviews: new Map(),
     activeLook: null,
     lookVersions: [],
     lookComparisons: new Map(),
@@ -211,15 +220,31 @@
 
   async function connect() {
     setSource("checking");
+    state.wardrobeCatalogAssets = new Map();
+    state.wardrobeCatalogManifestState = "loading";
+    if (state.wardrobe) renderWardrobe();
     try {
-      const [health, team, wardrobe] = await Promise.all([
+      const [health, team, wardrobe, catalogManifestRaw] = await Promise.all([
         api("/health"),
         api(`/team/home?user_id=${encodeURIComponent(userId)}`),
-        api(`/wardrobe?user_id=${encodeURIComponent(userId)}`)
+        api(`/wardrobe?user_id=${encodeURIComponent(userId)}`),
+        api(`/wardrobe/catalog-assets?user_id=${encodeURIComponent(userId)}`).catch(() => null)
       ]);
       state.health = health;
       state.team = team;
       state.wardrobe = wardrobe;
+      try {
+        const manifest = imageAssetRuntime.normalizeCatalogManifest(
+          catalogManifestRaw,
+          userId,
+          (wardrobe.items || []).map((item) => item.garment_id)
+        );
+        state.wardrobeCatalogAssets = manifest.assets;
+        state.wardrobeCatalogManifestState = "ready";
+      } catch (_error) {
+        state.wardrobeCatalogAssets = new Map();
+        state.wardrobeCatalogManifestState = "unavailable";
+      }
       const llm = health.providers?.llm;
       const cpaModelReady = dialogueRuntime.hasExactCpaModel(llm)
         && llm?.enabled === true
@@ -248,6 +273,8 @@
       state.health = fixtures.health;
       state.team = fixtures.teamHome;
       state.wardrobe = fixtures.wardrobe;
+      state.wardrobeCatalogAssets = new Map();
+      state.wardrobeCatalogManifestState = "unavailable";
       setSource("fixture", "服务暂时不可用；当前只开放衣橱演示浏览，不生成未验证回复。");
       byId("conversation-origin").textContent = "对话服务未连接";
     }
@@ -294,16 +321,39 @@
       (season === "all" || (item.seasons || []).includes(season) || (item.seasons || []).includes("all"))
     );
     byId("wardrobe-visible-count").textContent = String(items.length);
+    const catalogStatus = byId("wardrobe-catalog-status");
+    const readyCount = items.filter((item) => state.wardrobeCatalogAssets.get(item.garment_id)?.displayable === true).length;
+    catalogStatus.textContent = state.wardrobeCatalogManifestState === "loading"
+      ? "正在核对 AI 目录图清单；衣物元数据可正常浏览。"
+      : state.wardrobeCatalogManifestState === "ready"
+        ? `当前筛选有 ${readyCount} 件可显示的 AI 目录参考；其余继续显示元数据卡。`
+        : "目录图清单暂不可用；当前继续显示完整衣物元数据卡。";
     const grid = byId("wardrobe-grid");
     if (!items.length) {
       grid.replaceChildren(make("p", "empty-state", "当前筛选下没有衣物；系统不会用非法单品补位。"));
       return;
     }
-    grid.replaceChildren(...items.map((item) => {
+    const createGarmentCard = (item) => {
       const card = make("article", "garment-card");
+      const visual = make("div", "garment-visual");
       const swatch = make("div", "garment-swatch");
       swatch.style.setProperty("--garment-color", colorValues[item.color] || colorValues.multi);
       swatch.append(make("span", "garment-slot-icon", (slotLabels[item.slot] || item.slot).slice(0, 1)));
+      visual.append(swatch);
+      const catalogAsset = state.wardrobeCatalogAssets.get(item.garment_id);
+      let catalogStateText = "暂无目录图 · 显示元数据";
+      if (catalogAsset?.status === "failed") catalogStateText = "目录图未完成 · 显示元数据";
+      let catalogImage = null;
+      let catalogBadge = null;
+      if (catalogAsset?.displayable === true) {
+        catalogImage = make("img", "garment-catalog-image");
+        catalogBadge = make("span", "garment-catalog-badge", "AI 生成目录参考");
+        catalogImage.alt = `${item.name} · AI 生成目录参考`;
+        catalogImage.decoding = "async";
+        catalogImage.referrerPolicy = "no-referrer";
+        visual.append(catalogImage, catalogBadge);
+        catalogStateText = "目录图正在读取 · 元数据可用";
+      }
       const content = make("div", "garment-content");
       content.append(make("h3", "", item.name));
       const meta = make("div", "garment-meta");
@@ -312,10 +362,45 @@
         make("span", "", statusLabels[item.status] || item.status),
         make("span", "", (item.seasons || []).map((value) => seasonLabels[value] || value).join(" / "))
       );
-      content.append(meta);
+      const catalogState = make("p", "garment-catalog-state", catalogStateText);
+      content.append(meta, catalogState);
       if (state.debug) content.append(make("code", "garment-id", item.garment_id));
-      card.append(swatch, content);
+      card.append(visual, content);
+      if (catalogImage && catalogBadge) {
+        imageAssetRuntime.bindCatalogImageLifecycle({
+          card,
+          image: catalogImage,
+          badge: catalogBadge,
+          swatch,
+          statusNode: catalogState,
+          imageUrl: catalogAsset.image_url,
+          successText: `AI 生成目录参考 · ${catalogAsset.provenance_label}`,
+          failureText: "目录图读取失败 · 显示元数据"
+        });
+      }
       return card;
+    };
+    const slotOrder = Object.keys(slotLabels);
+    const grouped = slotOrder
+      .map((slotName) => [slotName, items.filter((item) => item.slot === slotName)])
+      .filter(([, categoryItems]) => categoryItems.length > 0);
+    grid.replaceChildren(...grouped.map(([slotName, categoryItems]) => {
+      const details = make("details", "wardrobe-category");
+      details.dataset.slot = slotName;
+      const summary = make("summary", "wardrobe-category-summary");
+      summary.append(
+        make("span", "wardrobe-category-name", slotLabels[slotName]),
+        make("span", "wardrobe-category-count", `${categoryItems.length} 件`)
+      );
+      const categoryGrid = make("div", "wardrobe-category-grid");
+      categoryGrid.dataset.rendered = "false";
+      details.append(summary, categoryGrid);
+      details.addEventListener("toggle", () => {
+        if (!details.open || categoryGrid.dataset.rendered === "true") return;
+        categoryGrid.replaceChildren(...categoryItems.map(createGarmentCard));
+        categoryGrid.dataset.rendered = "true";
+      });
+      return details;
     }));
   }
 
@@ -500,6 +585,8 @@
   }
 
   function clearRecommendationPresentation() {
+    recommendationPreviewGuard.cancel();
+    state.recommendationPreviews = new Map();
     state.recommendation = null;
     state.activeOutfitId = null;
     byId("cocreation").hidden = true;
@@ -787,7 +874,7 @@
       card.append(make("h4", "", outfit.strategy_label || `方向 ${index + 1}`));
       const items = make("div", "outfit-items");
       items.append(...(outfit.items || []).map(itemChip));
-      card.append(items, listBlock("为什么适合", outfit.reasons), listBlock("真实权衡", outfit.risks, "direction-block risk-block"));
+      card.append(items, renderRecommendationPreview(outfit), listBlock("为什么适合", outfit.reasons), listBlock("真实权衡", outfit.risks, "direction-block risk-block"));
       if (outfit.local_replacement_note) card.append(make("p", "trust-note", outfit.local_replacement_note));
       card.append(replacementControl(outfit), directionFeedbackControl(outfit));
       const footer = make("div", "direction-footer");
@@ -806,6 +893,101 @@
       panel.append(make("h4", "", "可选 Mock 补购（演示数据）"), make("p", "", "现有衣橱方案优先；以下仅在明确购物意图下展示。"));
       recommendation.shopping_suggestions.forEach((item) => panel.append(make("p", "", `${item.title} — ${item.reason}`)));
       shopping.append(panel);
+    }
+  }
+
+  function recommendationPreviewImageUrl(preview) {
+    return recommendationPreviewRuntime.imageUrl(preview, userId);
+  }
+
+  function normalizeRecommendationPreviewBatch(raw, expected) {
+    return recommendationPreviewRuntime.normalizeBatch(raw, { ...expected, userId });
+  }
+
+  function renderRecommendationPreview(outfit) {
+    const entry = state.recommendationPreviews.get(outfit.outfit_id);
+    const panel = make("figure", "direction-preview");
+    panel.dataset.outfitId = outfit.outfit_id;
+    panel.dataset.state = entry?.status || "idle";
+    if (!entry || entry.status === "idle") {
+      panel.append(make("p", "direction-preview-status", "2D 视觉参考将在方向卡显示后生成。"));
+      return panel;
+    }
+    if (entry.status === "generating") {
+      panel.append(make("p", "direction-preview-status", "CPA 正在生成这套无身份 2D 组合参考…"));
+      return panel;
+    }
+    const preview = entry.preview;
+    if (entry.status === "succeeded" && preview && imageAssetRuntime.staticImageSuccessBasis(preview.provider) !== null) {
+      const image = make("img", "direction-preview-image");
+      image.alt = `${outfit.strategy_label || "穿搭方向"} · AI 生成的 2D 视觉参考`;
+      image.decoding = "async";
+      image.referrerPolicy = "no-referrer";
+      image.src = recommendationPreviewImageUrl(preview);
+      const caption = make("figcaption", "direction-preview-caption", "AI 生成的 2D 视觉参考；不代表真实试穿、精确尺码、面料或垂坠。");
+      image.addEventListener("error", () => {
+        image.remove();
+        panel.dataset.state = "degraded";
+        caption.textContent = "2D 图片暂时无法按当前 owner/session 安全读取；文字方向与衣橱单品仍然有效。";
+      }, { once: true });
+      panel.append(image, caption);
+      return panel;
+    }
+    panel.append(make("p", "direction-preview-status", "这套 2D 图片未完成；文字方向与衣橱单品仍可继续使用。"));
+    return panel;
+  }
+
+  function createRecommendationPreviewRequestId() {
+    if (window.crypto?.randomUUID) return `recommend-preview-${window.crypto.randomUUID()}`;
+    return `recommend-preview-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  async function generateRecommendationPreviews(response) {
+    const recommendation = state.recommendation;
+    const outfits = recommendation?.outfits || [];
+    if (state.source !== "api" || response.action !== "recommend" || !outfits.length || !state.stylingSessionId) return;
+    recommendationPreviewGuard.cancel();
+    const previewRequestId = createRecommendationPreviewRequestId();
+    const controller = new AbortController();
+    const token = recommendationPreviewGuard.begin(previewRequestId, controller);
+    if (!token) return;
+    const expected = {
+      previewRequestId,
+      requestId: response.request_id,
+      stylingSessionId: state.stylingSessionId,
+      outfits: outfits.map((outfit) => ({ outfit_id: outfit.outfit_id, items: [...outfit.items] }))
+    };
+    state.recommendationPreviews = new Map(outfits.map((outfit) => [outfit.outfit_id, { status: "generating", preview: null }]));
+    renderRecommendations();
+    try {
+      const raw = await api("/recommend/previews/static-2d", {
+        method: "POST",
+        body: JSON.stringify({
+          user_id: userId,
+          styling_session_id: expected.stylingSessionId,
+          request_id: expected.requestId,
+          outfit_ids: expected.outfits.map((outfit) => outfit.outfit_id),
+          preview_request_id: expected.previewRequestId
+        }),
+        timeoutMs: RECOMMENDATION_PREVIEW_TIMEOUT_MS,
+        signal: controller.signal
+      });
+      if (!recommendationPreviewGuard.isCurrent(token)
+        || state.stylingSessionId !== expected.stylingSessionId
+        || state.recommendation?.request_id !== expected.requestId) return;
+      const entries = normalizeRecommendationPreviewBatch(raw, expected);
+      state.recommendationPreviews = new Map(expected.outfits.map((outfit, index) => [outfit.outfit_id, entries[index]]));
+      renderRecommendations();
+    } catch (error) {
+      if (!recommendationPreviewGuard.isCurrent(token)) return;
+      state.recommendationPreviews = new Map(outfits.map((outfit) => [outfit.outfit_id, {
+        status: "failed",
+        preview: null,
+        reason: error.message
+      }]));
+      renderRecommendations();
+    } finally {
+      recommendationPreviewGuard.finish(token);
     }
   }
 
@@ -865,6 +1047,7 @@
     dialogueTraceGuard.cancel();
     dialogueGuard.cancel();
     clearDialogueWaitTimer();
+    recommendationPreviewGuard.cancel();
     clearAssetPreview();
     showAssetOperation("");
     state.stylingSessionId = stylingSessionId;
@@ -879,6 +1062,7 @@
     state.activeOutfitId = null;
     state.localReplacements = [];
     state.directionFeedback = new Map();
+    state.recommendationPreviews = new Map();
     state.activeLook = null;
     state.lookVersions = [];
     state.lookComparisons = new Map();
@@ -1697,6 +1881,49 @@
     return labels[value] || "未知";
   }
 
+  function validateImageProvider(raw) {
+    if (!raw || typeof raw !== "object" || (raw.status !== "ok" && raw.status !== "fallback")) throw new Error("图片 Provider 状态不完整");
+    if (typeof raw.attempted !== "boolean") throw new Error("图片 Provider 尝试状态不完整");
+    if (raw.requested_model !== imageAssetRuntime.IMAGE_MODEL || raw.transport_model !== imageAssetRuntime.IMAGE_MODEL) {
+      throw new Error("图片 Provider 模型合同不匹配");
+    }
+    const successBasis = raw.status === "ok" ? imageAssetRuntime.staticImageSuccessBasis(raw) : null;
+    if (raw.status === "ok" && successBasis === null) {
+      throw new Error("图片 Provider 成功状态缺少可信来源证据");
+    }
+    if (
+      raw.status === "fallback"
+      && (
+        raw.degraded !== true
+        || raw.model_verified !== false
+        || raw.resolved_model !== null
+        || raw.verification_basis !== null
+        || typeof raw.request_model_pinned !== "boolean"
+        || typeof raw.cpa_trace_verified !== "boolean"
+        || typeof raw.model_reported !== "boolean"
+        || typeof raw.reason_code !== "string"
+        || raw.reason_code.length === 0
+      )
+    ) {
+      throw new Error("图片 Provider 失败状态不完整");
+    }
+    return {
+      status: raw.status,
+      attempted: raw.attempted,
+      requested_model: raw.requested_model,
+      transport_model: raw.transport_model,
+      resolved_model: typeof raw.resolved_model === "string" ? raw.resolved_model : null,
+      model_reported: raw.model_reported === true,
+      model_verified: raw.model_verified === true,
+      request_model_pinned: raw.request_model_pinned === true,
+      cpa_trace_verified: raw.cpa_trace_verified === true,
+      verification_basis: typeof raw.verification_basis === "string" ? raw.verification_basis : null,
+      provenance_label: successBasis === null ? null : imageAssetRuntime.imageProvenanceLabel(successBasis),
+      degraded: raw.degraded === true,
+      reason_code: typeof raw.reason_code === "string" ? raw.reason_code : null
+    };
+  }
+
   function normalizeStatic2dPreview(raw, expected) {
     if (!raw || typeof raw !== "object") throw new Error("2D 端点未返回对象");
     if (!raw.preview_id || raw.request_id !== expected.requestId) throw new Error("2D 回执标识不匹配");
@@ -1710,7 +1937,9 @@
     if (ownedGarmentIds === null || !sameIdSet(ownedGarmentIds, expected.itemIds) || externalItemIds === null || externalItemIds.length !== 0) {
       throw new Error("2D 回执衣物集合未通过白名单复核");
     }
-    const provider = validateCpaProvider(raw.provider);
+    const provider = validateImageProvider(raw.provider);
+    if (raw.status === "succeeded" && provider.status !== "ok") throw new Error("2D 成功回执不得使用失败 Provider");
+    if (raw.status !== "succeeded" && provider.status !== "fallback") throw new Error("2D 失败回执不得冒充 Provider 成功");
     if (!raw.scene_id || !raw.trace_id || !raw.ai_label || typeof raw.ai_label !== "object") throw new Error("2D 回执缺少场景、Trace 或 AI 标识");
     if (!raw.fidelity || typeof raw.fidelity !== "object") throw new Error("2D 回执缺少可信度");
     if (raw.fidelity.identity !== "not_assessed") throw new Error("2D 回执不得宣称身份一致性");
@@ -1787,14 +2016,13 @@
       return;
     }
 
-    const generated = dialogueRuntime.hasExactCpaModel(preview.provider)
-      && preview.provider?.status === "ok"
-      && preview.provider.model_verified === true
-      && preview.provider.degraded === false;
-    origin.textContent = generated ? "CPA 生成" : "本地参考";
+    const provenanceBasis = imageAssetRuntime.staticImageSuccessBasis(preview.provider);
+    const generated = provenanceBasis !== null;
+    const provenanceLabel = imageAssetRuntime.imageProvenanceLabel(provenanceBasis);
+    origin.textContent = generated ? `CPA 生成 · ${provenanceLabel}` : "本地参考";
     const stale = state.activeLook && preview.look_version_id !== lookVersionId(state.activeLook);
     if (preview.preview_id) remove.hidden = false;
-    if (preview.status === "succeeded") {
+    if (preview.status === "succeeded" && generated) {
       status.textContent = stale ? "中性模特/平铺参考图已完成，但它属于较早 Look；可为当前版本重新生成。" : "中性模特/平铺 2D 静态参考图已完成；未评估身份一致性。";
       result.hidden = false;
       const url = preview2dImageUrl(preview);
@@ -1805,7 +2033,7 @@
         status.textContent = "生成记录已完成，但图像暂时无法安全读取；当前 Look 和文字建议仍可使用。";
       };
       if (image.getAttribute("src") !== url) image.src = url;
-      caption.textContent = `${stale ? "较早 Look" : "当前 Look"} · 中性模特/平铺，未评估身份一致性 · 衣物呈现 ${fidelityLabel(preview.fidelity.garment)} · 尺码、面料与垂坠仅作参考。`;
+      caption.textContent = `${stale ? "较早 Look" : "当前 Look"} · ${provenanceLabel} · 中性模特/平铺，未评估身份一致性 · 衣物呈现 ${fidelityLabel(preview.fidelity.garment)} · 尺码、面料与垂坠仅作参考。`;
       return;
     }
     image.removeAttribute("src");
@@ -1843,7 +2071,19 @@
       state.preview2d = {
         status: "failed",
         look_version_id: lookVersion,
-        provider: { status: "fallback", model_verified: false, degraded: true }
+        provider: {
+          status: "fallback",
+          attempted: true,
+          requested_model: imageAssetRuntime.IMAGE_MODEL,
+          transport_model: imageAssetRuntime.IMAGE_MODEL,
+          resolved_model: null,
+          model_reported: false,
+          model_verified: false,
+          request_model_pinned: false,
+          cpa_trace_verified: false,
+          verification_basis: null,
+          degraded: true
+        }
       };
       showToast("2D 生成未完成，已保留当前 Look");
     } finally {
@@ -2763,7 +3003,7 @@
   function validateCpaProvider(raw, requireGenerationSource = false) {
     if (!raw || typeof raw !== "object" || (raw.status !== "ok" && raw.status !== "fallback")) throw new Error("响应缺少可信 CPA 状态");
     if (typeof raw.attempted !== "boolean") throw new Error("CPA 尝试状态不完整");
-    if (raw.requested_model !== "grok4.5" || raw.transport_model !== "grok-4.5-high") throw new Error("CPA 模型合同不匹配");
+    if (raw.requested_model !== "grok4.6" || raw.transport_model !== "grok-4.6-high") throw new Error("CPA 模型合同不匹配");
     if (raw.status === "ok" && (raw.attempted !== true || raw.model_verified !== true || raw.degraded !== false || !dialogueRuntime.hasExactCpaModel(raw))) {
       throw new Error("CPA 成功状态未经精确模型验证");
     }
@@ -2838,6 +3078,7 @@
     }
     if (raw.action === "recommend") {
       if (!recommendationIsNonempty) throw new Error("recommend action 缺少推荐");
+      if (raw.recommendation.request_id !== raw.request_id) throw new Error("recommendation request_id 与权威回合不匹配");
     }
 
     const suggestedReplies = Array.isArray(raw.suggested_replies)
@@ -2868,10 +3109,13 @@
 
     if (response.scene) state.scene = response.scene;
     if (response.action === "recommend") {
+      recommendationPreviewGuard.cancel();
+      state.recommendationPreviews = new Map();
       state.activeOutfitId = null;
       state.recommendation = sanitizeRecommendation(state.scene, response.recommendation);
       renderScene();
       renderRecommendations();
+      window.setTimeout(() => { void generateRecommendationPreviews(response); }, 0);
     } else {
       if (response.scene) renderScene();
       else {
@@ -3026,10 +3270,9 @@
     byId("compare-left").addEventListener("change", renderVersionComparison);
     byId("compare-right").addEventListener("change", renderVersionComparison);
     byId("scene-input").addEventListener("keydown", (event) => {
-      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
-        event.preventDefault();
-        if (!dialogueGuard.inFlight) byId("scene-form").requestSubmit();
-      }
+      if (!dialogueRuntime.shouldSubmitComposerKey(event)) return;
+      event.preventDefault();
+      if (!dialogueGuard.inFlight) byId("scene-form").requestSubmit();
     });
     document.querySelectorAll("[data-example]").forEach((button) => button.addEventListener("click", () => {
       if (dialogueGuard.inFlight) return;
@@ -3051,6 +3294,7 @@
       dialogueTraceGuard.cancel();
       dialogueGuard.cancel();
       clearDialogueWaitTimer();
+      recommendationPreviewGuard.cancel();
       if (state.assetPreviewUrl) URL.revokeObjectURL(state.assetPreviewUrl);
     });
   }

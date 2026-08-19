@@ -1,7 +1,7 @@
 # ProfAgent R1 Demo BUILD LOG
 
-> 唯一需求权威：`docs/PRD.md`（v1.11）。
-> 当前状态：**R1 DoD Demo 子集及 S6–S10 本地实现、验收与真实 CPA 计时已关闭；S11 已冻结云端自托管开放权重模型、专用 Grok 2D 图片链路和 RRF 软记忆检索的后续架构决策，但尚未实施；等待按 `AGENTS.md` 确认模型 ID 后执行 Grok 增量对抗复核与 Codex 最终收拢。**
+> 唯一需求权威：`docs/PRD.md`（v1.15）。
+> 当前状态：**R1 DoD Demo 子集及 S6–S14 实现与验收已关闭。S14 已完成连续场景内的明确套数衣橱推荐、推荐级静态 2D 与衣橱类别折叠；全量 278 项、S14 专项 26 项、相关 241 项、固定评测、真实浏览器与真实 CPA 推荐两图均通过。Memory 新架构仅完成调研，仍待用户确认后另立实现阶段。**
 > 目标：交付可运行的 R1 Stylist MVP Demo，并通过 PRD 23.1 的 Demo 子集验收。
 
 ## 0. 基线与执行约束
@@ -39,20 +39,22 @@
 
 ### CPA 与 Grok 运行合同
 
-- 用户已指定项目中的 Stylist Agent 通过 CPA 反代调用逻辑模型名 `grok4.5`。2026-08-10 用户修改 CPA 参数后，上游 `grok-4.5` 以客户端 transport `grok-4.5-high` 暴露；项目固定 `requested_model=grok4.5 -> transport_model=grok-4.5-high`，并只接受精确回报 `{grok-4.5-high, grok-4.5-build}`。旧 `grok-4.5`、前缀变体与其他模型均 fail-closed；禁止任意前缀/包含匹配或自动选模。自然语言回复使用 `GrokLLMProvider` 直接生成用户可见正文，本地保留权威状态机、硬门控、输出 Validator 与明确降级。
-- CPA base URL、API key 与 `grok4.5` 模型选择通过运行配置注入，不提交密钥；请求和 Trace 记录逻辑模型 ID、CPA 实际解析的模型 ID、provider/version、耗时与错误码。
-- 应用健康检查必须验证 CPA 连通性和 `grok4.5` 可解析性；不得在 CPA 不可用时静默换成另一个远程模型。失败时按 OBS-05 回退核心规则路径。
-- 用户已明确选择项目运行时文本与静态 2D 调用使用 `grok4.5`。独立 `$call-grok` 审查仍遵循仓库 AGENTS.md：每次调用前单独确认本次模型 ID，输出仅作建议证据。
+- 用户已指定项目中的 Stylist Agent 通过 CPA 反代调用逻辑模型名 `grok4.6`。S13 固定 `requested_model=grok4.6 -> transport_model=grok-4.6-high`，并只接受精确回报 `{grok-4.6-high, grok-4.6-build}`。旧 4.5、前缀变体与其他模型均 fail-closed；禁止任意前缀/包含匹配或自动选模。自然语言回复使用 `GrokLLMProvider` 直接生成用户可见正文，本地保留权威状态机、硬门控、输出 Validator 与明确降级。
+- CPA base URL、API key 与 `grok4.6` 模型选择通过运行配置注入，不提交密钥；请求和 Trace 只记录受控逻辑模型 ID、CPA 精确解析的模型 ID、provider/version、耗时与错误码。
+- 应用健康检查必须验证 CPA 连通性和 `grok4.6` 的精确 transport 可路由性；不得在 CPA 不可用时静默换成另一个远程模型。失败时按 OBS-05 回退核心规则路径。
+- 项目运行时文本使用 `grok4.6`；静态 2D 使用独立图片模型 `grok-imagine-image-quality`，二者配置、验证与 Health 完全隔离。独立 `$call-grok` 审查仍遵循仓库 AGENTS.md，输出仅作建议证据。
 
-CPA Grok 生图仍限定为可选 `static_2d` Provider Adapter：
+CPA Grok 生图限定为独立可选 `static_2d` Provider Adapter：
 
 - 仅静态 2D，绝不接受 3D/360°/video 枚举；
 - 默认不作为 R1 核心链路或完成门槛，失败回退到已有衣物卡片/平铺组合/文字解释；
 - 本 Demo 已启用实验性 R2 Static2D 纵切，但完整 R2 购前试演仍未上线；响应记录 provider/model/version，并显示“不代表精确尺码、面料或垂坠”；
 - 高急切度仍不得出现购物 CTA；
-- 生图请求使用当前逻辑模型对应的 CPA 精确 transport `grok-4.5-high`，无需再次询问；若该模型不支持图像端点则记录证据并走静态降级，不得改用其他生图模型。
+- 生图请求使用独立图片模型 `grok-imagine-image-quality` 和 CPA `/images/generations`；不得把文本 transport `grok-4.6-high` 发送到图片端点，也不得静默自动切换图片模型。图片响应有 `model` 字段时必须精确匹配；真实协议未回报时只接受 exact request + 受控 CPA trace 回执 + 全图 Validator，并诚实标记 actual model 未回报。MIME、静态单帧、大小与 owner/Look/garment 白名单合同仍须全部成立；失败诚实降级。
 
 ## 1. 阶段与委托计划
+
+> 历史模型记录说明：以下 S1–S12/S12R 中出现的 Grok 4.5 名称仅用于还原当时的实现与验收，不是当前运行配置。自 S13 起，当前文本合同唯一为 `grok4.6 → grok-4.6-high`，完整调用只接受 `{grok-4.6-high, grok-4.6-build}`；历史 4.5、无后缀 4.6、前缀和其他模型均不得用于当前运行。
 
 ### S0 — 合同冻结与工作区划分（压缩 W1）
 
@@ -404,6 +406,136 @@ CPA Grok 生图仍限定为可选 `static_2d` Provider Adapter：
 - 当前仅完成架构判断与 BUILD_LOG 更新，**没有**新增云端模型服务、Grok 图片 Provider、异步图片任务、PostgreSQL/Redis/对象存储、向量索引、RRF Memory 或知识图谱生产实现。
 - 后续开始编码前，supervisor 必须先更新 PRD/API Contract/数据迁移与威胁模型，并按 `backend`/`frontend` → `reviewer` → `tester` 顺序执行；不能使用本节计划反向宣称 GitHub 当前 R1 Demo 已具备移动端持久化或真实上身试穿。
 
+### S12 — 专用 CPA Grok Image、衣橱 2D 资产与持久记忆检索（2026-08-18，本地验收通过）
+
+本阶段是用户明确授权的实验性 R2 2D 与移动端前置基础设施纵切，不改变 R1 已关闭的 DoD，也不引入 3D/360°/视频。未上线个人开发阶段继续使用 CPA；云端自托管模型仅在真实客户量、稳定 SLA 与成本数据证明必要时另立项目。
+
+#### S12-0 — 合同冻结与基线审计（`supervisor`）
+
+- **目标**：复核 PRD 6/9/11/12/16/23、现有 Static2D/Memory/资产生命周期、CPA 图片模型能力和 50 件 fixture 衣橱；冻结后端/前端边界、图片清单、RRF 权重与验收命令。
+- **委托对象**：`supervisor`；合同冻结后才允许 `backend` 与 `frontend` 并行，`reviewer` 全程只读。
+- **对应 AC**：AC-07/09/10/11/12/13/14/15/16/17/19；MEM-01/02/03、SAFE-01/03/04/08、OBS-03/05。
+- **验收口径**：不复用文本 transport 生图；不改 fixture ID/真值/阈值；硬记忆与软记忆路径明确分离；所有图片标记 AI 生成且只承诺风格参考。
+
+#### S12A — 专用 CPA 图片 Provider 与衣橱资产 API（委托 `backend`）
+
+- **目标**：将图片链路迁移到 CPA `/images/generations` 的独立 `grok-imagine-image-quality`；支持 URL/base64 两种受控响应、有回报时精确模型验证、无回报时 request-bound CPA trace 验证、静态 PNG/JPEG/WebP 验证、幂等请求、超时/熔断/降级、Trace 无 prompt/图片正文/API key/原始 CPA trace；为 fixture garment 增加可追踪 AI 目录图清单和 owner-bound 读取。
+- **硬规则**：图片模型与文本 `grok4.5 → grok-4.5-high` 完全解耦；不得把人物照片发入本轮衣橱目录图生成；不得生成或引用白名单外 garment ID；高急购物门控、2D-only、身份/身体尊重边界不变。
+- **对应 AC**：AC-10/11/13/15/16/17/19，SAFE-01/03/04/08，OBS-03/05。
+- **验收口径**：成功必须真实返回且通过完整图片 Validator；错误模型/前缀、动画、超限、坏 MIME、网络/超时均诚实降级；衣橱清单每个资产绑定既有 `garment_id`、固定请求模型、actual-model 回报状态、prompt-hash 留存状态、内容 hash、状态与 AI label，不得补造未保存的原始 prompt hash。
+
+#### S12B — 衣橱 2D 展示与生成状态（委托 `frontend`，与 S12A 并行）
+
+- **目标**：衣橱卡片优先显示服务端已验证的对应目录图，明确“AI 生成目录参考”；缺图/生成失败继续显示现有元数据卡；Static2D 状态与图片 Provider 来源诚实展示。
+- **硬规则**：只消费服务端 owner-bound URL 和现有 garment ID；DOM 不出现 3D/360°/视频；高急切度没有任何购物 CTA；不得把目录图宣称为用户真实服装照片或真实上身效果。
+- **对应 AC**：AC-10/11/15/16/19，WRD-01/02/04/07/08，SAFE-03/08。
+- **验收口径**：50 件 fixture 有图时稳定映射，无图时零破坏降级；跨用户/未知 ID 不展示；缓存版本更新，Node/runtime/static 合同全绿。
+
+#### S12C — PostgreSQL-ready 硬记忆 + Weighted RRF 软记忆（委托 `backend`）
+
+- **目标**：将 Memory 存储抽象为持久仓储，生产配置使用 PostgreSQL，测试/离线可用等价事务仓储；`propose→confirm→commit`、删除/过期/superseded/授权状态跨服务实例可恢复。硬记忆按 `user_id + confirmed + 未删除 + 未过期 + sensitivity ACL + namespace/member/team 可见性` 精确读取，绝不进入 RRF；软记忆在同一预过滤后并行 BM25、Dense、Recency、Importance，以 weighted RRF 融合并经确定性轻量 reranker 后注入 Top 5。Demo 的 Dense 分支是可复现的 deterministic hashed surrogate，只验证融合和降级合同；真实语义 embedding/Cross-Encoder 仍未上线，后续可按邻接项目的 BGE 适配器替换。
+- **初始实验参数**：`rrf_k=60`、候选池 `20`、`bm25=1.0`、`dense=1.0`、`recency=0.75`、`importance=1.25`、最终 `top_k=5`；这些是可复现基线而非已优化结论，后续只能通过 ProfAgent Memory 真值集调整。
+- **硬规则**：禁忌、敏感授权、不穿某衣服、拒绝且不得重复、删除/过期/superseded 等安全关键事实必须直接从真值仓储读取；RRF 不得漏掉、恢复或覆盖；敏感默认不写，未确认不召回，Trace 不含正文/向量/原始敏感值。
+- **对应 AC**：AC-07/09/12/13/14/17，MEM-01/02/03，SAFE-04/08，OBS-01/03/05。
+- **验收口径**：跨实例重启后 confirmed 记录仍存在且未确认/已删/过期/越权记录为 0；硬记忆漏召回=0、拒绝建议重复=0、敏感泄漏=0；报告 BM25-only、Dense-only、RRF、RRF+rerank 的 Recall@5/10、MRR 与 P95，不宣称未测提升。
+
+#### S12D — 50 件 fixture 衣橱目录图生成（`supervisor` 使用 `$grok-image`，S12A 合同冻结后执行）
+
+- **目标**：调用 CPA 中的 `grok-imagine-image-quality`，按 `garment_id` 与结构化 fixture 元数据为 50 件现有衣物生成统一 1:1 中性背景目录图；写入版本化资产目录与 manifest，供后续 Look Sheet/上身效果图使用。
+- **硬规则**：不覆盖 fixture，不伪造新的 garment ID，不含真人/Logo/文字/水印/额外服装，不以图像推断改写颜色、材质、版型或状态；失败可重试且可断点续跑。
+- **对应 AC**：AC-10/15/16/19，WRD-01/05/07，SAFE-03/08。
+- **验收口径**：manifest 50/50 可追溯；逐文件可解码、静态、尺寸/大小合法、SHA-256 唯一记录；50 件全量视觉复核 fixture name/color/slot、单件与中性背景，类别或颜色明显错配必须重生或标记失败。任何失败项保留失败状态，不以占位图冒充成功。
+
+#### S12M — 只读审查、独立测试与文档收口（`reviewer` → `tester` → `supervisor`）
+
+- **reviewer**：逐里程碑检查图片模型解耦、ID/owner/隐私、硬记忆不经 RRF、软记忆 ACL/删除/过期、3D/video 红线，输出 `[P0]/[P1]/[P2]`；发现回派 owner，绝不放宽规则。
+- **tester**：在功能冻结后串行使用 `conda run -n torch128 ...` 跑新增图片/Memory 专项、全量 pytest、validate、固定 eval、Node/runtime/static、临时端口 HTTP；输出 JSON+MD 报告，不改真值和阈值。
+- **supervisor**：核验衣橱 manifest 与真实 CPA 图片证据，同步 README、PRD 0.3、API Contract、AC Matrix 与 BUILD_LOG；只有全绿才关闭 S12。外部 Grok 对抗复核如需 `$call-grok`，仍按 AGENTS.md 先向用户确认本次审查模型 ID。
+
+#### S12R — 真实 CPA 协议回报修正（`backend` + `frontend` → `reviewer` → `tester`）
+
+- **触发证据**：50 件批处理和 mock 合同通过后，supervisor 直接用项目 `GrokImageProvider` 发起真实请求。CPA 返回 HTTP 200、`b64_json`与 `x-cpa-trace-id`，但顶层只有 `created/data/usage`，无 `model`；旧实现因此误降级为 `CPA_IMAGE_MODEL_VERIFICATION_FAILED`。
+- **修正目标**：不伪造 actual/resolved model；有模型回报时继续 exact fail-closed，无回报时仅在 exact request + CPA trace + 全图 Validator 成立时接受，并在 API/UI/文件元数据诚实标记“请求模型已固定，实际模型未回报”。
+- **不得破坏**：错模型/前缀仍拒绝；无 trace 仍拒绝；SSRF/DoS、owner/ID、PNG provenance、高急购物、2D-only 和 Memory 全部门禁不放宽。
+- **验收口径**：真实项目 Provider 一次返回可解码图片；API 不声称 `model_verified=true`；UI 显示请求固定/未回报局限；50 件目录图 manifest/内嵌元数据同步诚实迁移；专项、full、Node、HTTP、真实 smoke 全绿。
+
+#### S12/S12R 执行与验收记录（2026-08-18）
+
+- **S12A / S12R backend**：图片与文本 Provider 完全隔离；运行时图片成功分为 `reported_model_exact` 与 `exact_request_with_cpa_trace`，两类都要求 exact request、受控单值 receipt 和全图 Validator。缺失模型的真实路径保持 `model_reported/model_verified=false`、`resolved_model=null`；错模/前缀、缺或非法 receipt、重复 JSON key、多图片体、超限/动画/坏 MIME 全 fail-closed。CPA envelope 8 MiB 与 allowlist URL 5 MiB 均流式硬中止；raw receipt、prompt、正文、base64、API key 不进入 API/Health/Trace。Backend 最终专项 `51 passed`、全量候选 `242 passed`，reviewer 功能签收 `0/0/0`。
+- **S12B frontend**：Static2D 精确区分 reported/unreported 两类成功；Catalog 使用独立 `batch_exact_request_contract`，不伪造逐图 receipt 或 actual model。目录 URL 强制 `user_id + asset_version=wardrobe_generated_v1_s12r2 + content_sha256`，旧版本、旧二参数、错 hash、跨 owner 或来源字段混搭均不展示；未回报时显示“请求模型已固定，CPA 未回报实际模型”。Node syntax/runtime/static 与购物双门控、single dialogue POST、2D-only 全绿。
+- **S12C Memory**：默认 SQLite 文件仓储可跨进程/实例恢复，生产可选 PostgreSQL；proposal/record 持久化 team/member/visibility ACL，SQLite `BEGIN IMMEDIATE` 与 PostgreSQL `FOR UPDATE` 保证 confirm CAS。硬记忆按 SQL/ACL 精确读取且 `hard_memory_in_rrf=false`；软记忆在全体预过滤后，各取 BM25、`deterministic_hashed_surrogate_v1`、Recency、Importance Top 20 并集，以 `k=60`、权重 `1/1/.75/1.25` 融合并轻量重排 Top 5。受控 synthetic 消融只证明管线可复现，不宣称真实语义提升。
+- **S12D 资产**：50 件 fixture 对应 50 张 1024×1024 单帧 PNG；ID/hash 各 50 唯一，owner/fixture/bytes/dimensions/hash 全一致。reviewer 逐件按 name/color/slot 复核并关闭首轮类别错配。S12R 无损迁移为 schema 2 六个内嵌来源键；当前 50 条均诚实记录 `prompt_sha256=null/prompt_hash_status=not_preserved`，不使用当前模板冒充原生成 prompt。
+- **真实 CPA Image 证据**：项目 `GrokImageProvider` 在 `torch128` 中一次真实调用成功，`5,288.5ms` 返回 `image/jpeg`、228,841 bytes、`b64_json`；结果为 `request_model_pinned=true`、`cpa_trace_verified=true`、`model_reported/model_verified=false`、`resolved_model=null`、`verification_basis=exact_request_with_cpa_trace`。报告见 `reports/demo/s12r_real_image_provider.{json,md}`，不包含 raw receipt、图片正文、prompt 或凭据。
+- **最终独立门禁**：`conda run --no-capture-output -n torch128 python scripts/tester_s12_report.py` exit 0；该命令真实串行执行并原子生成 schema 2 报告，pending/失败必为非零。最终 pytest `246 passed`、S12 image/memory `21 passed`、Preview `34 passed`；Urgency `30/30`、高急 Gate `10/10`、Catalog `0/10`、幻觉 `0/515`、硬约束 `0/423`、Slots `74/74`；validate `3/50/20/50/30`、Node 6 syntax + 3 runtime、随机非 8000 HTTP、50 资产、固定数据 diff、secret/path/privacy 与 `.profagent` hygiene 全绿。报告见 `reports/eval/s12_memory_image_v1.{json,md}`。
+- **对抗审查关闭矩阵**：URL DNS/缓冲 DoS、Memory ACL/CAS、PNG 内嵌 provenance、视觉错绑、真实协议无 `model`、receipt 约束、误导性 `X-AI-Model`、复用 prompt hash 失真、旧缓存 URL、重复 JSON key、旧 tester 合同及 pending 也写 PASS 等发现均回派并关闭；最终本地 `[P0/P1/P2]=0/0/0`。3D/360°/视频、真实支付/爬取、开放真人市场、第二成员与社区流仍未上线。
+
+### S13 — 衣橱图片呈现与 CPA Text 4.6 迁移（2026-08-18 至 2026-08-19，已关闭）
+
+- **触发证据**：真实 8000 衣橱页拿到 `u01` 的 28 条 `ready` 资产且图片接口 HTTP 200，但前端同时设置 `loading=lazy` 与 `hidden=true`，浏览器不启动隐藏图片的懒加载，卡片永久停在“目录图正在读取”。同一运行实例的文本 Health 显示 `catalog_model_advertised=false`：项目仍请求已从 CPA 实时目录消失的 `grok-4.5-high`，因此“你好”诚实回退为本地回复。
+- **S13A backend（委托 `backend`）**：根据实时目录与 supervisor 无正文真实探测，迁移文本合同为 logical `grok4.6` → transport `grok-4.6-high`，完整调用只接受精确回报 `{grok-4.6-high, grok-4.6-build}`；旧 4.5、前缀和其他模型全部 fail-closed。同步 Dialogue/Health/Vision/Look/Preview/Trace/eval 与 Pydantic，但图片 `grok-imagine-image-quality` 合同不变。
+- **S13B frontend（委托 `frontend`）**：消除 hidden+lazy 加载死锁，确保通过 S12R owner/version/content-hash/provenance 验证的图片能加载并显示；缓存完成竞态和 error 仍须安全回元数据卡。同步文本 exact-model 来源合同为 4.6，旧 4.5 不得显示 CPA 正常。
+- **对应 AC / 硬规则**：AC-10/11/13/15/16/17/19，OBS-03/05，SAFE-01/03/08；每个新 Dialogue 仍最多一次 CPA，120/125s、购物双门控、ID 白名单、2D-only、Memory ACL 与来源诚实性不得放宽。
+- **验收口径**：真实 8000 至少一张目录 PNG 实际渲染；真实“你好”返回严格 CPA 4.6 来源或诚实失败，不得再因旧 transport 固定降级；Node/runtime/static、模型拒绝矩阵、targeted/full、固定 eval、临时 HTTP 和 reviewer 全绿。最后使用用户指定 `grok4.6` 做外部 Grok 对抗终审，Codex 对其发现逐项本地验证后收拢。
+- **执行与本地验收（2026-08-19）**：backend 将生产逻辑模型、transport 与回报 allowlist 精确迁移为 `grok4.6 → grok-4.6-high → {grok-4.6-high,grok-4.6-build}`，旧 4.5 仅保留在拒绝负例；frontend 改为 eager、可布局的 pending 图片节点，并以 `naturalWidth>0`、owner/version/content-hash/provenance 共同决定成功显示，cached/error/cancel/stale 均安全回元数据卡。真实 8000 “你好”约 `3.456s` 返回 CPA `ok`、resolved `grok-4.6-build`；真实 Chrome 目录图 `naturalWidth=1024`。独立 tester 为 S13 定向 `214 passed`、全量 `252 passed`，固定 eval、validate、Node/runtime/static、临时 HTTP 和浏览器 DOM 全绿，报告见 `reports/eval/s13_text46_catalog_display_v1.{json,md}`。
+- **门禁稳定性**：一次 Windows 满载全量运行曾在 0.5 秒测试注入预算下取消 80ms mock；生产 120 秒预算与独立 50ms 超时取消测试均无回归。测试成功路径预算改为 2 秒后连续 5 次定向通过，连续两轮 full 均为 `252 passed`，因此关闭为测试调度抖动而非产品缺陷。
+- **Grok 4.6 + Codex 相互验证（2026-08-19）**：用户指定 Grok 4.6，CPA 实时目录解析到精确 `grok-4.6-high`。外部 Grok 建议核实图片/文本模型隔离、无后缀错模、single-flight、图片旧卡竞态、评分/调整/Look/Memory 与历史 4.5 误读。Codex 逐项映射本地代码与测试，并补充无后缀 `grok-4.6` 拒绝、图片请求体不含文本模型 ID 反断言和历史提示；定向 2 项、三套 Node 合同及最终 full `252 passed in 38.44s`。所有建议发现关闭，联合终审 `[P0/P1/P2]=0/0/0`。证据见 `reports/review/s13_grok46_external_review.md` 与 `reports/review/s13_codex_mutual_verification.md`。
+
+### S14 — 连续衣橱搭配、推荐级 2D 与衣橱折叠（2026-08-19，已关闭）
+
+本阶段修复真实交互中“第二轮重复首轮、已拥有衣橱却反问用户列衣服、明确要两套却不落推荐卡、输入必须点按钮”的断链。Memory 仅做方案调研与决策材料，未经用户确认不修改现有持久化、ACL、RRF 权重或写入规则。
+
+#### S14-0 — 阶段与接口冻结（`supervisor`）
+
+- **目标**：冻结 Enter/Shift+Enter、服务端套数识别、推荐先于对话生成、推荐级静态 2D、owner-bound 图片读取和衣橱分类折叠合同；复用现有 50/50 目录图，不重生 fixture 资产。
+- **委托对象**：`supervisor`；合同冻结后 `backend` 与 `frontend` 可并行，`reviewer` 只读。
+- **对应 AC**：AC-01/03/04/05/06/10/11/13/15/17/19；PREV-04/05/06/08/10/12/13/14/15；WRD-01/02/07/08。
+- **硬规则**：明确“一/两/二/三套”只由服务端从当前回合解析为 1–3；不得由客户端或 CPA 放大。推荐仍只来自 owner 白名单与 HardFilter 后的衣橱；高急切度 Catalog=0、购物 CTA=0；2D 只作无身份风格/配色参考，不声称真实试穿、精确尺码、面料或垂坠。
+- **验收口径**：同一 session 的“今晚辩论赛”→“帮我搭配两套”无需复述场景，返回恰好两套合法衣橱方向（若合法候选不足则诚实少于两套并给 gap），CPA 回复不得再询问用户手头有什么；每个方向可独立生成一张 owner-bound 静态 2D，失败仅降级该图。
+
+#### S14A — 连续对话与衣橱优先推荐（委托 `backend`）
+
+- **目标**：在 Dialogue 状态中继承已确认 Scene；识别当前轮明确套数；`action=recommend` 时先执行现有 HardFilter→Rule/BM25/Dense→RRF→Assembler→Validator，得到权威衣橱方向后，再向 CPA 发送脱敏、有界、无内部 ID 的推荐摘要与最近历史，要求回答当前增量而非复述上一轮。
+- **硬规则**：每个新回合最多一次文本 CPA；CPA 不决定或改写 garment ID、套数、购物门控和推荐正文结构；Provider 输出若询问用户重新列衣橱、与权威套数冲突或高度复读上一轮，则 fail-closed 使用已验证的本地衣橱摘要。任何 ID 幻觉/硬约束违反为 0。
+- **对应 AC**：AC-01/03/04/05/06/10/11/13/14/17，SAFE-08，OBS-03/05。
+- **验收口径**：新增截图原句与同义词回归；第二轮 `turn_index/history_version` 连续；两套 item IDs 全部属于当前 owner 且 available、禁色/季节/天气复检通过；今晚/unknown 仍 shopping=false、Catalog0；文本 CPA 失败时仍返回同两套卡片。
+
+#### S14B — 推荐级静态 2D 组合图（委托 `backend` + `frontend`）
+
+- **目标**：新增 owner/session/request/outfit 绑定的批量推荐预览 API（单批最多 3，当前 UI 只请求权威推荐里的方向），复用独立 `grok-imagine-image-quality` Provider，为每个已验证 outfit 生成一张中性、无身份模特或平铺的静态 2D 组合参考；前端先显示文字/卡片，再并行显示每张图的生成、成功或诚实降级状态。
+- **硬规则**：客户端不提交 garment/product ID；服务端从已保存 Recommendation 派生并重验 owner、available、Scene 硬约束和 outfit ID。禁止人物身份复刻、用户照片发送、3D/360°/视频；图片 Provider 与文本 4.6 完全隔离；响应不含 base64、prompt 或 raw CPA receipt。
+- **对应 AC**：AC-10/11/13/15/16/17/19，PREV-04/05/06/08/10/12/13/14/15，SAFE-01/03/08。
+- **验收口径**：两套推荐触发不超过两次图片 Provider 调用且各自有幂等 request ID；成功图 owner-bound 可读、错误/前缀模型和跨 owner 均拒绝；图片失败不删除文字推荐、不启用购物、不阻塞下一轮对话。UI 固定显示“AI 生成的 2D 视觉参考；不代表真实试穿或精确版型”。
+
+#### S14C — 输入与衣橱折叠呈现（委托 `frontend`）
+
+- **目标**：普通 Enter 发送，Shift+Enter 换行；中文输入法组合期间 Enter 不提交；沿用 single-flight，等待中键盘、按钮、快捷回复均不能产生第二个 POST。衣橱按服务端 slot 的受控中文类别分组，以可访问的折叠区呈现，初始只显示类别名和数量，展开后才渲染该类 owner 衣物及目录图。
+- **硬规则**：不允许前端自行拼接历史、推断套数或信任未验证图片 URL；目录图仍须通过 S12R owner/version/content-hash/provenance 合同；50 件 fixture 均已有生成资产，但单个用户只展示其 owner-bound 子集。无 3D/视频入口，高急购物 CTA 双层阻断不变。
+- **对应 AC**：AC-10/11/15/17/19，WRD-01/02/04/07/08，SAFE-03/08。
+- **验收口径**：Enter/Shift+Enter/IME/等待期重入有可运行 Node 测试；浏览器验证折叠初始无卡片、展开后图片 `naturalWidth>0`、收起后类别仍可见；筛选后分类和数量正确，图片失败回元数据卡。
+
+#### S14M — 个性化 Agent Memory 方案调研（`memory_research`，只读）
+
+- **目标**：用官方文档、论文和项目仓库比较事件/画像分层记忆、向量+BM25/RRF、时序知识图谱、Mem0、Zep/Graphiti、Letta/MemGPT、LangGraph/LangMem 等路线，并对照当前 PostgreSQL-ready ACL、硬记忆 SQL 直读与软记忆 weighted RRF。
+- **不得执行**：本阶段不改 Memory production、schema、向量模型、知识图谱、权重、API 或用户数据；不把外部框架宣传材料当作已验证效果。
+- **对应 AC/安全边界**：AC-07/09/12/13/14/17，MEM-01/02/03，SAFE-04/08，OBS-01/03/05。
+- **交付与决策门**：提交 3–4 套含架构、成本、隐私/删除、一致性、移动端重启恢复、迁移量和评测方法的方案；明确推荐起步方案。只有用户确认某方案后，才另立实现阶段。
+
+#### S14R — 审查、独立测试与收口（`reviewer` → `tester` → `supervisor`）
+
+- **reviewer**：逐项审查连续状态、复读/套数控制、owner/ID、图片身份与来源、Catalog 双层门控、single-flight、2D-only，输出 `[P0]/[P1]/[P2]`，只报告不改代码。
+- **tester**：串行使用 `conda run -n torch128 ...` 跑新专项、全量 pytest、固定 eval、Node/runtime/static、随机非 8000 HTTP 与真实浏览器 DOM；不得改 fixture/eval 真值或阈值。
+- **全绿门槛**：截图链路无需用户列衣橱且两套可演示；图片失败降级、跨 owner/错模/错 ID/3D-video 负例全绿；Urgency/Gate/Catalog0/幻觉0/硬约束0/Slots 指标不退化。README、PRD 0.3、API Contract、AC Matrix 与 BUILD_LOG 最终同步后才关闭 S14。
+
+#### S14 执行与验收记录（2026-08-19）
+
+- **连续推荐**：服务端从当前回合解析明确 1–3 套，并支持否定、纠正与歧义不猜；推荐先完成 owner 衣橱 HardFilter/检索/RRF/Assembler/Validator，再把无内部 ID 的权威摘要交给 CPA。截图链“今晚辩论赛”→“帮我搭两套”继承 `meeting/today`，返回恰好两套合法方向、`shopping=false`、Catalog 0；模型反问衣橱、套数冲突或高复读均 fail-closed 到同一权威本地摘要。
+- **推荐级 2D**：新增 owner/session/request/outfit 绑定的 batch POST 及图片读取/删除；单批 1–3、客户端不提交 garment/product ID、每项图片调用和来源证据独立，错误模型/跨 owner/未知 outfit/3D-video 在 Provider 前或边界拒绝。文字与方向卡先显示，每图独立生成/降级。
+- **输入与衣橱**：Enter 发送、Shift+Enter 换行、IME 组合态不发送，所有入口沿用 single-flight；衣橱使用可访问的类别折叠，初始卡片 0，展开 owner 图片 `naturalWidth=1024`。50/50 fixture 目录资产保持不变，`u01/u02/u03` 仅分别可见 28/12/10。
+- **真实 CPA 证据**：进程内 TestClient、不监听且不触碰 8000，文本 CPA 调用 0，独立图片 CPA 两次并行调用均成功；尝试约 `7,059.1ms/6,845.4ms`，批量总墙钟约 `7,126.3ms`，JPEG 248,145/142,301 bytes、不同 SHA-256。CPA 未回报 actual model，故保持 `model_verified=false/resolved_model=null/verification_basis=exact_request_with_cpa_trace`；报告不含 prompt、raw receipt、base64、key 或图片正文。
+- **reviewer 关闭项**：初审发现的“首命中吞掉套数纠正”“衣橱反问语义可绕过”“并发失败项读取兄弟共享 Provider health”，以及复审发现的“改成/最后要/那就等无否定词显式纠正未生效”四项 P1，均已回派并以否定/纠正/歧义、请求/陈述边界和并发交错逐项证据关闭；最终只读终审为 `[P0/P1/P2]=0/0/0`。
+- **tester 最终门禁**：S14 专项 `26 passed`、Dialogue/Preview/购物/Memory 相关 `241 passed`、full `278 passed`；validate `3/50/20/50/30`，fixed eval Urgency `30/30`、高急 Gate `10/10`、Catalog `0/10`、幻觉 `0/515`、硬约束 `0/423`、Slots `74/74`；Node 11 syntax + 5 runtime/static、随机非 8000 mock HTTP、真实 Chrome、privacy/secret/diff 全绿。证据见 `reports/eval/s14_continuity_preview_v1.{json,md}` 与 `reports/demo/s14_real_recommendation_previews.{json,md}`。
+- **Memory 决策门**：S14M 只完成调研，未修改 production/schema/RRF 权重或用户数据。推荐先采用“PostgreSQL/SQLite 事务真值 + hard SQL + soft RRF 派生索引”，LangMem、Mem0、Graphiti 仅作为后续可重建侧车；待用户确认方案后另立实现阶段。详见 `reports/research/s14_memory_options.md`。
+
 ## 2. 并行与冲突控制
 
 1. S0 先冻结合同，之后 S1A/S1B、S2A/S2B 才并行。
@@ -415,9 +547,9 @@ CPA Grok 生图仍限定为可选 `static_2d` Provider Adapter：
 ## 3. 已确认执行项
 
 1. 用户已确认按以上阶段、委托、AC 映射和硬门槛开始执行。
-2. 环境统一为 `torch128`；Stylist 与静态 2D 生图通过 CPA 使用用户指定 `grok4.5`，无需再次询问模型。
+2. 环境统一为 `torch128`；Stylist 对话通过 CPA 使用逻辑模型 `grok4.6`，静态 2D 生图通过 CPA 使用独立图片模型 `grok-imagine-image-quality`，两者配置、验证与健康状态完全解耦。
 3. 用户在 2026-08-06 明确要求本 Demo 的对话与静态 2D 生图都调用 CPA；S6 因此启用一条实验性 R2 `static_2d` 纵切，但不把它混入或放宽 R1 DoD。3D/360°/视频仍是硬红线。
 4. 最终由 Grok + Codex 独立审查并相互验证，Codex supervisor 依据 PRD 与本地可复现证据收拢结束。
-5. 用户在 2026-08-10 将后续模型部署路线更新为“全程云部署”：确定性规则继续权威，云端自托管开放权重模型承担主路由，CPA 负责复杂任务兜底；不在开发电脑或移动端运行生产推理。候选模型须先在 ProfAgent 固定安全与对话集上对照评测，未达门槛不得替换当前链路。
+5. 用户曾在 2026-08-10 要求未来模型不在开发电脑或移动端运行生产推理；随后进一步确认，未上线的个人开发阶段继续 CPA-first，不为了预测成本提前自托管小模型。只有真实客户量、SLA 和成本数据证明有必要时，才另立云端自托管迁移项目；候选模型必须先通过 ProfAgent 固定安全与对话集，未达门槛不得替换 CPA 链路。
 6. 用户确认 2D 需要同时覆盖衣橱虚拟服装/虚拟人物资产初始化、统一套装图和上身效果图；实现改用独立配置并验证的 Grok 图片 Provider，文本模型不再承担生图。该能力仍为实验性 R2 2D，不扩展至 3D/视频。
 7. 用户确认移动端持久化主体保持 PostgreSQL/对象存储/可选 Redis/知识图谱投影不变，并参考 `personalized-shopping-copilot` 将 weighted RRF 用于软记忆多路融合；硬记忆继续走精确数据库路径，不受 RRF 排名支配。

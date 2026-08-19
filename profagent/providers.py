@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
 import json
 import math
 import re
@@ -15,9 +13,9 @@ import httpx
 from .config import Settings
 
 
-LOGICAL_GROK_MODEL = "grok4.5"
-CPA_TRANSPORT_MODEL = "grok-4.5-high"
-CPA_REPORTED_MODELS = frozenset({"grok-4.5-high", "grok-4.5-build"})
+LOGICAL_GROK_MODEL = "grok4.6"
+CPA_TRANSPORT_MODEL = "grok-4.6-high"
+CPA_REPORTED_MODELS = frozenset({"grok-4.6-high", "grok-4.6-build"})
 
 
 class ProviderUnavailable(RuntimeError):
@@ -46,16 +44,13 @@ class DialogueOutputRejected(ValueError):
 
 
 class GrokLLMProvider:
-    """CPA-only OpenAI-compatible adapter for the frozen logical model grok4.5."""
+    """CPA-only OpenAI-compatible adapter for the frozen logical model grok4.6."""
 
     _TRANSPORT_MODEL_BY_LOGICAL = {LOGICAL_GROK_MODEL: CPA_TRANSPORT_MODEL}
     # CPA may report a concrete, explicitly reviewed build identifier while
     # accepting the stable transport alias.  Never accept arbitrary prefixes.
     _REPORTED_MODEL_ALLOWLIST = {CPA_TRANSPORT_MODEL: CPA_REPORTED_MODELS}
     _MAX_DIALOGUE_RESPONSE_BYTES = 64 * 1024
-    # 5 MiB of decoded image data expands to about 6.67 MiB base64.  Leave a
-    # small, explicit JSON envelope allowance without accepting unbounded data.
-    _MAX_PREVIEW_RESPONSE_BYTES = 15 * 1024 * 1024 // 2
     # R1 has no 3D/360/video/dynamic path.  Model output mentioning one of
     # these modes is never necessary to satisfy a server-authorized action;
     # fail closed rather than attempting to infer whether it is a promise.
@@ -99,6 +94,8 @@ class GrokLLMProvider:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.requested_model = settings.grok_model
+        if self.requested_model != LOGICAL_GROK_MODEL:
+            raise ValueError("logical text model must match the frozen CPA contract")
         # Explicit user-approved CPA alias mapping; never auto-select another model.
         self.transport_model = self._TRANSPORT_MODEL_BY_LOGICAL[self.requested_model]
         self.resolved_model: str | None = None
@@ -106,11 +103,6 @@ class GrokLLMProvider:
         self._chat_model_verified = False
         self._last_chat_verification_error: str | None = None
         self._unavailable_until = 0.0
-        self.image_resolved_model: str | None = None
-        self._image_attempted = False
-        self._image_model_verified = False
-        self._last_image_verification_error: str | None = None
-        self._image_unavailable_until = 0.0
         self._health_cache: tuple[float, dict[str, Any]] | None = None
 
     def _headers(self) -> dict[str, str]:
@@ -154,19 +146,12 @@ class GrokLLMProvider:
                 f"CPA {operation} response model is not allowlisted",
                 reason_code="CPA_MODEL_VERIFICATION_FAILED",
             )
-        if operation == "static_2d":
-            self.image_resolved_model = reported_model
-            self._image_attempted = True
-            self._image_model_verified = True
-            self._last_image_verification_error = None
-            self._image_unavailable_until = 0.0
-        else:
-            self.resolved_model = reported_model
-            self._chat_attempted = True
-            self._chat_model_verified = True
-            self._last_chat_verification_error = None
-            self._unavailable_until = 0.0
-            self._health_cache = None
+        self.resolved_model = reported_model
+        self._chat_attempted = True
+        self._chat_model_verified = True
+        self._last_chat_verification_error = None
+        self._unavailable_until = 0.0
+        self._health_cache = None
         return reported_model
 
     def mark_interaction_failure(
@@ -188,37 +173,6 @@ class GrokLLMProvider:
         # validation failed.  Do not turn a per-response formatting/safety
         # failure into provider unavailability or open the transport breaker.
         self._unavailable_until = 0.0
-
-    def mark_image_failure(self, reason_code: str) -> None:
-        """Record image-provider failure without mutating text verification."""
-        self._image_attempted = True
-        self._image_model_verified = False
-        self._last_image_verification_error = reason_code
-        self.image_resolved_model = None
-        self._image_unavailable_until = time.monotonic() + 30
-
-    def image_health(self) -> dict[str, Any]:
-        enabled = self.settings.cpa_text_enabled
-        verified = self._image_attempted and self._image_model_verified
-        return {
-            "enabled": enabled,
-            "available": bool(enabled and verified),
-            "attempted": self._image_attempted,
-            "requested_model": self.requested_model,
-            "transport_model": self.transport_model,
-            "resolved_model": self.image_resolved_model,
-            "model_verified": verified,
-            "endpoint": f"{self.settings.cpa_base_url}/images/generations",
-            "reason": (
-                "disabled"
-                if not enabled
-                else (
-                    self._last_image_verification_error
-                    if self._last_image_verification_error
-                    else (None if verified else "image_model_unverified")
-                )
-            ),
-        }
 
     async def health(self) -> dict[str, Any]:
         if not self.settings.cpa_text_enabled:
@@ -484,6 +438,7 @@ class GrokLLMProvider:
             "turn_index",
             "scene",
             "fit_context",
+            "recommendation_summary",
         }:
             raise ProviderUnavailable(
                 "dialogue session contract rejected",
@@ -526,6 +481,64 @@ class GrokLLMProvider:
             ):
                 raise ProviderUnavailable(
                     "dialogue fit context values rejected",
+                    reason_code="CPA_DIALOGUE_INPUT_REJECTED",
+                )
+        recommendation_summary = session.get("recommendation_summary")
+        if recommendation_summary is not None:
+            valid_summary = (
+                isinstance(recommendation_summary, dict)
+                and set(recommendation_summary) == {
+                    "source",
+                    "requested_outfit_count",
+                    "actual_outfit_count",
+                    "outfits",
+                    "gap_explanation",
+                }
+                and recommendation_summary.get("source")
+                == "current_owner_wardrobe_validated"
+                and recommendation_summary.get("requested_outfit_count")
+                in {None, 1, 2, 3}
+                and isinstance(recommendation_summary.get("actual_outfit_count"), int)
+                and 0 <= recommendation_summary["actual_outfit_count"] <= 3
+                and isinstance(recommendation_summary.get("outfits"), list)
+                and len(recommendation_summary["outfits"])
+                == recommendation_summary["actual_outfit_count"]
+                and (
+                    recommendation_summary.get("gap_explanation") is None
+                    or (
+                        isinstance(recommendation_summary["gap_explanation"], str)
+                        and len(recommendation_summary["gap_explanation"]) <= 180
+                    )
+                )
+            )
+            if valid_summary:
+                for outfit in recommendation_summary["outfits"]:
+                    valid_summary = bool(
+                        isinstance(outfit, dict)
+                        and set(outfit) == {"strategy_label", "pieces", "reasons"}
+                        and isinstance(outfit.get("strategy_label"), str)
+                        and len(outfit["strategy_label"]) <= 60
+                        and isinstance(outfit.get("pieces"), list)
+                        and 1 <= len(outfit["pieces"]) <= 7
+                        and all(
+                            isinstance(piece, dict)
+                            and set(piece) == {"slot", "name", "color"}
+                            and all(isinstance(piece[key], str) for key in piece)
+                            and len(piece["name"]) <= 60
+                            for piece in outfit["pieces"]
+                        )
+                        and isinstance(outfit.get("reasons"), list)
+                        and len(outfit["reasons"]) <= 2
+                        and all(
+                            isinstance(reason, str) and len(reason) <= 100
+                            for reason in outfit["reasons"]
+                        )
+                    )
+                    if not valid_summary:
+                        break
+            if not valid_summary:
+                raise ProviderUnavailable(
+                    "dialogue recommendation summary rejected",
                     reason_code="CPA_DIALOGUE_INPUT_REJECTED",
                 )
         current_turn = context.get("current_turn")
@@ -620,6 +633,10 @@ class GrokLLMProvider:
             "随后立即提供 required_action 对应的专业穿搭帮助，不要自行暂停任务。"
             "session.fit_context 仅用于衣物版型、比例、层次与舒适度；不得复述测量原值，"
             "不得据此评价人的胖瘦、好坏或健康，也不得把它写入画像或长期记忆。"
+            "当 session.recommendation_summary 非空时，它是已经从当前用户衣橱完成硬过滤、"
+            "检索、拼套和最终验证的唯一权威推荐。reply 必须直接回应当前增量请求，"
+            "按 actual_outfit_count 描述这些具体方向；不得改变套数或衣物集合，不得要求"
+            "用户重新列出手头衣服，也不要大段复述上一轮。"
             "输出 JSON，且只能包含 reply, action, control, scene_advisory, suggested_replies。"
             "action 仅为 chat/support/clarify/recommend/acknowledge；control 仅为"
             "none/pause/resume/close；scene_advisory 为 null 或仅含 intent/occasion/goals。"
@@ -885,106 +902,6 @@ class GrokLLMProvider:
             raise ProviderUnavailable(
                 type(exc).__name__, reason_code=reason_code
             ) from exc
-
-    async def generate_static_2d(
-        self, prompt: str
-    ) -> tuple[bytes, str, dict[str, Any]]:
-        """Generate one bounded, single-frame image through the CPA gateway."""
-
-        if not self.settings.cpa_text_enabled:
-            raise ProviderUnavailable(
-                "CPA image provider is disabled",
-                reason_code="CPA_PROVIDER_DISABLED",
-            )
-        if time.monotonic() < self._image_unavailable_until:
-            raise ProviderUnavailable(
-                "CPA image circuit breaker is open",
-                reason_code="CPA_CIRCUIT_OPEN",
-            )
-        if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 4000:
-            raise ProviderUnavailable(
-                "static 2D prompt rejected",
-                reason_code="CPA_PREVIEW_INPUT_REJECTED",
-            )
-        request_body = {
-            "model": self.transport_model,
-            "prompt": prompt.strip(),
-            "n": 1,
-            "size": "1024x1024",
-            "response_format": "b64_json",
-        }
-        started = time.perf_counter()
-        try:
-            async with httpx.AsyncClient(
-                timeout=self.settings.cpa_timeout_seconds,
-                trust_env=False,
-            ) as client:
-                response = await client.post(
-                    f"{self.settings.cpa_base_url}/images/generations",
-                    headers=self._headers(),
-                    json=request_body,
-                )
-                response.raise_for_status()
-                if len(response.content) > self._MAX_PREVIEW_RESPONSE_BYTES:
-                    raise ValueError("static 2D response exceeds 7.5MiB")
-                body = response.json()
-            reported_model = self._verify_reported_model(
-                body.get("model"), "static_2d"
-            )
-            encoded = body["data"][0]["b64_json"]
-            if not isinstance(encoded, str):
-                raise TypeError("static 2D image must be base64 text")
-            image_bytes = base64.b64decode(encoded, validate=True)
-            if len(image_bytes) > 5 * 1024 * 1024:
-                raise ValueError("static 2D image exceeds 5MB")
-            if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
-                media_type = "image/png"
-            elif image_bytes.startswith(b"\xff\xd8\xff"):
-                media_type = "image/jpeg"
-            elif (
-                len(image_bytes) >= 12
-                and image_bytes.startswith(b"RIFF")
-                and image_bytes[8:12] == b"WEBP"
-            ):
-                media_type = "image/webp"
-            else:
-                raise ValueError("static 2D output is not PNG/JPEG/WebP")
-            return image_bytes, media_type, {
-                "attempted": True,
-                "status": "ok",
-                "requested_model": self.requested_model,
-                "transport_model": self.transport_model,
-                "resolved_model": reported_model,
-                "model_verified": True,
-                "latency_ms": round((time.perf_counter() - started) * 1000, 2),
-                "input_contract": "static_2d_look_prompt_v1",
-                "output_contract": "single_frame_base64_image_v1",
-            }
-        except ProviderUnavailable as exc:
-            self.mark_image_failure(exc.reason_code)
-            raise
-        except Exception as exc:
-            if isinstance(exc, httpx.TimeoutException):
-                reason_code = "CPA_PROVIDER_TIMEOUT"
-            elif isinstance(
-                exc,
-                (
-                    binascii.Error,
-                    json.JSONDecodeError,
-                    KeyError,
-                    IndexError,
-                    TypeError,
-                    ValueError,
-                ),
-            ):
-                reason_code = "CPA_PREVIEW_OUTPUT_REJECTED"
-            else:
-                reason_code = "CPA_PROVIDER_UNAVAILABLE"
-            self.mark_image_failure(reason_code)
-            raise ProviderUnavailable(
-                type(exc).__name__, reason_code=reason_code
-            ) from exc
-
 
 def _tokens(text: str) -> list[str]:
     normalized = "".join(ch.lower() if ch.isalnum() else " " for ch in text)

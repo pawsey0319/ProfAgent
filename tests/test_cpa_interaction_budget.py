@@ -112,7 +112,7 @@ def test_provider_timeout_degrades_with_controlled_trace_reason(
     )
 
     async def timeout_post(_self, url, **kwargs):
-        assert kwargs["json"]["model"] == "grok-4.5-high"
+        assert kwargs["json"]["model"] == "grok-4.6-high"
         raise httpx.ReadTimeout(
             "secret upstream timeout text",
             request=httpx.Request("POST", url),
@@ -140,12 +140,12 @@ def test_explicit_allowlisted_cpa_build_echo_is_traced_as_resolved_model(
     )
 
     async def wrong_model_post(_self, url, **kwargs):
-        assert kwargs["json"]["model"] == "grok-4.5-high"
+        assert kwargs["json"]["model"] == "grok-4.6-high"
         return httpx.Response(
             200,
             request=httpx.Request("POST", url),
             json={
-                "model": "grok-4.5-build",
+                "model": "grok-4.6-build",
                 "choices": [
                     {"message": {"content": '{"intent":"recommend"}'}}
                 ],
@@ -158,9 +158,9 @@ def test_explicit_allowlisted_cpa_build_echo_is_traced_as_resolved_model(
         response = client.post("/scene/parse", json=SCENE_PAYLOAD)
         assert response.status_code == 200
         scene = response.json()
-        assert scene["backend"] == "grok4.5"
+        assert scene["backend"] == "grok4.6"
         provider = _trace(client, scene)["provider"]
-        assert provider["resolved_model"] == "grok-4.5-build"
+        assert provider["resolved_model"] == "grok-4.6-build"
         assert provider["model_verified"] is True
         assert provider["status"] == "ok"
 
@@ -241,7 +241,7 @@ def test_health_probe_budget_returns_ready_degraded_without_blocking_core(
             200,
             request=httpx.Request("POST", url),
             json={
-                "model": "grok-4.5-build",
+                "model": "grok-4.6-build",
                 "choices": [{"message": {"content": json.dumps(content)}}],
             },
         )
@@ -266,7 +266,7 @@ def test_health_probe_budget_returns_ready_degraded_without_blocking_core(
     assert state == {"attempted": 1, "cancelled": True}
     assert dialogue.status_code == 200
     assert dialogue.json()["provider"]["status"] == "ok"
-    assert dialogue.json()["provider"]["resolved_model"] == "grok-4.5-build"
+    assert dialogue.json()["provider"]["resolved_model"] == "grok-4.6-build"
     assert dialogue_calls == 1
 
 
@@ -297,7 +297,7 @@ def test_health_timeout_preserves_prior_text_verification_and_next_dialogue_atte
             200,
             request=httpx.Request("POST", url),
             json={
-                "model": "grok-4.5-build",
+                "model": "grok-4.6-build",
                 "choices": [{"message": {"content": json.dumps(content)}}],
             },
         )
@@ -322,7 +322,7 @@ def test_health_timeout_preserves_prior_text_verification_and_next_dialogue_atte
         llm = health.json()["providers"]["llm"]
         assert llm["reason"] == "CPA_HEALTH_BUDGET_EXCEEDED"
         assert llm["chat_model_verified"] is True
-        assert llm["resolved_model"] == "grok-4.5-build"
+        assert llm["resolved_model"] == "grok-4.6-build"
 
         second = client.post(
             "/dialogue/turn",
@@ -334,7 +334,7 @@ def test_health_timeout_preserves_prior_text_verification_and_next_dialogue_atte
         )
         assert second.status_code == 200
         assert second.json()["provider"]["status"] == "ok"
-        assert second.json()["provider"]["resolved_model"] == "grok-4.5-build"
+        assert second.json()["provider"]["resolved_model"] == "grok-4.6-build"
     assert dialogue_calls == 2
 
 

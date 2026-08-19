@@ -160,7 +160,7 @@ class VisionAdapter:
             "enabled": settings.cpa_text_enabled,
             "available": False,
             "status": "unverified" if settings.cpa_text_enabled else "disabled",
-            "requested_model": "grok4.5",
+            "requested_model": "grok4.6",
             "transport_model": VISION_TRANSPORT_MODEL,
             "resolved_model": None,
             "model_verified": False,
@@ -179,7 +179,7 @@ class VisionAdapter:
         return {
             "component": "vision",
             "status": status,
-            "requested_model": "grok4.5",
+            "requested_model": "grok4.6",
             "transport_model": VISION_TRANSPORT_MODEL,
             "resolved_model": None,
             "model_verified": False,

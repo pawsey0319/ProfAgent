@@ -1,0 +1,301 @@
+{
+  "schema_version": 1,
+  "report_id": "s14_continuity_preview_v1",
+  "scope": "independent S14 dialogue continuity, recommendation preview and wardrobe accordion acceptance",
+  "overall_status": "PASS",
+  "tester_external_calls": {
+    "text_cpa": 0,
+    "image_cpa": 2,
+    "basis": "separate real TestClient smoke; random HTTP smoke remained mock"
+  },
+  "port_8000_touched": false,
+  "production_code_modified_by_tester": false,
+  "fixed_truth_or_threshold_modified_by_tester": false,
+  "commands": [
+    "python -m pytest -q tests/test_s14_backend.py",
+    "python -m pytest -q tests/test_dialogue_turn.py tests/test_dialogue_s7a.py tests/test_dialogue_s8a.py tests/test_preview_static_2d.py tests/test_r1_workflows.py tests/test_s12_image_memory.py tests/test_s14_backend.py",
+    "python -m pytest -q",
+    "python scripts/validate.py",
+    "python -m profagent.eval",
+    "node --check web/app.js",
+    "node --check web/catalog_image_browser_smoke.cjs",
+    "node --check web/dialogue_runtime.js",
+    "node --check web/dialogue_runtime_test.cjs",
+    "node --check web/fixtures.js",
+    "node --check web/image_asset_runtime.js",
+    "node --check web/image_asset_runtime_test.cjs",
+    "node --check web/recommendation_preview_runtime.js",
+    "node --check web/recommendation_preview_runtime_test.cjs",
+    "node --check web/s14_frontend_static_test.cjs",
+    "node --check web/static_contract_test.cjs",
+    "node web/dialogue_runtime_test.cjs",
+    "node web/image_asset_runtime_test.cjs",
+    "node web/recommendation_preview_runtime_test.cjs",
+    "node web/s14_frontend_static_test.cjs",
+    "node web/static_contract_test.cjs",
+    "python scripts/tester_s14_http_smoke.py",
+    "git diff --exit-code -- data/fixtures data/eval/eval.jsonl scripts/generate.py scripts/validate.py",
+    "git diff --check"
+  ],
+  "pytest": {
+    "s14_backend": 26,
+    "related_dialogue_preview_shopping_memory": 241,
+    "full": 278
+  },
+  "s14_contract": {
+    "enter_submits": true,
+    "shift_enter_newline": true,
+    "ime_enter_no_submit": true,
+    "single_flight_one_post": true,
+    "scene_inherited_across_two_turns": true,
+    "requested_outfit_count": 2,
+    "exactly_two_legal_owner_outfits": true,
+    "cpa_wardrobe_reask_rejected": true,
+    "cpa_outfit_count_conflict_rejected": true,
+    "cpa_high_repetition_rejected": true,
+    "high_urgency_shopping_allowed": false,
+    "high_urgency_catalog_calls": 0,
+    "batch_previews_idempotent": true,
+    "single_image_failure_isolated": true,
+    "cross_owner_wrong_id_wrong_model_rejected": true,
+    "three_d_video_client_fields_rejected": true
+  },
+  "validate": {
+    "status": "pass",
+    "summary": "validation passed: users=3 garments=50 outfits=20 catalog=50 eval=30"
+  },
+  "fixed_eval": {
+    "status": "PASS",
+    "metrics": {
+      "urgency_accuracy": {
+        "numerator": 30,
+        "denominator": 30,
+        "value": 1.0,
+        "unit": "ratio",
+        "threshold": {
+          "operator": ">=",
+          "value": 0.95
+        },
+        "status": "PASS",
+        "failed_case_ids": []
+      },
+      "high_urgency_shopping_gate_accuracy": {
+        "numerator": 10,
+        "denominator": 10,
+        "value": 1.0,
+        "unit": "ratio",
+        "threshold": {
+          "operator": "==",
+          "value": 1.0
+        },
+        "status": "PASS",
+        "failed_case_ids": []
+      },
+      "high_urgency_catalog_calls": {
+        "numerator": 0,
+        "denominator": 10,
+        "value": 0,
+        "unit": "invocations",
+        "threshold": {
+          "operator": "==",
+          "value": 0
+        },
+        "status": "PASS",
+        "failed_case_ids": []
+      },
+      "item_hallucinations": {
+        "numerator": 0,
+        "denominator": 515,
+        "value": 0,
+        "unit": "violations",
+        "threshold": {
+          "operator": "==",
+          "value": 0
+        },
+        "status": "PASS",
+        "failed_case_ids": []
+      },
+      "hard_constraint_violations": {
+        "numerator": 0,
+        "denominator": 423,
+        "value": 0,
+        "unit": "violations",
+        "threshold": {
+          "operator": "==",
+          "value": 0
+        },
+        "status": "PASS",
+        "failed_case_ids": [],
+        "definition": "observed_outfit_alternative_catalog_product_and_validation_constraint_violations",
+        "excluded_release_gates": [
+          "catalog_expected_presence"
+        ]
+      },
+      "slot_completeness": {
+        "numerator": 74,
+        "denominator": 74,
+        "value": 1.0,
+        "unit": "ratio",
+        "threshold": {
+          "operator": ">=",
+          "value": 0.95
+        },
+        "status": "PASS",
+        "failed_case_ids": []
+      }
+    }
+  },
+  "node": {
+    "status": "pass",
+    "syntax_files": 11,
+    "runtime_contracts": 5,
+    "runtime_summaries": [
+      "web dialogue runtime S14 Enter/Shift/IME + exact-4.6-model/guard/reset/CPA-text/trace contract: PASS",
+      "web S12R catalog provenance + image display lifecycle runtime contract: PASS",
+      "web recommendation preview S14 success/degraded/cross-owner/wrong-model/wrong-outfit contract: PASS",
+      "web S14 frontend Enter/accordion/async-preview static contract: PASS",
+      "web static S13 text-model/catalog-image-display/provenance/trace/gates contract: PASS"
+    ]
+  },
+  "random_non_8000_http": {
+    "evidence_kind": "mock_image_provider",
+    "must_not_be_reported_as_real_cpa": true,
+    "port_is_not_8000": true,
+    "provider_kind": "mock_image_provider_no_external_calls",
+    "dialogue_scene_inherited": true,
+    "requested_outfit_count": 2,
+    "actual_outfit_count": 2,
+    "all_items_owner_bound": true,
+    "shopping_allowed": false,
+    "catalog_call_count": 0,
+    "mock_batch_statuses": [
+      "succeeded",
+      "succeeded"
+    ],
+    "mock_batch_provider_calls": 2,
+    "idempotent_retry_additional_calls": 0,
+    "mock_partial_statuses": [
+      "degraded",
+      "succeeded"
+    ],
+    "negative_http": {
+      "unknown_outfit": "404",
+      "cross_owner": "404",
+      "client_model_3d_video_ids": "422"
+    },
+    "browser_dom": {
+      "status": "pass",
+      "summary": "web wardrobe accordion real-browser smoke: PASS collapsedCards=0 naturalWidth=1024"
+    }
+  },
+  "real_cpa_recommendation_previews": {
+    "schema_version": 1,
+    "report_id": "s14_real_recommendation_previews",
+    "evidence_kind": "real_cpa_image_provider",
+    "status": "PASS",
+    "port_8000_touched": false,
+    "transport": "in_process_TestClient_no_listening_port",
+    "text_cpa_calls": 0,
+    "image_cpa_attempts": 2,
+    "requested_outfit_count": 2,
+    "actual_outfit_count": 2,
+    "batch_wall_clock_ms_including_local_setup": 7126.3,
+    "per_provider_attempt": [
+      {
+        "attempt": 1,
+        "wall_clock_ms": 7059.1,
+        "status": "succeeded",
+        "media_type": "image/jpeg",
+        "bytes": 248145,
+        "sha256": "3c329d7a86c2a53c4475044a5491418f7c6a4399a43b65ea9f961449293482a4",
+        "provider": {
+          "request_model_pinned": true,
+          "cpa_trace_verified": true,
+          "model_reported": false,
+          "model_verified": false,
+          "resolved_model": null,
+          "verification_basis": "exact_request_with_cpa_trace"
+        }
+      },
+      {
+        "attempt": 2,
+        "wall_clock_ms": 6845.4,
+        "status": "succeeded",
+        "media_type": "image/jpeg",
+        "bytes": 142301,
+        "sha256": "d5575c5755d3b0b6fe7868fa23c0cfef028e2b7ea6ce6224b48271422747f518",
+        "provider": {
+          "request_model_pinned": true,
+          "cpa_trace_verified": true,
+          "model_reported": false,
+          "model_verified": false,
+          "resolved_model": null,
+          "verification_basis": "exact_request_with_cpa_trace"
+        }
+      }
+    ],
+    "response_items": [
+      {
+        "index": 1,
+        "status": "succeeded",
+        "provider": {
+          "status": "ok",
+          "attempted": true,
+          "requested_model": "grok-imagine-image-quality",
+          "transport_model": "grok-imagine-image-quality",
+          "resolved_model": null,
+          "model_reported": false,
+          "model_verified": false,
+          "request_model_pinned": true,
+          "cpa_trace_verified": true,
+          "verification_basis": "exact_request_with_cpa_trace",
+          "degraded": false,
+          "reason_code": null
+        },
+        "owned_garment_count": 5,
+        "identity_fidelity": "not_assessed",
+        "image": {
+          "media_type": "image/jpeg",
+          "bytes": 248145,
+          "sha256": "3c329d7a86c2a53c4475044a5491418f7c6a4399a43b65ea9f961449293482a4"
+        }
+      },
+      {
+        "index": 2,
+        "status": "succeeded",
+        "provider": {
+          "status": "ok",
+          "attempted": true,
+          "requested_model": "grok-imagine-image-quality",
+          "transport_model": "grok-imagine-image-quality",
+          "resolved_model": null,
+          "model_reported": false,
+          "model_verified": false,
+          "request_model_pinned": true,
+          "cpa_trace_verified": true,
+          "verification_basis": "exact_request_with_cpa_trace",
+          "degraded": false,
+          "reason_code": null
+        },
+        "owned_garment_count": 3,
+        "identity_fidelity": "not_assessed",
+        "image": {
+          "media_type": "image/jpeg",
+          "bytes": 142301,
+          "sha256": "d5575c5755d3b0b6fe7868fa23c0cfef028e2b7ea6ce6224b48271422747f518"
+        }
+      }
+    ],
+    "privacy": {
+      "prompt_recorded": false,
+      "raw_receipt_recorded": false,
+      "base64_recorded": false,
+      "api_key_recorded": false
+    }
+  },
+  "findings": {
+    "P0": 0,
+    "P1": 0,
+    "P2": 0
+  }
+}

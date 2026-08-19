@@ -7,9 +7,9 @@
 }(typeof window !== "undefined" ? window : globalThis, function createDialogueRuntime() {
   "use strict";
 
-  const CPA_REQUESTED_MODEL = "grok4.5";
-  const CPA_TRANSPORT_MODEL = "grok-4.5-high";
-  const CPA_RESOLVED_MODELS = new Set(["grok-4.5-high", "grok-4.5-build"]);
+  const CPA_REQUESTED_MODEL = "grok4.6";
+  const CPA_TRANSPORT_MODEL = "grok-4.6-high";
+  const CPA_RESOLVED_MODELS = new Set(["grok-4.6-high", "grok-4.6-build"]);
 
   function hasExactCpaModel(provider) {
     return provider?.requested_model === CPA_REQUESTED_MODEL
@@ -66,5 +66,18 @@
     return fallbackTransform(message);
   }
 
-  return Object.freeze({ createInFlightGuard, hasExactCpaModel, isStrictCpaReply, selectAssistantText });
+  function shouldSubmitComposerKey(event) {
+    return event?.key === "Enter"
+      && event.shiftKey !== true
+      && event.isComposing !== true
+      && event.keyCode !== 229;
+  }
+
+  return Object.freeze({
+    createInFlightGuard,
+    hasExactCpaModel,
+    isStrictCpaReply,
+    selectAssistantText,
+    shouldSubmitComposerKey
+  });
 }));

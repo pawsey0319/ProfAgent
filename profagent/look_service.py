@@ -769,7 +769,7 @@ class LookService:
         provider_trace: dict[str, Any] = {
             "component": "vision",
             "status": "not_attempted",
-            "requested_model": "grok4.5",
+            "requested_model": "grok4.6",
             "transport_model": VISION_TRANSPORT_MODEL,
             "resolved_model": None,
             "model_verified": False,

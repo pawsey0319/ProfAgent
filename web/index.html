@@ -5,10 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="ProfAgent R1 Stylist Demo：从场景理解到衣橱穿搭方向的可解释决策。">
   <title>ProfAgent · 私人穿搭团队</title>
-  <link rel="stylesheet" href="./styles.css?v=s10-high-model-refrozen-20260810">
-  <script defer src="./dialogue_runtime.js?v=s10-high-model-refrozen-20260810"></script>
-  <script defer src="./fixtures.js?v=s10-high-model-refrozen-20260810"></script>
-  <script defer src="./app.js?v=s10-high-model-refrozen-20260810"></script>
+  <link rel="stylesheet" href="./styles.css?v=s14-recommendation-preview-accordion-20260819">
+  <script defer src="./dialogue_runtime.js?v=s14-recommendation-preview-accordion-20260819"></script>
+  <script defer src="./image_asset_runtime.js?v=s14-recommendation-preview-accordion-20260819"></script>
+  <script defer src="./recommendation_preview_runtime.js?v=s14-recommendation-preview-accordion-20260819"></script>
+  <script defer src="./fixtures.js?v=s14-recommendation-preview-accordion-20260819"></script>
+  <script defer src="./app.js?v=s14-recommendation-preview-accordion-20260819"></script>
 </head>
 <body>
   <a class="skip-link" href="#studio">跳到 Stylist Studio</a>
@@ -148,7 +150,7 @@
               <button class="text-chip" type="button" data-example="帮我准备一次重要见面。">重要见面</button>
             </div>
             <div class="composer-footer">
-              <span id="composer-hint">中文首发 · Enter 换行，Ctrl/⌘ + Enter 提交</span>
+              <span id="composer-hint">Enter 发送 · Shift + Enter 换行</span>
               <button id="scene-submit" class="button button-primary" type="submit">
                 <span>发送给 Stylist</span><span aria-hidden="true">→</span>
               </button>
@@ -347,6 +349,7 @@
         <div>
           <h2 id="wardrobe-heading">衣橱工作台</h2>
           <p>状态与季节会参与筛选；普通模式不显示内部衣物 ID。</p>
+          <p class="wardrobe-catalog-disclaimer">AI 生成目录参考仅供品类、风格与配色识别；不是衣物实拍，也不是上身效果，不代表真实尺码、面料或垂坠。</p>
         </div>
         <div class="wardrobe-count"><strong id="wardrobe-visible-count">0</strong><span>件当前显示</span></div>
       </div>
@@ -374,7 +377,8 @@
         </label>
         <button id="reset-filters" class="button button-quiet" type="button">重置</button>
       </form>
-      <div id="wardrobe-grid" class="wardrobe-grid" aria-live="polite"></div>
+      <p id="wardrobe-catalog-status" class="wardrobe-catalog-status" role="status">正在核对 AI 目录图清单；衣物元数据可正常浏览。</p>
+      <div id="wardrobe-grid" class="wardrobe-accordion" aria-live="polite"></div>
     </section>
 
     <section id="memory" class="section section-memory" aria-labelledby="memory-heading">

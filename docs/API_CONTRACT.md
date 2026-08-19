@@ -1,7 +1,7 @@
 # ProfAgent Demo — API 与协作合同
 
-> 状态：S6–S10 已验收；S9 同步等待与 S10 CPA high transport 合同已冻结（2026-08-10）
-> 需求权威：`docs/PRD.md` v1.8，尤其第 6、9、10、11、12、15、16、23 节；S6 static 2D 是用户明确追加的实验性 R2 纵切，不改变 R1 DoD。
+> 状态：S6–S14 已实现并通过本地验收（2026-08-19）
+> 需求权威：`docs/PRD.md` v1.14，尤其第 6、9、10、11、12、15、16、23 节；S12 static 2D 是用户明确追加的实验性 R2 纵切，不改变 R1 DoD。
 > 若本合同与 PRD 冲突，以 PRD 为准，并由 supervisor 统一更新合同后通知前后端。
 
 ## 1. 运行与目录合同
@@ -31,12 +31,12 @@ conda run -n torch128 python -m profagent.eval
 
 ## 2. CPA Grok Provider 合同
 
-用户已经冻结逻辑模型名为 `grok4.5`，无需再次询问。当前 CPA 参数将上游 `grok-4.5` 暴露为客户端 ID `grok-4.5-high`，因此应用执行固定映射 `grok4.5 -> transport_model=grok-4.5-high`，不得自行选择其他模型。目录广告不等于实际调用已验证；Health 只把精确广告的 transport `grok-4.5-high` 视为可路由，完整调用后只接受显式精确回报 allowlist `{grok-4.5-high, grok-4.5-build}`。禁止任意前缀匹配、模糊包含或自动选模；旧客户端 ID `grok-4.5` 也必须 fail-closed。配置优先级为：`PROFAGENT_*` 环境变量，其次 `GROK_*` / `CPA_*` / `OPENAI_*` 兼容环境变量，最后是 `PROFAGENT_CPA_CONFIG` 指向的本地 JSON 或 `~/.codex/skills/call-grok/config.local.json`。本地 JSON 只读取 `base_url` 与 `api_key`，忽略其中的模型值；密钥不得写入仓库、响应、日志或 Trace：
+用户已经冻结逻辑模型名为 `grok4.6`，无需再次询问。应用执行固定映射 `grok4.6 -> transport_model=grok-4.6-high`，不得自行选择其他模型。目录广告不等于实际调用已验证；Health 只把精确广告的 transport `grok-4.6-high` 视为可路由，完整调用后只接受显式精确回报 allowlist `{grok-4.6-high, grok-4.6-build}`。禁止任意前缀匹配、模糊包含或自动选模；旧 4.5 transport、前缀变体和其他模型必须 fail-closed。配置优先级为：`PROFAGENT_*` 环境变量，其次 `GROK_*` / `CPA_*` / `OPENAI_*` 兼容环境变量，最后是 `PROFAGENT_CPA_CONFIG` 指向的本地 JSON 或 `~/.codex/skills/call-grok/config.local.json`。本地 JSON 只读取 `base_url` 与 `api_key`，忽略其中的模型值；密钥不得写入仓库、响应、日志或 Trace：
 
 ```text
 PROFAGENT_CPA_BASE_URL=http://127.0.0.1:8317/v1
 PROFAGENT_CPA_API_KEY=<runtime secret; never commit>
-PROFAGENT_GROK_MODEL=grok4.5
+PROFAGENT_GROK_MODEL=grok4.6
 PROFAGENT_CPA_TEXT_ENABLED=true
 ```
 
@@ -45,8 +45,8 @@ PROFAGENT_CPA_TEXT_ENABLED=true
 - Dialogue CPA 返回 JSON，只允许 `reply`、`action`、`control`、`scene_advisory`、`suggested_replies`；兼容的唯一包装是“整个 `content` 恰为一个 `json` 或 `JSON` Markdown 围栏且围栏外只有空白”，解包后仍执行完整合同。围栏外正文、其他语言、多围栏或从自由文本中抽取 JSON 一律拒绝。`action/control` 必须与本地预先给定的必需值完全一致，只是响应闭合校验，不是模型决策权。`scene_advisory` 是可选、不可信提示：结构或枚举非法时服务端只将其置为 `null` 并记录受控诊断码，不得丢弃本来安全的正文，也不得据此改变权威 Scene；顶层额外字段、action/control 冲突或正文/建议越界仍整体拒绝。`reply` 最大 600 个 Unicode 字符，HTTP 响应体最大 64 KiB，`max_tokens` 固定为 800 上限。模型不得直接调用工具、决定 mode、打开购物、产生最终衣物/商品 ID、提交记忆或创建 Look。用户文本、历史、画像、衣物名与模型输出全部是不可信数据。
 - 本地编排层先判定不可放宽的安全边界和权威状态，CPA 生成后再执行 Schema、长度、角色/安全语言、购物 CTA、身体/医疗、3D/video、ID 与工具字段 Validator；任何越界整体 fail-closed，使用明确标记的本地降级回复。
 - 服务端交互硬预算为 Health `1.5s`、Scene advisory `8s`、Dialogue `120s`、Vision `10s`；环境变量只能收紧。前端 Dialogue 超时固定 `125s`，必须大于服务端预算；等待期间只显示经过秒数，不插入 provisional 或本地 assistant 正文。服务端超时取消 Provider 子任务并返回诚实的 `fallback/local_fallback`，不得回显底层 AbortSignal 文案。
-- S6 启用实验性 `GrokImageProvider` 与 `/preview/static-2d`；当前只允许用户指定逻辑模型对应的 `grok4.5 -> grok-4.5-high`，不接受 3D/360°/video，也不得因能力不匹配偷偷切换模型。
-- 健康检查分别记录 `requested_model=grok4.5`、`transport_model=grok-4.5-high`、CPA 实际回报的 `resolved_model`、allowlist 验证、连通性和文本/图片能力。缺失或不在精确 allowlist 的回报必须 `model_verified=false`、`resolved_model=null` 并降级。
+- S12 将实验性 `GrokImageProvider` 与 `/preview/static-2d` 迁移为独立图片合同：固定 `image_model=grok-imagine-image-quality`，通过 CPA `/images/generations` 调用；文本 transport `grok-4.6-high` 不得进入图片请求。不接受 3D/360°/video，也不得因能力不匹配偷偷切换模型。2026-08-18 真实 CPA 协议探测确认该端点成功响应为 `created/data/usage + x-cpa-trace-id`，不回报顶层 `model`。实现不得伪造 `resolved_model`，也不得把“未回报”误说成“已验证”。
+- 两类图片成功都必须同时具有服务端发出的 exact requested model、受控格式的单值 `x-cpa-trace-id`、唯一图片体与完整静态图 Validator。响应若存在 `model` 字段，必须是精确等于 `grok-imagine-image-quality` 的字符串，错值、`null`、空串、非字符串或前缀一律拒绝；精确回报时返回 `request_model_pinned/cpa_trace_verified/model_reported/model_verified=true`、精确 `resolved_model`、`verification_basis=reported_model_exact`。若协议完全没有 `model` 字段，才返回 `request_model_pinned/cpa_trace_verified=true`、`model_reported/model_verified=false`、`resolved_model=null`、`verification_basis=exact_request_with_cpa_trace`。UI 必须区分这两类来源；未回报时明示“请求模型已固定，CPA 未回报实际模型”。两类图片成功都不得认证文本 Health，反之亦然；原始 CPA trace 不得进入 API、Trace 或日志。
 - Grok 输出永远不是 ID、硬约束、购物门控、评分安全或记忆写入的最终权威。服务端必须重新计算门控并执行白名单/Schema/安全 Validator。
 - LLM 失败：规则解析 + 明确标记的本地回复；单次模型输出格式/安全拒绝或 Dialogue 业务预算超时只影响当前回合，不开启 transport 熔断，下一独立回合仍尝试 CPA；网络不可达或错误模型仍可短熔断。静态 2D 失败：衣物卡片/平铺组合/文字解释。两种降级都不得伪装 CPA 个性化或生图成功。
 - Trace/日志不得记录 API key、完整原始对话、base64 原图或其他秘密。
@@ -106,7 +106,7 @@ PRD 12.1 字段全部保留；允许新增以下字段：
     "comfort_notes": [],
     "required_slots": ["top", "bottom", "shoes"]
   },
-  "backend": "grok4.5|rule_fallback",
+  "backend": "grok4.6|rule_fallback",
   "ranking_profile": "rule_bm25_rrf_v1",
   "input_mode": "text_then_image",
   "clarification_required": false,
@@ -123,13 +123,14 @@ PRD 12.1 字段全部保留；允许新增以下字段：
 
 ### 4.2 InitialRecommendation
 
-遵循 PRD 12.2；`outfits` 最多三个，不足时合法返回 1–2 个并填写 `gap_explanation`。
+遵循 PRD 12.2；`outfits` 最多三个，不足时合法返回 1–2 个并填写 `gap_explanation`。S14 起，服务端可从当前自然语言回合中的明确“一/两/二/三套（1/2/3 套）”解析 `requested_outfit_count=1|2|3`；客户端与 CPA 均无权提交、放大或改写该值。合法候选足够时响应必须恰好返回该数量；不足时不得复制方向凑数，须返回实际合法数量并解释缺口。没有明确套数时保持原最多三个合同。
 
 每个 outfit 必须含：`outfit_id`、`strategy_label`、`items`、`reasons`、`risks`、`alternatives`、`is_primary`、`validation.all_ids_grounded`、`validation.hard_constraints_passed`。响应另含：
 
 ```json
 {
   "shopping_suggestions": [],
+  "requested_outfit_count": 2,
   "gap_explanation": null,
   "ui_capabilities": {"shopping_cta": false},
   "trace_id": "trace_001"
@@ -185,6 +186,8 @@ PRD 12.1 字段全部保留；允许新增以下字段：
 - `type` 是服务端闭集；`sensitive` 与 `session_emotion` 无条件不持久化。可提交的长期内容必须命中服务端受控安全模板；任意未知自由文本只留下 `content=null`、`commit_blocked=true` 的脱敏提议状态。
 - `confirm` 与 `edit` 必须重新执行同一受控语义与敏感门控；不得把安全提议编辑成自由文本或敏感信息后提交。
 - AC-07 的反馈目标由后端从已保存 outfit 推导，API 不接受客户端裸报衣物 ID；私有 target 不进入 Memory API 或 Trace。仅在相关“久走/久站”新场景应用，删除/TTL 后立即失效。
+- S12 持久化仓储按 `user_id + confirmed + 未删除 + 未过期 + sensitivity ACL + namespace/member/team 可见性` 先做事务级预过滤；`shared` 只对已授权团队范围可见，`stylist` 只对 `personal_team:stylist` 可见。禁忌、敏感授权、不穿项、拒绝且不得重复、删除/过期/superseded 等硬记忆直接读取，禁止经 RRF 排名。
+- 软记忆才进入 weighted RRF：`rrf_k=60`、每路候选 `20`、BM25 `1.0`、Dense `1.0`、Recency `0.75`、Importance `1.25`，先对 SQL 预过滤后的全体记忆分别取每路 Top 20，再对各路并集融合，确定性轻量重排后最多返回 Top 5。Demo 的 Dense 分支明确标记为 `deterministic_hashed_surrogate_v1`，不宣称等同生产语义 embedding 或 Cross-Encoder。响应/Trace只暴露受控 memory ID、分支名次、权重、版本与耗时，不输出正文、向量或原始敏感值。
 - 删除必须同步主存储与检索索引，并保留不含内容的审计事件。
 
 ### 4.7 Trace
@@ -242,6 +245,8 @@ Stylist Studio 的统一对话入口。`/scene/parse`、`/recommend` 及 Look/�
 
 每个新回合按第 2 节 CPA-first 合同同步等待至多一次 CPA 调用完成。普通回合只发送脱敏、有界的当前必要文本、最多 6 条截断历史、权威 Scene 和画像 allowlist；用户主动提供的身高/体重仅可转换成当前 styling session 的 purpose-bound `fit_context`，供版型、比例、层次和舒适度建议使用，不进入长期记忆、跨 session 画像或 Trace 原值，也不得用于评价人的胖瘦/好坏或推断健康。其他敏感/安全/终止回合只发送最小分类摘要。Trace 只记录 provider/version/状态与 `previous_mode/current_mode/transition_reason_code/pending_question_status/recommendation_paused`，不得记录原始消息、测量原值、画像内容、历史内容、情绪/担忧文本或模型正文。S9 服务端 Dialogue 等待上限为 120 秒，浏览器为 125 秒；等待期间不先返回 provisional 或本地 assistant 正文。只有 CPA 正文通过完整输出 Validator 后才返回 `ok/cpa`；真实网络、120 秒超时、错误模型或输出拒绝才返回 `fallback/local_fallback`。幂等 receipt 仍不新增 CPA 调用；业务超时不打开跨回合 circuit。会话历史采用最长 30 分钟滑动 TTL，可由 `PROFAGENT_DIALOGUE_TTL_SECONDS` 收紧，不自动进入长期记忆。
 
+S14 对 `action=recommend` 增加顺序约束：服务端必须先用权威 Scene 和当前 owner 衣橱完成 HardFilter→召回→RRF→Assembler→Validator，之后才把无内部 ID、最多三个方向的受控摘要交给文本 CPA 组织当前回合回复。摘要必须包含权威方向数量、类别/颜色/理由和“已读取当前衣橱”的事实；不得包含 garment/product ID。CPA 不能改变套数、衣物集合、购物门控或 Recommendation 结构，也不得要求用户重新列出手头衣服。与上一 assistant 回合高度复读、再次询问衣橱、或与权威方向数量冲突的输出必须被拒绝并使用同一权威 Recommendation 的本地摘要。每个新回合仍最多一次文本 CPA，推荐链和 CPA 均受同一幂等 receipt 保护。
+
 ### GET `/health`
 
 返回服务、数据和 Provider 状态。CPA 或增强 Provider 失败时可返回 `status="degraded"`，但规则核心必须 `ready=true`。
@@ -264,6 +269,16 @@ Stylist Studio 的统一对话入口。`/scene/parse`、`/recommend` 及 Look/�
 
 对服务端已保存的 `request_id + outfit_id` 提交 like/dislike 与受控 `reason_code`。后端按 owner/session/request 重新读取原始 outfit，并自行推导可记忆的 grounded 目标；不接受客户端衣物 ID。若用户在方向卡只做了本地替换，前端必须先禁用该卡反馈，避免把反馈错误绑定到原始 outfit。
 
+### POST `/recommend/previews/static-2d`（S14 实验性 R2 纵切）
+
+请求只接受 `user_id`、`styling_session_id`、已保存 Recommendation 的 `request_id`、该 Recommendation 内的 `outfit_ids`（1–3 个）和幂等 `preview_request_id`。客户端不得提交 garment/product ID、人物照片、prompt、模型名或 render mode；服务端按 owner/session/request 重读权威 Recommendation，从 outfit 派生衣物并重新验证 owner、available、白名单、Scene 硬约束和完整槽位。未知/重复/跨 owner outfit ID 在图片 Provider 前拒绝，调用数为 0。
+
+服务端对每个合法 outfit 最多调用一次独立 `grok-imagine-image-quality`，可并行但整批最多三次；图片提示只含受控衣物类别、颜色、材质/版型标签与 Scene 目标，不含内部 ID、用户原话、长期记忆正文或身份资产。输出固定为中性无身份模特或干净平铺的单帧静态 2D 组合参考；禁止身份复刻、真实上身/精确合身承诺、3D/360°/动画/视频。图片 Provider 必须复用 `/preview/static-2d` 的 exact request、CPA trace、重复键、大小、MIME、解码、SSRF 与来源验证合同。
+
+响应按输入的权威 outfit 顺序返回 `previews`，每项至少含：`outfit_id`、`preview_id`、`status=succeeded|degraded|failed`、`image_url|null`、服务端派生的 `owned_garment_ids`、`provider`、`fidelity`、`ai_label`、`fallback` 与无正文 `trace_id`。`fidelity.identity=not_assessed`、`garment=style_color_reference_only`、`fit/material/drape=unknown`；AI 标签固定说明“AI 生成的 2D 视觉参考；不代表真实试穿、精确尺码、面料或垂坠”。单项失败不得取消其他项，也不得删除或替换文本 Recommendation。
+
+`GET /recommend/previews/static-2d/{preview_id}/image?user_id=...&styling_session_id=...` 与对应 DELETE 均按 owner/session 返回或删除临时图片。跨 owner/session、未知/已删 ID 拒绝。前端必须先渲染文字与方向卡，再异步请求图片；等待或失败不得阻塞 Dialogue、启用购物 CTA 或显示生图成功来源。
+
 ### GET `/team/home?user_id=...`
 
 返回 `personal_team`、唯一已上线成员 `stylist`、成员边界、进行中的 Styling Session 和未上线能力说明。
@@ -275,6 +290,14 @@ Stylist Studio 的统一对话入口。`/scene/parse`、`/recommend` 及 Look/�
 ### PATCH `/wardrobe/{garment_id}`
 
 仅允许编辑 PRD R1 最低属性；校验衣物属于当前用户。删除不是本次 Demo 必需，但若实现必须同步索引。
+
+### GET `/wardrobe/catalog-assets?user_id=...`
+
+返回当前 owner 衣橱白名单的版本化 2D 目录图状态；每项只能为 `ready/missing/failed`。`ready` 必须同时满足：源 fixture `garment_id/user_id/data_version`精确匹配，manifest 的 `asset_version=wardrobe_generated_v1_s12r2`、`requested_model=grok-imagine-image-quality`、`request_model_pinned=true`、`model_reported/model_verified=false`、`resolved_model=null` 与 `verification_basis=batch_exact_request_contract`精确成立，文件为单帧完整可解码 PNG，bytes/dimensions/SHA-256 与 manifest 一致，且 PNG 内嵌 `AI-Generated=true`、`Requested-Model=grok-imagine-image-quality`、`Model-Reported=false`、`Verification-Basis=batch_exact_request_contract`、当前 `Garment-ID` 与 `Generation-Contract=wardrobe_catalog_single_garment_v1`六项精确成立。复用资产若原生成 prompt hash 无可信留存，必须是 `prompt_sha256=null/prompt_hash_status=not_preserved`，不得用当前模板重算后冒充原值。该批次只证明生成脚本固定请求模型与文件来源链，不声称 CPA 曾逐张回报实际模型或回执。目录资产在未冻结 JPEG/WebP 内嵌来源方案前只接受 PNG；任一字段缺失、篡改、重复 ID 或文件失败均不返回 URL，不阻断原衣物元数据卡。
+
+### GET `/wardrobe/{garment_id}/catalog-image`
+
+必须携带 `user_id`、精确 `asset_version=wardrobe_generated_v1_s12r2` 与当前 item 的 lowercase 64-hex `content_sha256`；服务端重做 owner/fixture/manifest/文件全部校验，并要求 query hash 与重验后的 manifest/文件 hash 精确相同，才返回 `image/png`。旧版本、旧二参数 URL、错 hash、未知或跨 owner、篡改或缺图统一拒绝；成功 URL 可按内容寻址缓存。响应附加 `X-AI-Generated: true`、`X-AI-Requested-Model: grok-imagine-image-quality`、`X-AI-Model-Reported: false` 与 `nosniff`，不得附加或暗示未经 CPA 回报的 actual/resolved model；HTTP header/sidecar 不取代文件内嵌元数据。
 
 ### POST `/assets`
 
@@ -344,7 +367,7 @@ Stylist Studio 的统一对话入口。`/scene/parse`、`/recommend` 及 Look/�
 
 请求只接受：`user_id`、`styling_session_id`、owner-bound 不可变 `look_version_id`、固定 `render_mode="static_2d"`、可选且仅用于 owner/consent 校验的 `identity_asset_id`、`consent` 与幂等 `request_id`。客户端不提交 garment/product ID；服务端从 LookVersion 派生并重新验证 owner、available 与白名单。当前前端固定提交 `identity_asset_id=null`；即使 API 调用方提供了合法资产，原图/字节/URL/视觉特征也绝不发送给生图 Provider，身份一致性始终为 `not_assessed`。`3d/360/video` 或未知 render mode 在 Provider 调用前返回 422，调用数必须为 0。
 
-Provider 通过 CPA `/images/generations` 请求固定 transport `grok-4.5-high`；只接受精确 allowlist `{grok-4.5-high, grok-4.5-build}` 的 resolved model 和单帧 PNG/JPEG/WebP，解码后继续执行 5 MB、8192 px 最大边、25 MP 与动画拒绝。响应不得内嵌 base64，只返回 owner-bound 的临时 `preview_id/image_url`：
+Provider 通过 CPA `/images/generations` 固定请求独立图片模型 `grok-imagine-image-quality`，并支持受控 URL 或 base64 Provider envelope。所有成功都必须验证受控单值 `x-cpa-trace-id` 回执；响应若包含 `model` 字段（包括 `null`、空串或非字符串），只有字符串精确等于请求模型才可继续；字段完全缺失时仍把 actual/resolved model 记为未回报。JSON envelope 使用递归 duplicate-key 拒绝解析，任何层级重复 `model/data/b64_json/url` 或其他键均整体 `CPA_IMAGE_OUTPUT_REJECTED`，不得依赖 last-wins。两条路径都只接受唯一单帧 PNG/JPEG/WebP。CPA envelope 本身也必须流式读取并在 8 MiB 立即中止。远程 URL 必须为 HTTPS、无 userinfo，且 host 必须存在于运维显式 allowlist；禁止 loopback、private、link-local、multicast、unspecified、reserved IPv4/IPv6 及解析到这些地址的主机；默认禁止 redirect；URL 图片响应采用流式读取并在 5 MiB 立即中止，同时精确校验 Content-Type、文件 magic 与完整 decode。解码后继续执行 8192 px 最大边、25 MP 与动画拒绝。应用响应不得内嵌 base64 或原始 CPA trace，只返回 owner-bound 的临时 `preview_id/image_url`：
 
 ```json
 {
@@ -364,10 +387,14 @@ Provider 通过 CPA `/images/generations` 请求固定 transport `grok-4.5-high`
   "image_url": "/preview/static-2d/preview_001/image?user_id=u01&styling_session_id=session_001",
   "provider": {
     "status": "ok",
-    "requested_model": "grok4.5",
-    "transport_model": "grok-4.5-high",
-    "resolved_model": "grok-4.5-build",
-    "model_verified": true,
+    "requested_model": "grok-imagine-image-quality",
+    "transport_model": "grok-imagine-image-quality",
+    "resolved_model": null,
+    "request_model_pinned": true,
+    "cpa_trace_verified": true,
+    "model_reported": false,
+    "model_verified": false,
+    "verification_basis": "exact_request_with_cpa_trace",
     "degraded": false
   },
   "fidelity": {
@@ -390,7 +417,7 @@ Provider 通过 CPA `/images/generations` 请求固定 transport `grok-4.5-high`
 
 `GET /preview/static-2d/{preview_id}/image?user_id=...&styling_session_id=...` 按 owner/session 返回正确 MIME 的临时图片；`DELETE /preview/static-2d/{preview_id}?user_id=...&styling_session_id=...` 删除生成资产。跨 owner/session、未知或已删除 ID 统一不可读取。Trace 仅记录 Look/garment IDs、provider/model/status、耗时、错误码与资产元数据，绝不记录提示词、API key、base64 或原始人像。
 
-CPA 不支持图像、超时、错误模型、坏响应或解码失败时返回 `status=degraded|failed` 和衣物卡片/平铺组合/文字解释 fallback，不阻塞 R1 Styling Session，不伪装生图成功，不切换其他模型。2026-08-10 真实 CPA smoke 的 `/images/generations` 明确以 HTTP 400 返回 `grok-4.5-high` 不支持该端点；应用调用墙钟 `0.229s`，返回 `status=degraded`、无 `image_url`、identity=`not_assessed`。自动化成功路径使用受控 Provider 响应验证完整资产生命周期，不等同宣称当前远程模型已经支持出图。
+CPA 图片端点不可用、超时、错误模型、坏响应、下载或解码失败时返回 `status=degraded|failed` 和衣物卡片/平铺组合/文字解释 fallback，不阻塞 R1 Styling Session，不伪装生图成功，不切换其他图片模型。2026-08-10 使用文本 transport `grok-4.5-high` 的失败只保留为历史证据；S12 起不得再用该请求证明图片 Provider 状态，必须以独立图片模型真实调用为准。
 
 ## 6. 前端防御合同
 

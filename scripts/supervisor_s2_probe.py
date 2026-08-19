@@ -47,7 +47,7 @@ def fake_png(width: int, height: int) -> bytes:
     return signature + chunk(b"IHDR", ihdr) + chunk(b"IDAT", b"x") + chunk(b"IEND", b"")
 
 
-def vision_payload(*, model: str = "grok-4.5-build", unsafe: bool = False, partial: bool = False) -> dict[str, object]:
+def vision_payload(*, model: str = "grok-4.6-build", unsafe: bool = False, partial: bool = False) -> dict[str, object]:
     regions = []
     for slot in ("top", "bottom", "shoes", "overall"):
         visible = not (partial and slot == "shoes")
@@ -78,7 +78,7 @@ def vision_payload(*, model: str = "grok-4.5-build", unsafe: bool = False, parti
 def mock_transport(payload: dict[str, object] | None = None, *, status: int = 200) -> httpx.MockTransport:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        assert body["model"] == "grok-4.5-high"
+        assert body["model"] == "grok-4.6-high"
         assert body["response_format"] == {"type": "json_object"}
         content = body["messages"][1]["content"]
         assert any(part.get("type") == "image_url" and part["image_url"]["url"].startswith("data:image/") for part in content)
@@ -630,9 +630,9 @@ def main() -> None:
             {
                 "attempted": True,
                 "status": "ok",
-                "requested_model": "grok4.5",
-                "resolved_model": "grok-4.5-build",
-                "transport_model": "grok-4.5-high",
+                "requested_model": "grok4.6",
+                "resolved_model": "grok-4.6-build",
+                "transport_model": "grok-4.6-high",
                 "model_verified": True,
             },
         )
@@ -667,7 +667,7 @@ def main() -> None:
             "styling_session_id": "session_privacy_ordinary",
             "query_text": "下周通勤想穿得简洁舒适",
         }))
-        assert ordinary_scene["backend"] == "grok4.5"
+        assert ordinary_scene["backend"] == "grok4.6"
         assert privacy_calls == ["下周通勤想穿得简洁舒适"]
     summary["privacy_blocked_cpa_calls"] = 0
     summary["ordinary_cpa_calls"] = len(privacy_calls)

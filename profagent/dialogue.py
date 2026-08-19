@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import hashlib
 import json
 import re
@@ -243,6 +244,9 @@ class DialogueStateStore:
 
 
 class DialogueService:
+    _OUTFIT_COUNT = re.compile(
+        r"(?<!第)(?P<count>[一二两三123])\s*(?:套|个(?:方向|方案|搭配))"
+    )
     _CHAT_TERMS = (
         "先聊聊天",
         "我们先聊天吧",
@@ -280,6 +284,8 @@ class DialogueService:
         "帮我选",
         "穿什么",
         "穿什么好",
+        "怎么穿",
+        "应该怎么穿",
         "你觉得我穿",
         "怎么搭",
     )
@@ -628,6 +634,145 @@ class DialogueService:
             "comfort_notes": list(scene.constraints.comfort_notes),
         }
 
+    @classmethod
+    def _requested_outfit_count(cls, text: str) -> int | None:
+        matches = list(cls._OUTFIT_COUNT.finditer(text))
+        if not matches:
+            return None
+        mapping = {"一": 1, "二": 2, "两": 2, "三": 3}
+        positive: list[tuple[re.Match[str], int]] = []
+        negative: list[tuple[re.Match[str], int]] = []
+        for match in matches:
+            token = match.group("count")
+            value = mapping[token] if token in mapping else int(token)
+            before = text[max(0, match.start() - 8) : match.start()]
+            after = text[match.end() : min(len(text), match.end() + 8)]
+            is_negative = bool(
+                re.search(r"(?:不要|不用|不是|别|不需要|不想要|不看)\s*$", before)
+                or re.match(r"\s*(?:不要|不用|不需要|不看|太多)", after)
+            )
+            (negative if is_negative else positive).append((match, value))
+        if len(positive) == 1:
+            return positive[0][1]
+        if not positive:
+            return None
+        # Multiple positive counts are ambiguous unless the final mention is
+        # introduced by a closed, explicit correction phrase. A plain “给我”
+        # is only a request verb and does not resolve conflicting counts.
+        final_match, final_value = positive[-1]
+        final_prefix = text[max(0, final_match.start() - 10) : final_match.start()]
+        explicit_correction = bool(
+            re.search(
+                r"(?:改成|改为|换成|更正为|最终要|最后要|那就|就要|只要)\s*$",
+                final_prefix,
+            )
+        )
+        return final_value if explicit_correction else None
+
+    def _recommendation_summary(self, recommendation) -> dict[str, object]:
+        outfits: list[dict[str, object]] = []
+        for outfit in recommendation.outfits[:3]:
+            pieces: list[dict[str, str]] = []
+            for garment_id in outfit.items:
+                garment = self.scene_parser.repository.get_garment(garment_id)
+                if garment is None:
+                    continue
+                pieces.append(
+                    {
+                        "slot": garment.slot,
+                        "name": garment.name[:60],
+                        "color": garment.color,
+                    }
+                )
+            outfits.append(
+                {
+                    "strategy_label": outfit.strategy_label[:60],
+                    "pieces": pieces,
+                    "reasons": [reason[:100] for reason in outfit.reasons[:2]],
+                }
+            )
+        return {
+            "source": "current_owner_wardrobe_validated",
+            "requested_outfit_count": recommendation.requested_outfit_count,
+            "actual_outfit_count": len(outfits),
+            "outfits": outfits,
+            "gap_explanation": (
+                recommendation.gap_explanation[:180]
+                if recommendation.gap_explanation
+                else None
+            ),
+        }
+
+    def _grounded_local_recommendation(self, recommendation) -> str:
+        count = len(recommendation.outfits)
+        if not count:
+            return recommendation.assistant_message + (
+                f" {recommendation.gap_explanation}"
+                if recommendation.gap_explanation
+                else ""
+            )
+        directions: list[str] = []
+        for index, outfit in enumerate(recommendation.outfits, 1):
+            names = []
+            for garment_id in outfit.items:
+                garment = self.scene_parser.repository.get_garment(garment_id)
+                if garment is not None:
+                    names.append(garment.name)
+            directions.append(
+                f"{index}）{outfit.strategy_label.replace('先试这个：', '').replace('备选：', '')}："
+                + "、".join(names)
+            )
+        message = (
+            f"我已经按当前场景读完你的衣橱，整理出 {count} 套可直接试的方向："
+            + "；".join(directions)
+            + "。这些衣橱单品都来自你的当前衣橱，并已通过可用状态和硬约束复检。"
+        )
+        if recommendation.gap_explanation:
+            message += recommendation.gap_explanation
+        return message[:600]
+
+    @staticmethod
+    def _last_assistant_reply(previous: DialogueEnvelope | None) -> str | None:
+        if previous is None:
+            return None
+        for item in reversed(previous.history):
+            if item.get("role") == "assistant":
+                return str(item.get("content", ""))
+        return None
+
+    @classmethod
+    def _recommendation_reply_rejection(
+        cls,
+        reply: str,
+        previous: DialogueEnvelope | None,
+        actual_count: int,
+    ) -> str | None:
+        if re.search(
+            r"(?:手头|衣橱|现有衣服).{0,12}(?:有什么|有哪些|列一下|告诉我|说说)|"
+            r"(?:告诉我|说说|列一下).{0,12}(?:上衣|裤子|鞋子|衣服|衣橱)|"
+            r"你(?:目前|现在)?(?:可以|能)?(?:拿来)?搭配的(?:衣服|单品).{0,8}(?:是什么|有哪些)|"
+            r"(?:请|麻烦)?(?:先)?把(?:你)?(?:的)?(?:可选|现有|能搭的)?(?:衣服|单品)"
+            r".{0,10}(?:发给?我|告诉我|列出来|说一下).{0,12}(?:再|然后)?(?:搭|推荐)?",
+            reply,
+        ):
+            return "CPA_DIALOGUE_WARDROBE_REASK_REJECTED"
+        claimed = {
+            cls._requested_outfit_count(match.group(0))
+            for match in cls._OUTFIT_COUNT.finditer(reply)
+        }
+        claimed.discard(None)
+        if claimed and claimed != {actual_count}:
+            return "CPA_DIALOGUE_OUTFIT_COUNT_CONFLICT"
+        prior = cls._last_assistant_reply(previous)
+        if prior:
+            normalize = lambda value: re.sub(r"[\W_]+", "", value)
+            left, right = normalize(prior), normalize(reply)
+            if min(len(left), len(right)) >= 24 and difflib.SequenceMatcher(
+                None, left, right
+            ).ratio() >= 0.82:
+                return "CPA_DIALOGUE_HIGH_REPETITION_REJECTED"
+        return None
+
     def _provider_context(
         self,
         *,
@@ -642,6 +787,7 @@ class DialogueService:
         sensitive: bool,
         current_text: str,
         fit_context: SessionFitContext | None,
+        recommendation_summary: dict[str, object] | None,
     ) -> dict[str, object]:
         direct_private = self._contains_direct_private(payload.message)
         minimized = bool(
@@ -705,6 +851,9 @@ class DialogueService:
                     if fit_context is not None and not minimized
                     else None
                 ),
+                "recommendation_summary": (
+                    recommendation_summary if not minimized else None
+                ),
             },
             "history": (
                 []
@@ -750,6 +899,7 @@ class DialogueService:
         sensitive: bool,
         current_text: str,
         fit_context: SessionFitContext | None,
+        recommendation_summary: dict[str, object] | None,
     ) -> tuple[dict[str, Any] | None, DialogueProviderStatus, dict[str, Any]]:
         context = self._provider_context(
             payload=payload,
@@ -763,6 +913,7 @@ class DialogueService:
             sensitive=sensitive,
             current_text=current_text,
             fit_context=fit_context,
+            recommendation_summary=recommendation_summary,
         )
         budget = self.provider.settings.effective_cpa_dialogue_budget_seconds
         started = time.perf_counter()
@@ -776,8 +927,8 @@ class DialogueService:
             response_status = DialogueProviderStatus(
                 status="ok",
                 attempted=True,
-                requested_model="grok4.5",
-                transport_model="grok-4.5-high",
+                requested_model="grok4.6",
+                transport_model="grok-4.6-high",
                 resolved_model=metadata.get("resolved_model"),
                 model_verified=bool(metadata.get("model_verified")),
                 degraded=False,
@@ -803,8 +954,8 @@ class DialogueService:
         response_status = DialogueProviderStatus(
             status="fallback",
             attempted=True,
-            requested_model="grok4.5",
-            transport_model="grok-4.5-high",
+            requested_model="grok4.6",
+            transport_model="grok-4.6-high",
             resolved_model=None,
             model_verified=False,
             degraded=True,
@@ -1134,6 +1285,20 @@ class DialogueService:
                 else ("pause" if mode in {"support_pause", "safety_response"} else "none")
             )
         )
+        recommendation_summary: dict[str, object] | None = None
+        grounded_recommendation_message: str | None = None
+        if action == "recommend":
+            if scene is None:
+                raise DialogueConflict("recommendation requires an authoritative scene")
+            requested_outfit_count = self._requested_outfit_count(text)
+            recommendation = self.recommendations.recommend(scene)
+            recommendation = self.recommendations.apply_requested_outfit_count(
+                scene, recommendation, requested_outfit_count
+            )
+            recommendation_summary = self._recommendation_summary(recommendation)
+            grounded_recommendation_message = self._grounded_local_recommendation(
+                recommendation
+            )
         generated, provider_status, provider_trace = await self._cpa_reply(
             payload=payload,
             previous=previous,
@@ -1146,13 +1311,42 @@ class DialogueService:
             sensitive=sensitive,
             current_text=current_text_for_provider,
             fit_context=active_fit_context,
+            recommendation_summary=recommendation_summary,
         )
+
+        if generated is not None and action == "recommend" and recommendation is not None:
+            semantic_rejection = self._recommendation_reply_rejection(
+                str(generated["reply"]), previous, len(recommendation.outfits)
+            )
+            if semantic_rejection is not None:
+                generated = None
+                provider_status = DialogueProviderStatus(
+                    status="fallback",
+                    attempted=True,
+                    requested_model="grok4.6",
+                    transport_model="grok-4.6-high",
+                    resolved_model=None,
+                    model_verified=False,
+                    degraded=True,
+                    generation_source="local_fallback",
+                    reason_code="CPA_DIALOGUE_OUTPUT_REJECTED",
+                )
+                provider_trace = {
+                    **provider_trace,
+                    "status": "fallback",
+                    "resolved_model": None,
+                    "model_verified": False,
+                    "degraded": True,
+                    "generation_source": "local_fallback",
+                    "reason_code": "CPA_DIALOGUE_OUTPUT_REJECTED",
+                    "diagnostic_reason_code": semantic_rejection,
+                }
 
         if scene is not None:
             scene = self.scene_parser.state.replace_provider_backend(
                 scene.request_id,
                 payload.user_id,
-                "grok4.5" if provider_status.status == "ok" else "rule_fallback",
+                "grok4.6" if provider_status.status == "ok" else "rule_fallback",
             )
             if mode != "styling_active" or action == "clarify":
                 scene = scene.model_copy(
@@ -1217,10 +1411,9 @@ class DialogueService:
                 )
             )
         else:
-            if scene is None:
+            if recommendation is None or grounded_recommendation_message is None:
                 raise DialogueConflict("recommendation requires an authoritative scene")
-            recommendation = self.recommendations.recommend(scene)
-            local_message = recommendation.assistant_message
+            local_message = grounded_recommendation_message
 
         if mixed_emotion_task and action in {"clarify", "recommend"}:
             local_message = self._acknowledge_task_emotion_once(

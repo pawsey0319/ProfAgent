@@ -29,6 +29,7 @@ from .feedback_service import (
     RecommendationFeedbackInput,
     RecommendationFeedbackResponse,
 )
+from .image_provider import GrokImageProvider
 from .look_models import (
     AdjustLookInput,
     AdjustLookResponse,
@@ -65,6 +66,9 @@ from .preview import (
     PreviewDeleteResponse,
     PreviewError,
     PreviewNotFound,
+    RecommendationPreview2DBatchResponse,
+    RecommendationPreview2DInput,
+    RecommendationPreview2DService,
 )
 from .memory_service import (
     MemoryConfirmInput,
@@ -82,6 +86,11 @@ from .scene import SceneParser, SceneStateConflict, SceneStateStore
 from .service import RecommendationNotFound, RecommendationService
 from .tracing import TraceStore
 from .vision import VisionAdapter
+from .wardrobe_assets import (
+    WardrobeCatalogAssetNotFound,
+    WardrobeCatalogAssetService,
+    WardrobeCatalogAssetsResponse,
+)
 
 
 class AppServices:
@@ -92,8 +101,13 @@ class AppServices:
         self.state = SceneStateStore()
         self.assets = AssetService(settings.root_dir, self.traces)
         self.vision = VisionAdapter(settings)
-        self.memory = MemoryService(self.traces)
+        self.memory = MemoryService(
+            self.traces,
+            database_url=settings.database_url,
+            root_dir=settings.root_dir,
+        )
         self.llm = GrokLLMProvider(settings)
+        self.image_provider = GrokImageProvider(settings)
         self.dense = DenseAdapter(settings)
         self.hard_filter = HardFilter()
         self.retriever = HybridRetriever(self.dense)
@@ -144,8 +158,17 @@ class AppServices:
         self.previews = Preview2DService(
             self.looks,
             self.assets,
-            self.llm,
+            self.image_provider,
             self.traces,
+        )
+        self.recommendation_previews = RecommendationPreview2DService(
+            self.recommendations,
+            self.assets,
+            self.image_provider,
+            self.traces,
+        )
+        self.wardrobe_assets = WardrobeCatalogAssetService(
+            settings, self.repository
         )
 
 
@@ -194,6 +217,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             yield
         finally:
             services.assets.close()
+            services.memory.close()
 
     app = FastAPI(
         title="ProfAgent R1 Stylist Demo",
@@ -249,7 +273,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
         llm_health = await services.llm.health()
-        image_health = services.llm.image_health()
+        image_health = services.image_provider.health()
         vision_health = services.vision.health()
         vision_degraded = bool(
             vision_health.get("enabled")
@@ -262,8 +286,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             or settings.vision_force_failure
             or vision_degraded
             or (
-                image_health.get("attempted")
-                and not image_health.get("available")
+                settings.cpa_image_enabled and not image_health.get("available")
             )
         )
         return HealthResponse(
@@ -292,7 +315,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             capabilities={
                 "rule_recommendation": True,
                 "shopping": settings.catalog_enabled,
-                "static_2d": settings.cpa_text_enabled,
+                "static_2d": settings.cpa_image_enabled,
                 "video": False,
                 "three_d": False,
             },
@@ -431,6 +454,46 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="garment not found for user")
         return WardrobePatchResponse(item=updated)
 
+    @app.get(
+        "/wardrobe/catalog-assets", response_model=WardrobeCatalogAssetsResponse
+    )
+    async def wardrobe_catalog_assets(
+        user_id: str = Query(..., min_length=1, max_length=128),
+    ) -> WardrobeCatalogAssetsResponse:
+        try:
+            return services.wardrobe_assets.list_for_user(user_id)
+        except WardrobeCatalogAssetNotFound:
+            raise HTTPException(status_code=404, detail="wardrobe catalog assets not found")
+
+    @app.get("/wardrobe/{garment_id}/catalog-image")
+    async def wardrobe_catalog_image(
+        garment_id: str,
+        user_id: str = Query(..., min_length=1, max_length=128),
+        asset_version: str = Query(..., min_length=1, max_length=80),
+        content_sha256: str = Query(
+            ..., min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+        ),
+    ) -> Response:
+        try:
+            body, media_type = services.wardrobe_assets.read_owned(
+                garment_id, user_id, asset_version, content_sha256
+            )
+        except WardrobeCatalogAssetNotFound:
+            # Missing and cross-owner lookups intentionally share one response.
+            raise HTTPException(status_code=404, detail="wardrobe catalog image not found")
+        return Response(
+            content=body,
+            media_type=media_type,
+            headers={
+                "Cache-Control": "private, max-age=31536000, immutable",
+                "X-Content-Type-Options": "nosniff",
+                "X-AI-Generated": "true",
+                "X-AI-Requested-Model": "grok-imagine-image-quality",
+                "X-AI-Model-Reported": "false",
+                "X-AI-Verification-Basis": "batch_exact_request_contract",
+            },
+        )
+
     @app.post("/assets", response_model=AssetUploadResponse)
     async def upload_asset(
         user_id: str = Form(...),
@@ -541,6 +604,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except PreviewError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
 
+    @app.post(
+        "/recommend/previews/static-2d",
+        response_model=RecommendationPreview2DBatchResponse,
+    )
+    async def recommendation_previews_static_2d(
+        payload: RecommendationPreview2DInput,
+    ) -> RecommendationPreview2DBatchResponse:
+        try:
+            return await services.recommendation_previews.generate(payload)
+        except PreviewNotFound:
+            # Unknown and cross-owner recommendation/outfit identifiers share
+            # one response and never reach the image provider.
+            raise HTTPException(
+                status_code=404, detail="saved recommendation outfit not found"
+            )
+        except PreviewConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except PreviewError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
     @app.get("/preview/static-2d/{preview_id}/image")
     async def preview_static_2d_image(
         preview_id: str,
@@ -549,6 +632,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> Response:
         try:
             body, media_type = services.previews.image(
+                preview_id, user_id, styling_session_id
+            )
+        except PreviewNotFound:
+            raise HTTPException(status_code=404, detail="preview image not found")
+        return Response(
+            content=body,
+            media_type=media_type,
+            headers={
+                "Cache-Control": "no-store",
+                "X-AI-Generated": "true",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @app.get("/recommend/previews/static-2d/{preview_id}/image")
+    async def recommendation_preview_static_2d_image(
+        preview_id: str,
+        user_id: str = Query(...),
+        styling_session_id: str = Query(...),
+    ) -> Response:
+        try:
+            body, media_type = services.recommendation_previews.image(
                 preview_id, user_id, styling_session_id
             )
         except PreviewNotFound:
@@ -573,6 +678,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> PreviewDeleteResponse:
         try:
             return services.previews.delete(
+                preview_id, user_id, styling_session_id
+            )
+        except PreviewNotFound:
+            raise HTTPException(status_code=404, detail="preview not found")
+
+    @app.delete(
+        "/recommend/previews/static-2d/{preview_id}",
+        response_model=PreviewDeleteResponse,
+    )
+    async def delete_recommendation_preview_static_2d(
+        preview_id: str,
+        user_id: str = Query(...),
+        styling_session_id: str = Query(...),
+    ) -> PreviewDeleteResponse:
+        try:
+            return services.recommendation_previews.delete(
                 preview_id, user_id, styling_session_id
             )
         except PreviewNotFound:

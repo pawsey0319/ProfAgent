@@ -214,7 +214,7 @@ class SceneRequest(ApiModel):
     shopping_allowed: bool
     goals: list[str]
     constraints: SceneConstraints
-    backend: Literal["grok4.5", "rule_fallback"]
+    backend: Literal["grok4.6", "rule_fallback"]
     ranking_profile: Literal["rule_bm25_rrf_v1"] = "rule_bm25_rrf_v1"
     input_mode: Literal["text_then_image"] = "text_then_image"
     clarification_required: bool = False
@@ -264,6 +264,7 @@ class InitialRecommendation(ApiModel):
     assistant_message: str
     outfits: list[RecommendedOutfit]
     shopping_suggestions: list[ShoppingSuggestion]
+    requested_outfit_count: Literal[1, 2, 3] | None = None
     gap_explanation: str | None = None
     ui_capabilities: UICapabilities
     trace_id: str
@@ -279,9 +280,9 @@ class DialogueTurnInput(ApiModel):
 class DialogueProviderStatus(ApiModel):
     status: Literal["ok", "fallback"]
     attempted: bool
-    requested_model: Literal["grok4.5"] = "grok4.5"
-    transport_model: Literal["grok-4.5-high"] = "grok-4.5-high"
-    resolved_model: str | None = None
+    requested_model: Literal["grok4.6"] = "grok4.6"
+    transport_model: Literal["grok-4.6-high"] = "grok-4.6-high"
+    resolved_model: Literal["grok-4.6-high", "grok-4.6-build"] | None = None
     model_verified: bool
     degraded: bool
     generation_source: Literal["cpa", "local_fallback"]

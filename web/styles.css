@@ -1009,6 +1009,43 @@ h1 {
   padding-top: 18px;
 }
 
+.direction-preview {
+  min-height: 96px;
+  margin: 2px 0 14px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--paper-soft);
+}
+
+.direction-preview[data-state="generating"] {
+  border-color: rgba(45, 114, 80, 0.35);
+  background: #eef6f0;
+}
+
+.direction-preview[data-state="degraded"],
+.direction-preview[data-state="failed"] {
+  border-color: rgba(150, 105, 34, 0.35);
+  background: #fffaf0;
+}
+
+.direction-preview-status,
+.direction-preview-caption {
+  margin: 0;
+  padding: 12px;
+  color: var(--ink-soft);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.direction-preview-image {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: contain;
+  background: #f5f6f2;
+}
+
 .trust-note {
   margin: 0;
   color: #2f6d50;
@@ -1158,6 +1195,20 @@ h1 {
   font-size: 0.78rem;
 }
 
+.wardrobe-catalog-disclaimer {
+  max-width: 760px;
+  margin-top: 7px !important;
+  color: var(--ink-soft);
+  font-size: 0.74rem;
+  line-height: 1.55;
+}
+
+.wardrobe-catalog-status {
+  margin: -4px 0 14px;
+  color: var(--ink-soft);
+  font-size: 0.76rem;
+}
+
 .filter-bar {
   display: flex;
   align-items: flex-end;
@@ -1187,10 +1238,45 @@ h1 {
   background: white;
 }
 
-.wardrobe-grid {
+.wardrobe-accordion {
+  display: grid;
+  gap: 12px;
+}
+
+.wardrobe-category {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.wardrobe-category-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 17px 19px;
+  cursor: pointer;
+  font-weight: 800;
+  list-style-position: inside;
+}
+
+.wardrobe-category-summary:focus-visible {
+  outline: 3px solid rgba(47, 112, 82, 0.35);
+  outline-offset: -3px;
+}
+
+.wardrobe-category-count {
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.wardrobe-category-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 13px;
+  padding: 0 14px 14px;
 }
 
 .garment-card {
@@ -1201,14 +1287,58 @@ h1 {
   background: white;
 }
 
+.garment-visual {
+  position: relative;
+  display: grid;
+  aspect-ratio: 1 / 1;
+  min-height: 96px;
+  place-items: center;
+  overflow: hidden;
+  background: #edf0ec;
+}
+
 .garment-swatch {
   position: relative;
   display: grid;
-  height: 96px;
+  width: 100%;
+  height: 100%;
   place-items: center;
   overflow: hidden;
   color: rgba(255, 255, 255, 0.9);
   background: var(--garment-color, #8b9994);
+}
+
+.garment-catalog-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #f5f6f2;
+}
+
+.garment-catalog-image.is-pending {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.garment-catalog-image.is-loaded {
+  opacity: 1;
+}
+
+.garment-catalog-badge {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 2;
+  padding: 4px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.76);
+  border-radius: 999px;
+  color: white;
+  background: rgba(24, 60, 48, 0.86);
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
 
 .garment-swatch::before,
@@ -1264,6 +1394,13 @@ h1 {
   color: var(--ink-soft);
   background: #f1f3f0;
   font-size: 0.68rem;
+}
+
+.garment-catalog-state {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.69rem;
+  line-height: 1.45;
 }
 
 .availability {
@@ -2269,7 +2406,7 @@ h1 {
     grid-template-columns: 1fr 1fr;
   }
 
-  .wardrobe-grid {
+  .wardrobe-category-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
@@ -2404,7 +2541,7 @@ h1 {
   }
 
   .direction-grid,
-  .wardrobe-grid {
+  .wardrobe-category-grid {
     grid-template-columns: 1fr 1fr;
   }
 
@@ -2468,7 +2605,7 @@ h1 {
   }
 
   .direction-grid,
-  .wardrobe-grid,
+  .wardrobe-category-grid,
   .filter-bar,
   .debug-metrics,
   .scorecard-grid,
@@ -2497,7 +2634,7 @@ h1 {
     text-align: left;
   }
 
-  .wardrobe-grid {
+  .wardrobe-category-grid {
     gap: 10px;
   }
 
@@ -2506,7 +2643,8 @@ h1 {
     grid-template-columns: 95px 1fr;
   }
 
-  .garment-swatch {
+  .garment-visual {
+    aspect-ratio: auto;
     height: 100%;
     min-height: 120px;
   }

@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "evidence_id": "s12r_real_image_provider_v1",
+  "captured_at": "2026-08-18T17:39:05+08:00",
+  "environment": "torch128",
+  "command": "conda run --no-capture-output -n torch128 python reports/runtime/s12_real_image_provider_smoke.py",
+  "result": {
+    "status": "ok",
+    "media_type": "image/jpeg",
+    "response_source": "b64_json",
+    "size_bytes": 228841,
+    "sha256": "83846098fecb05308fba9b1141f5d7274079025f171bf2bc76af08632016d629",
+    "latency_ms": 5288.5
+  },
+  "provider": {
+    "requested_model": "grok-imagine-image-quality",
+    "transport_model": "grok-imagine-image-quality",
+    "request_model_pinned": true,
+    "cpa_trace_verified": true,
+    "model_reported": false,
+    "model_verified": false,
+    "resolved_model": null,
+    "verification_basis": "exact_request_with_cpa_trace"
+  },
+  "privacy": {
+    "raw_cpa_trace_recorded": false,
+    "image_body_embedded_in_report": false,
+    "api_key_recorded": false,
+    "prompt_recorded": false
+  },
+  "interpretation": "The project provider returned and decoded a real CPA image. The request model was pinned and a controlled CPA receipt was verified, but CPA did not report an actual model; this report therefore does not claim an actual or resolved model."
+}

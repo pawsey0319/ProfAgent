@@ -99,6 +99,41 @@ class RecommendationService:
             raise RecommendationNotFound(outfit_id)
         return scene, outfit.model_copy(deep=True)
 
+    def apply_requested_outfit_count(
+        self,
+        scene: SceneRequest,
+        recommendation: InitialRecommendation,
+        requested_outfit_count: int | None,
+    ) -> InitialRecommendation:
+        """Apply the server-parsed current-turn count without rerunning tools."""
+        if requested_outfit_count not in {None, 1, 2, 3}:
+            raise ValueError("requested_outfit_count must be between 1 and 3")
+        if requested_outfit_count is None:
+            return recommendation
+        result = recommendation.model_copy(deep=True)
+        result.requested_outfit_count = requested_outfit_count
+        result.outfits = result.outfits[:requested_outfit_count]
+        if len(result.outfits) < requested_outfit_count:
+            result.gap_explanation = (
+                f"你明确需要 {requested_outfit_count} 套；当前硬约束下只能形成 "
+                f"{len(result.outfits)} 套有明显差异的完整方向。"
+                "没有复制方案，也没有放宽禁忌、可用状态或天气要求。"
+            )
+        existing = self.traces.get(scene.trace_id)
+        validator = dict(existing.validator) if existing is not None else {}
+        validator.update(
+            {
+                "requested_outfit_count": requested_outfit_count,
+                "returned_outfit_count": len(result.outfits),
+                "requested_count_satisfied": (
+                    len(result.outfits) == requested_outfit_count
+                ),
+            }
+        )
+        self.traces.update(scene.trace_id, validator=validator)
+        self._save_recommendation(result)
+        return result.model_copy(deep=True)
+
     @staticmethod
     def _server_urgency(horizon: str) -> str:
         return {
@@ -279,7 +314,14 @@ class RecommendationService:
             },
         )
 
-    def recommend(self, scene: SceneRequest) -> InitialRecommendation:
+    def recommend(
+        self,
+        scene: SceneRequest,
+        *,
+        requested_outfit_count: int | None = None,
+    ) -> InitialRecommendation:
+        if requested_outfit_count not in {None, 1, 2, 3}:
+            raise ValueError("requested_outfit_count must be between 1 and 3")
         scene = self._enforce_gate(scene)
         self._ensure_trace(scene)
         user = self.repository.get_user(scene.user_id)
@@ -308,6 +350,7 @@ class RecommendationService:
                 assistant_message=self._assistant_message(scene, support_mode),
                 outfits=[],
                 shopping_suggestions=[],
+                requested_outfit_count=requested_outfit_count,
                 gap_explanation="先确认是否需要进入穿搭决策；未在情绪、身体或医疗请求上强推推荐。",
                 ui_capabilities=scene.ui_capabilities,
                 trace_id=scene.trace_id,
@@ -320,9 +363,21 @@ class RecommendationService:
         memory_signals = (
             self.memory.active_signals(scene.user_id) if self.memory is not None else ()
         )
+        soft_memory_terms: tuple[str, ...] = ()
+        memory_soft_trace: dict[str, object] | None = None
+        if self.memory is not None:
+            soft_memory_terms, memory_soft_trace = self.memory.retrieve_soft(
+                scene.user_id, scene.query_text
+            )
         ranked, retrieval_trace, fallback_events = self.retriever.retrieve(
-            scene, filtered, user.favorite_colors, memory_signals
+            scene,
+            filtered,
+            user.favorite_colors,
+            memory_signals,
+            soft_memory_terms,
         )
+        if memory_soft_trace is not None:
+            retrieval_trace["memory_soft"] = memory_soft_trace
         for event in fallback_events:
             self.traces.append_fallback(scene.trace_id, event)
         outfits, gap = self.assembler.assemble(
@@ -331,6 +386,22 @@ class RecommendationService:
         valid_outfits, validator_trace = self.validator.validate(
             scene, outfits, filtered.eligible_ids
         )
+        if requested_outfit_count is not None:
+            valid_outfits = valid_outfits[:requested_outfit_count]
+            validator_trace = {
+                **validator_trace,
+                "requested_outfit_count": requested_outfit_count,
+                "returned_outfit_count": len(valid_outfits),
+                "requested_count_satisfied": (
+                    len(valid_outfits) == requested_outfit_count
+                ),
+            }
+            if len(valid_outfits) < requested_outfit_count:
+                gap = (
+                    f"你明确需要 {requested_outfit_count} 套；当前硬约束下只能形成 "
+                    f"{len(valid_outfits)} 套有明显差异的完整方向。"
+                    "没有复制方案，也没有放宽禁忌、可用状态或天气要求。"
+                )
         if outfits and not valid_outfits:
             self.traces.append_fallback(
                 scene.trace_id,
@@ -410,6 +481,7 @@ class RecommendationService:
             assistant_message=self._assistant_message(scene, None),
             outfits=valid_outfits,
             shopping_suggestions=shopping_suggestions,
+            requested_outfit_count=requested_outfit_count,
             gap_explanation=gap,
             ui_capabilities=scene.ui_capabilities,
             trace_id=scene.trace_id,

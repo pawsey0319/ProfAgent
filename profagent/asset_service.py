@@ -97,6 +97,45 @@ class AssetService:
     }
     _ANGLE = re.compile(r"^[a-zA-Z0-9_\-\u4e00-\u9fff]{1,40}$")
 
+    @classmethod
+    def validate_static_image(
+        cls, content: bytes, media_type: str | None = None
+    ) -> tuple[str, int, int]:
+        """Validate untrusted image bytes without storing them.
+
+        This is the single static-image boundary shared by uploads, generated
+        previews and versioned wardrobe catalog assets.
+        """
+        if not content:
+            raise AssetError("empty asset is not accepted")
+        if len(content) > MAX_ASSET_BYTES:
+            raise AssetError("asset exceeds the 5MB limit")
+        normalized_type = (media_type or "").lower().split(";", 1)[0].strip()
+        if not normalized_type:
+            normalized_type = next(
+                (
+                    candidate
+                    for candidate, (_extension, signature) in cls._MEDIA.items()
+                    if signature(content)
+                ),
+                "",
+            )
+        spec = cls._MEDIA.get(normalized_type)
+        if spec is None:
+            raise AssetError(
+                "only static png/jpeg/webp images are accepted; video/3D is rejected"
+            )
+        _extension, signature_check = spec
+        if not signature_check(content):
+            raise AssetError(
+                "file signature does not match the declared static image type"
+            )
+        technical_dimensions = cls._technical_dimensions(normalized_type, content)
+        width, height, _informative = cls._safe_decode(
+            normalized_type, content, technical_dimensions
+        )
+        return normalized_type, width, height
+
     def __init__(self, root_dir: Path, traces: TraceStore):
         self.root_dir = root_dir.resolve()
         self.traces = traces
@@ -376,17 +415,10 @@ class AssetService:
         ):
             raise AssetError("video, 3D and 360-degree asset modes are not supported")
         normalized_type = (media_type or "").lower().split(";", 1)[0].strip()
-        spec = self._MEDIA.get(normalized_type)
-        if spec is None:
-            raise AssetError("only static png/jpeg/webp images are accepted; video/3D is rejected")
-        if not content:
-            raise AssetError("empty asset is not accepted")
-        if len(content) > MAX_ASSET_BYTES:
-            raise AssetError("asset exceeds the 5MB limit")
-        _extension, signature_check = spec
-        if not signature_check(content):
-            raise AssetError("file signature does not match the declared static image type")
-        technical_dimensions = self._technical_dimensions(normalized_type, content)
+        normalized_type, width, height = self.validate_static_image(
+            content, normalized_type
+        )
+        technical_dimensions = (width, height)
         width, height, informative = self._safe_decode(
             normalized_type, content, technical_dimensions
         )

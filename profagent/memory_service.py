@@ -2,14 +2,22 @@ from __future__ import annotations
 
 import re
 import uuid
+import hashlib
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from pathlib import Path
 from threading import RLock
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .models import API_VERSION, Style
+from .memory_repository import (
+    MemoryRepository,
+    MemoryRepositoryError,
+    create_memory_repository,
+)
 from .tracing import TraceStore, utc_now
 
 
@@ -222,14 +230,112 @@ class MemoryService:
         flags=re.IGNORECASE,
     )
 
-    def __init__(self, traces: TraceStore):
+    RRF_K = 60
+    RRF_CANDIDATE_LIMIT = 20
+    RRF_WEIGHTS = {
+        "bm25": 1.0,
+        "dense": 1.0,
+        "recency": 0.75,
+        "importance": 1.25,
+    }
+    RRF_TOP_K = 5
+
+    def __init__(
+        self,
+        traces: TraceStore,
+        repository: MemoryRepository | None = None,
+        *,
+        database_url: str | None = None,
+        root_dir: Path | None = None,
+    ):
         self.traces = traces
+        self.repository = repository or create_memory_repository(
+            database_url, root_dir or Path.cwd()
+        )
         self._proposals: dict[str, MemoryProposal] = {}
         self._records: dict[str, MemoryRecord] = {}
         self._index: dict[tuple[str, str], set[str]] = {}
         self._proposal_context: dict[str, MemoryTargetContext] = {}
         self._record_context: dict[str, MemoryTargetContext] = {}
         self._lock = RLock()
+        self._refresh()
+
+    @staticmethod
+    def _context_dump(context: MemoryTargetContext) -> dict[str, object]:
+        return {
+            "policy": context.policy,
+            "target_item_id": context.target_item_id,
+            "similarity_policy": context.similarity_policy,
+            "shoe_signature": context.shoe_signature.model_dump(mode="json"),
+        }
+
+    @staticmethod
+    def _context_load(payload: dict[str, object]) -> MemoryTargetContext:
+        return MemoryTargetContext(
+            policy="exclude_item_when_long_walk",
+            target_item_id=str(payload["target_item_id"]),
+            similarity_policy="demote_structured_similar_shoes_v1",
+            shoe_signature=ShoeSimilaritySignature.model_validate(
+                payload["shoe_signature"]
+            ),
+        )
+
+    @staticmethod
+    def _semantic_key(record: MemoryRecord, context: MemoryTargetContext | None) -> str:
+        normalized = re.sub(r"\s+", "", record.content).lower()
+        controlled = {
+            "不穿高跟鞋": "hard:no_high_heels",
+            "不穿裙装": "hard:no_skirts",
+            "久走或长时间站立时需要舒适鞋履": "hard:long_walk",
+            "偏爱直筒裤": "soft:fit:straight",
+            "偏爱简洁风格": "soft:style:simple",
+            "偏爱低调配色": "soft:color:low_key",
+            "长时间站立时优先选择适合久走的鞋。": "soft:comfort:long_walk",
+            "长时间站立时优先选择适合久走的鞋": "soft:comfort:long_walk",
+            "偏好久走与长时间站立时选择舒适鞋履": "feedback:long_walk",
+        }
+        key = controlled.get(normalized, f"controlled:{record.type}:{normalized}")
+        if context is not None:
+            key = f"{key}:{context.target_item_id}"
+        return key
+
+    def _refresh(self) -> None:
+        with self._lock:
+            now = utc_now()
+            locally_expired = [
+                record.memory_id
+                for record in self._records.values()
+                if record.expires_at is not None and record.expires_at <= now
+            ]
+            if locally_expired:
+                self.repository.expire_ids(locally_expired, now.isoformat())
+            proposals, records, proposal_contexts, record_contexts = (
+                self.repository.load_state()
+            )
+            self._proposals = {
+                item.proposal_id: item
+                for raw in proposals
+                for item in [MemoryProposal.model_validate(raw)]
+            }
+            self._records = {
+                item.memory_id: item
+                for raw in records
+                for item in [MemoryRecord.model_validate(raw)]
+            }
+            self._proposal_context = {
+                object_id: self._context_load(raw)
+                for object_id, raw in proposal_contexts.items()
+            }
+            self._record_context = {
+                object_id: self._context_load(raw)
+                for object_id, raw in record_contexts.items()
+            }
+            self._index = {}
+            for record in self._records.values():
+                self._index.setdefault((record.user_id, record.namespace), set()).add(
+                    record.memory_id
+                )
+            self._purge_expired_locked(now)
 
     @classmethod
     def is_sensitive(cls, content: str) -> bool:
@@ -332,11 +438,20 @@ class MemoryService:
             self._proposals[proposal_id] = proposal
             if private_context is not None and not blocked:
                 self._proposal_context[proposal_id] = private_context
+            self.repository.put_proposal(
+                proposal.model_dump(mode="json"),
+                (
+                    self._context_dump(private_context)
+                    if private_context is not None and not blocked
+                    else None
+                ),
+            )
         return MemoryOperationResponse(proposal=proposal, trace_id=trace_id)
 
     def confirm(
         self, proposal_id: str, payload: MemoryConfirmInput
     ) -> MemoryOperationResponse:
+        self._refresh()
         with self._lock:
             current = self._proposals.get(proposal_id)
             if current is None or current.user_id != payload.user_id:
@@ -346,13 +461,36 @@ class MemoryService:
             if proposal.status == "committed" and proposal.record_id:
                 record = self._records.get(proposal.record_id)
                 if payload.decision == "confirm" and record is not None:
+                    trace_id = self._trace(
+                        operation="confirm",
+                        user_id=proposal.user_id,
+                        session_id=proposal.styling_session_id,
+                        object_id=proposal.proposal_id,
+                        memory_type=proposal.type,
+                        namespace=proposal.namespace,
+                        outcome="already_committed",
+                    )
                     return MemoryOperationResponse(
-                        proposal=proposal, record=record, trace_id=proposal.trace_id
+                        proposal=proposal.model_copy(update={"trace_id": trace_id}),
+                        record=record,
+                        trace_id=trace_id,
                     )
                 raise MemoryError("proposal is already committed")
             if proposal.status == "rejected":
                 if payload.decision == "reject":
-                    return MemoryOperationResponse(proposal=proposal, trace_id=proposal.trace_id)
+                    trace_id = self._trace(
+                        operation="confirm",
+                        user_id=proposal.user_id,
+                        session_id=proposal.styling_session_id,
+                        object_id=proposal.proposal_id,
+                        memory_type=proposal.type,
+                        namespace=proposal.namespace,
+                        outcome="already_rejected",
+                    )
+                    return MemoryOperationResponse(
+                        proposal=proposal.model_copy(update={"trace_id": trace_id}),
+                        trace_id=trace_id,
+                    )
                 raise MemoryError("proposal is already rejected")
 
             if payload.decision == "reject" or proposal.commit_blocked:
@@ -429,6 +567,37 @@ class MemoryService:
             )
             proposal.trace_id = trace_id
             self._proposals[proposal_id] = proposal
+            try:
+                if record is None:
+                    authoritative_proposal = self.repository.put_rejected_proposal(
+                        proposal.model_dump(mode="json")
+                    )
+                    proposal = MemoryProposal.model_validate(
+                        authoritative_proposal
+                    ).model_copy(update={"trace_id": trace_id})
+                else:
+                    record_context = self._record_context.get(record.memory_id)
+                    authoritative_proposal, authoritative_record, _accepted = self.repository.commit(
+                        proposal.model_dump(mode="json"),
+                        record.model_dump(mode="json"),
+                        semantic_key=self._semantic_key(record, record_context),
+                        proposal_context=None,
+                        record_context=(
+                            self._context_dump(record_context)
+                            if record_context is not None
+                            else None
+                        ),
+                    )
+                    proposal = MemoryProposal.model_validate(authoritative_proposal)
+                    record = MemoryRecord.model_validate(authoritative_record)
+                    # The durable proposal/record identity comes from the CAS
+                    # winner. The response trace remains local to this process so
+                    # it is always queryable from this instance's TraceStore.
+                    proposal = proposal.model_copy(update={"trace_id": trace_id})
+            except MemoryRepositoryError as exc:
+                self._refresh()
+                raise MemoryError("memory proposal decision conflict") from exc
+        self._refresh()
         return MemoryOperationResponse(proposal=proposal, record=record, trace_id=trace_id)
 
     def _purge_expired_locked(self, now: datetime) -> None:
@@ -447,6 +616,10 @@ class MemoryService:
             self._proposals.pop(item.source_proposal_id, None)
             self._proposal_context.pop(item.source_proposal_id, None)
             self._record_context.pop(item.memory_id, None)
+        if expired:
+            self.repository.expire_ids(
+                [item.memory_id for item in expired], now.isoformat()
+            )
 
     @staticmethod
     def _derive_signal(
@@ -482,19 +655,17 @@ class MemoryService:
 
     def active_signals(self, user_id: str) -> tuple[MemorySignal, ...]:
         """Return only committed, non-sensitive, user-confirmed safe signals."""
-        with self._lock:
-            self._purge_expired_locked(utc_now())
-            records = [
-                (
-                    item.model_copy(deep=True),
-                    self._record_context.get(item.memory_id),
-                )
-                for item in self._records.values()
-                if item.user_id == user_id
-                and item.status == "committed"
-                and item.sensitivity == "non_sensitive"
-                and item.source == "user_confirmed"
-            ]
+        self._refresh()
+        active_rows = self.repository.active_records(
+            user_id, ("shared", "stylist"), utc_now().isoformat()
+        )
+        records = [
+            (
+                MemoryRecord.model_validate(raw),
+                self._context_load(context) if context is not None else None,
+            )
+            for raw, context in active_rows
+        ]
         signals: list[MemorySignal] = []
         seen: set[tuple[str, str, str | None]] = set()
         for record, context in sorted(records, key=lambda item: item[0].created_at):
@@ -525,9 +696,196 @@ class MemoryService:
             )
         return tuple(signals)
 
+    @staticmethod
+    def _tokens(value: str) -> list[str]:
+        normalized = re.sub(r"\s+", "", value.lower())
+        latin = re.findall(r"[a-z0-9_]+", normalized)
+        cjk = "".join(re.findall(r"[\u4e00-\u9fff]", normalized))
+        return latin + list(cjk) + [cjk[index : index + 2] for index in range(max(0, len(cjk) - 1))]
+
+    @classmethod
+    def _dense_vector(cls, value: str) -> tuple[float, ...]:
+        buckets = [0.0] * 64
+        for token in cls._tokens(value):
+            digest = hashlib.sha256(token.encode("utf-8")).digest()
+            buckets[digest[0] % len(buckets)] += 1.0 if digest[1] % 2 else -1.0
+        norm = math.sqrt(sum(item * item for item in buckets)) or 1.0
+        return tuple(item / norm for item in buckets)
+
+    @staticmethod
+    def _soft_term(record: MemoryRecord) -> tuple[str, ...]:
+        controlled = {
+            "偏爱直筒裤": ("fit:straight",),
+            "偏爱简洁风格": ("style:simple",),
+            "偏爱低调配色": ("style:classic", "style:simple"),
+            "长时间站立时优先选择适合久走的鞋。": ("comfort:long_walk",),
+            "长时间站立时优先选择适合久走的鞋": ("comfort:long_walk",),
+        }
+        return controlled.get(record.content, ())
+
+    def retrieve_soft(
+        self,
+        user_id: str,
+        query: str,
+        namespaces: tuple[MemoryNamespace, ...] = ("shared", "stylist"),
+    ) -> tuple[tuple[str, ...], dict[str, object]]:
+        """Retrieve controlled soft preferences after SQL ACL/status filtering.
+
+        The returned trace is deliberately ID/rank/latency-only: neither memory
+        content nor hashed dense vectors are serializable into Trace.
+        """
+        started = datetime.now().timestamp()
+        self._refresh()
+        active_rows = self.repository.active_records(
+            user_id, tuple(namespaces), utc_now().isoformat()
+        )
+        candidates: list[MemoryRecord] = []
+        for raw, context_raw in active_rows:
+            record = MemoryRecord.model_validate(raw)
+            context = (
+                self._context_load(context_raw) if context_raw is not None else None
+            )
+            # Hard memory is consumed only by active_signals(), never by RRF.
+            if self._derive_signal(record, context) is not None:
+                continue
+            if self._soft_term(record):
+                candidates.append(record)
+        candidates = sorted(candidates, key=lambda item: item.memory_id)
+
+        query_tokens = self._tokens(query)
+        query_counts = {token: query_tokens.count(token) for token in set(query_tokens)}
+        docs = {item.memory_id: self._tokens(item.content) for item in candidates}
+        average_length = (
+            sum(len(tokens) for tokens in docs.values()) / len(docs) if docs else 1.0
+        )
+        bm25: dict[str, float] = {}
+        for item in candidates:
+            tokens = docs[item.memory_id]
+            score = 0.0
+            for token, query_frequency in query_counts.items():
+                document_frequency = sum(token in doc for doc in docs.values())
+                inverse_frequency = math.log(
+                    1.0 + (len(docs) - document_frequency + 0.5) / (document_frequency + 0.5)
+                ) if docs else 0.0
+                term_frequency = tokens.count(token)
+                denominator = term_frequency + 1.2 * (
+                    0.25 + 0.75 * len(tokens) / max(average_length, 1.0)
+                )
+                if denominator:
+                    score += query_frequency * inverse_frequency * (
+                        term_frequency * 2.2 / denominator
+                    )
+            bm25[item.memory_id] = score
+
+        query_vector = self._dense_vector(query)
+        dense = {
+            item.memory_id: sum(
+                left * right
+                for left, right in zip(query_vector, self._dense_vector(item.content))
+            )
+            for item in candidates
+        }
+        now = utc_now()
+        recency = {
+            item.memory_id: 1.0
+            / (1.0 + max(0.0, (now - item.created_at).total_seconds()) / 2_592_000.0)
+            for item in candidates
+        }
+        importance_values = {
+            "preference": 1.0,
+            "feedback": 0.9,
+            "profile_stable": 0.85,
+            "comfort_constraint": 0.8,
+            "constraint": 0.8,
+        }
+        importance = {
+            item.memory_id: importance_values.get(item.type, 0.5)
+            for item in candidates
+        }
+        branches = {
+            "bm25": bm25,
+            "dense": dense,
+            "recency": recency,
+            "importance": importance,
+        }
+        ranked: dict[str, list[str]] = {
+            branch: [
+                memory_id
+                for memory_id, _score in sorted(
+                    scores.items(), key=lambda pair: (-pair[1], pair[0])
+                )[: self.RRF_CANDIDATE_LIMIT]
+            ]
+            for branch, scores in branches.items()
+        }
+        fused = {
+            memory_id: 0.0
+            for ids in ranked.values()
+            for memory_id in ids
+        }
+        for branch, ids in ranked.items():
+            weight = self.RRF_WEIGHTS[branch]
+            for rank, memory_id in enumerate(ids, 1):
+                fused[memory_id] += weight / (self.RRF_K + rank)
+        # Deterministic lightweight rerank restores strong lexical relevance
+        # after rank-only fusion without introducing another model/provider.
+        bm25_peak = max(bm25.values(), default=0.0)
+        lexical_bonus = {
+            memory_id: (
+                0.03 * max(0.0, score) / bm25_peak if bm25_peak > 0 else 0.0
+            )
+            for memory_id, score in bm25.items()
+        }
+        reranked = {
+            memory_id: score + lexical_bonus.get(memory_id, 0.0)
+            for memory_id, score in fused.items()
+        }
+        final_ids = [
+            memory_id
+            for memory_id, _score in sorted(
+                reranked.items(),
+                key=lambda pair: (
+                    -pair[1],
+                    -bm25.get(pair[0], 0.0),
+                    -importance.get(pair[0], 0.0),
+                    pair[0],
+                ),
+            )[: self.RRF_TOP_K]
+        ]
+        by_id = {item.memory_id: item for item in candidates}
+        terms: list[str] = []
+        for memory_id in final_ids:
+            for term in self._soft_term(by_id[memory_id]):
+                if term not in terms:
+                    terms.append(term)
+        trace: dict[str, object] = {
+            "component": "memory_soft_retrieval",
+            "version": "weighted_rrf_k60_v1",
+            "prefilter": "user_confirmed_non_sensitive_active_acl_v1",
+            "namespaces": list(namespaces),
+            "candidate_limit": self.RRF_CANDIDATE_LIMIT,
+            "eligible_count": len(candidates),
+            "fused_candidate_count": len(fused),
+            "k": self.RRF_K,
+            "weights": dict(self.RRF_WEIGHTS),
+            "dense_backend": "deterministic_hashed_surrogate_v1",
+            "rerank": "deterministic_lexical_bonus_v1",
+            "top_k": self.RRF_TOP_K,
+            "branches": ranked,
+            "selected_memory_ids": final_ids,
+            "hard_memory_in_rrf": False,
+            "content_logged": False,
+            "vectors_logged": False,
+            "latency_ms": round((datetime.now().timestamp() - started) * 1000, 2),
+        }
+        return tuple(terms), trace
+
+    def close(self) -> None:
+        self.repository.close()
+
     def list(
         self, user_id: str, namespace: MemoryNamespace | None = None
     ) -> MemoryListResponse:
+        self._refresh()
         with self._lock:
             self._purge_expired_locked(utc_now())
             proposals = [
@@ -551,6 +909,7 @@ class MemoryService:
         )
 
     def delete(self, user_id: str, memory_id: str) -> MemoryDeleteResponse:
+        self._refresh()
         with self._lock:
             proposal = self._proposals.get(memory_id)
             if proposal is not None and proposal.user_id == user_id:
@@ -582,6 +941,13 @@ class MemoryService:
                 memory_type = record.type
                 namespace = record.namespace
                 session_id = None
+            tombstoned = self.repository.tombstone(
+                user_id=user_id,
+                object_id=memory_id,
+                deleted_at=utc_now().isoformat(),
+            )
+            if tombstoned is None:
+                raise MemoryNotFound(memory_id)
         trace_id = self._trace(
             operation="delete",
             user_id=user_id,

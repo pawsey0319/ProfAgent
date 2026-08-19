@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "report_id": "s14_real_recommendation_previews",
+  "evidence_kind": "real_cpa_image_provider",
+  "status": "PASS",
+  "port_8000_touched": false,
+  "transport": "in_process_TestClient_no_listening_port",
+  "text_cpa_calls": 0,
+  "image_cpa_attempts": 2,
+  "requested_outfit_count": 2,
+  "actual_outfit_count": 2,
+  "batch_wall_clock_ms_including_local_setup": 7126.3,
+  "per_provider_attempt": [
+    {
+      "attempt": 1,
+      "wall_clock_ms": 7059.1,
+      "status": "succeeded",
+      "media_type": "image/jpeg",
+      "bytes": 248145,
+      "sha256": "3c329d7a86c2a53c4475044a5491418f7c6a4399a43b65ea9f961449293482a4",
+      "provider": {
+        "request_model_pinned": true,
+        "cpa_trace_verified": true,
+        "model_reported": false,
+        "model_verified": false,
+        "resolved_model": null,
+        "verification_basis": "exact_request_with_cpa_trace"
+      }
+    },
+    {
+      "attempt": 2,
+      "wall_clock_ms": 6845.4,
+      "status": "succeeded",
+      "media_type": "image/jpeg",
+      "bytes": 142301,
+      "sha256": "d5575c5755d3b0b6fe7868fa23c0cfef028e2b7ea6ce6224b48271422747f518",
+      "provider": {
+        "request_model_pinned": true,
+        "cpa_trace_verified": true,
+        "model_reported": false,
+        "model_verified": false,
+        "resolved_model": null,
+        "verification_basis": "exact_request_with_cpa_trace"
+      }
+    }
+  ],
+  "response_items": [
+    {
+      "index": 1,
+      "status": "succeeded",
+      "provider": {
+        "status": "ok",
+        "attempted": true,
+        "requested_model": "grok-imagine-image-quality",
+        "transport_model": "grok-imagine-image-quality",
+        "resolved_model": null,
+        "model_reported": false,
+        "model_verified": false,
+        "request_model_pinned": true,
+        "cpa_trace_verified": true,
+        "verification_basis": "exact_request_with_cpa_trace",
+        "degraded": false,
+        "reason_code": null
+      },
+      "owned_garment_count": 5,
+      "identity_fidelity": "not_assessed",
+      "image": {
+        "media_type": "image/jpeg",
+        "bytes": 248145,
+        "sha256": "3c329d7a86c2a53c4475044a5491418f7c6a4399a43b65ea9f961449293482a4"
+      }
+    },
+    {
+      "index": 2,
+      "status": "succeeded",
+      "provider": {
+        "status": "ok",
+        "attempted": true,
+        "requested_model": "grok-imagine-image-quality",
+        "transport_model": "grok-imagine-image-quality",
+        "resolved_model": null,
+        "model_reported": false,
+        "model_verified": false,
+        "request_model_pinned": true,
+        "cpa_trace_verified": true,
+        "verification_basis": "exact_request_with_cpa_trace",
+        "degraded": false,
+        "reason_code": null
+      },
+      "owned_garment_count": 3,
+      "identity_fidelity": "not_assessed",
+      "image": {
+        "media_type": "image/jpeg",
+        "bytes": 142301,
+        "sha256": "d5575c5755d3b0b6fe7868fa23c0cfef028e2b7ea6ce6224b48271422747f518"
+      }
+    }
+  ],
+  "privacy": {
+    "prompt_recorded": false,
+    "raw_receipt_recorded": false,
+    "base64_recorded": false,
+    "api_key_recorded": false
+  }
+}

@@ -11,6 +11,16 @@ from fastapi.testclient import TestClient
 from profagent.app import create_app
 
 
+# Synthetic sentinel measurements used only to verify purpose-limited handling.
+# They are deliberately unrelated to any user-provided body data.
+_SYNTH_HEIGHT_CM = 173
+_SYNTH_WEIGHT_KG = 67
+_SYNTH_ALT_HEIGHT_CM = 181
+_SYNTH_ALT_WEIGHT_KG = 73
+_SYNTH_OTHER_HEIGHT_CM = 167
+_SYNTH_OTHER_WEIGHT_KG = 61
+
+
 def _turn(
     client: TestClient,
     message: str,
@@ -63,7 +73,7 @@ def _install_cpa(
             200,
             request=httpx.Request("POST", url),
             json={
-                "model": "grok-4.5-build",
+                "model": "grok-4.6-build",
                 "choices": [
                     {
                         "message": {
@@ -81,9 +91,9 @@ def _install_cpa(
 @pytest.mark.parametrize(
     "message",
     [
-        "今天第一次约会，有点紧张，你觉得我穿好，我190cm，80kg，我想看起来不那么瘦",
-        "今天约会我有点慌，身高188厘米，体重75公斤，帮我搭一套，衣服想更有量感",
-        "今天第一次约会有点不安，我身高185，体重72，怎么搭才不显得单薄",
+        f"今天第一次约会，有点紧张，你觉得我穿好，我{_SYNTH_HEIGHT_CM}cm，{_SYNTH_WEIGHT_KG}kg，我想让衣服更有量感",
+        f"今天约会我有点慌，身高{_SYNTH_ALT_HEIGHT_CM}厘米，体重{_SYNTH_ALT_WEIGHT_KG}公斤，帮我搭一套，衣服想更有量感",
+        f"今天第一次约会有点不安，我身高{_SYNTH_OTHER_HEIGHT_CM}，体重{_SYNTH_OTHER_WEIGHT_KG}，怎么搭才让衣服更有量感",
     ],
 )
 def test_mild_emotion_with_styling_measurements_stays_actionable_and_high_gate(
@@ -115,7 +125,14 @@ def test_mild_emotion_with_styling_measurements_stays_actionable_and_high_gate(
         assert "任务内版型信息已结构化" in context["current_turn"]["content"]
         assert not any(
             token in context["current_turn"]["content"]
-            for token in ("190cm", "80kg", "188厘米", "75公斤", "身高185", "体重72")
+            for token in (
+                f"{_SYNTH_HEIGHT_CM}cm",
+                f"{_SYNTH_WEIGHT_KG}kg",
+                f"{_SYNTH_ALT_HEIGHT_CM}厘米",
+                f"{_SYNTH_ALT_WEIGHT_KG}公斤",
+                f"身高{_SYNTH_OTHER_HEIGHT_CM}",
+                f"体重{_SYNTH_OTHER_WEIGHT_KG}",
+            )
         )
         fit = context["session"]["fit_context"]
         assert fit["purpose"] == "garment_fit_only"
@@ -133,7 +150,7 @@ def test_explicit_pause_wins_even_with_task_emotion_and_fit_context(
     with TestClient(app) as client:
         response = _turn(
             client,
-            "今天第一次约会，有点紧张，先不推荐，我190cm，80kg，我想看起来不那么瘦",
+            f"今天第一次约会，有点紧张，先不推荐，我{_SYNTH_HEIGHT_CM}cm，{_SYNTH_WEIGHT_KG}kg，我想让衣服更有量感",
         )
 
         assert calls == {"cpa": 1}
@@ -156,12 +173,12 @@ def test_fit_context_is_session_only_and_never_written_to_memory_or_trace(
         before_memory = client.get("/memory", params={"user_id": "u01"}).json()
         first = _turn(
             client,
-            "今天第一次约会，有点紧张，你觉得我穿好，我190cm，80kg，我想看起来不那么瘦",
+            f"今天第一次约会，有点紧张，你觉得我穿好，我{_SYNTH_HEIGHT_CM}cm，{_SYNTH_WEIGHT_KG}kg，我想让衣服更有量感",
             request_id="dlgreq-s7a-fit-receipt",
         )
         retry = _turn(
             client,
-            "今天第一次约会，有点紧张，你觉得我穿好，我190cm，80kg，我想看起来不那么瘦",
+            f"今天第一次约会，有点紧张，你觉得我穿好，我{_SYNTH_HEIGHT_CM}cm，{_SYNTH_WEIGHT_KG}kg，我想让衣服更有量感",
             request_id="dlgreq-s7a-fit-receipt",
         )
         followup = _turn(
@@ -172,8 +189,8 @@ def test_fit_context_is_session_only_and_never_written_to_memory_or_trace(
 
         assert retry == first
         assert calls == {"cpa": 3}
-        assert contexts[0]["session"]["fit_context"]["height_cm"] == 190
-        assert contexts[0]["session"]["fit_context"]["weight_kg"] == 80
+        assert contexts[0]["session"]["fit_context"]["height_cm"] == _SYNTH_HEIGHT_CM
+        assert contexts[0]["session"]["fit_context"]["weight_kg"] == _SYNTH_WEIGHT_KG
         assert contexts[1]["session"]["fit_context"] == contexts[0]["session"]["fit_context"]
         assert contexts[2]["session"]["fit_context"] is None
         assert followup["styling_session_id"] == first["styling_session_id"]
@@ -181,8 +198,8 @@ def test_fit_context_is_session_only_and_never_written_to_memory_or_trace(
         assert after_memory == before_memory
 
         serialized_trace = json.dumps(_trace(client, first), ensure_ascii=False)
-        assert "190cm" not in serialized_trace
-        assert "80kg" not in serialized_trace
+        assert f"{_SYNTH_HEIGHT_CM}cm" not in serialized_trace
+        assert f"{_SYNTH_WEIGHT_KG}kg" not in serialized_trace
         assert "height_cm" not in serialized_trace
         assert "weight_kg" not in serialized_trace
 
@@ -197,7 +214,7 @@ def test_age_or_medical_content_is_not_generalized_into_fit_context(
         before_memory = client.get("/memory", params={"user_id": "u01"}).json()
         response = _turn(
             client,
-            f"今天约会，帮我搭一套，{sensitive_detail}，身高190cm，体重80kg",
+            f"今天约会，帮我搭一套，{sensitive_detail}，身高{_SYNTH_HEIGHT_CM}cm，体重{_SYNTH_WEIGHT_KG}kg",
         )
         after_memory = client.get("/memory", params={"user_id": "u01"}).json()
 
@@ -211,15 +228,15 @@ def test_age_or_medical_content_is_not_generalized_into_fit_context(
         )
         assert stored.fit_context is None
         serialized_trace = json.dumps(_trace(client, response), ensure_ascii=False)
-        assert "190cm" not in serialized_trace
-        assert "80kg" not in serialized_trace
+        assert f"{_SYNTH_HEIGHT_CM}cm" not in serialized_trace
+        assert f"{_SYNTH_WEIGHT_KG}kg" not in serialized_trace
 
 
 @pytest.mark.parametrize(
     "message",
     [
         "我有点紧张，穿什么？",
-        "有点紧张，我190cm，80kg，想看起来不那么瘦",
+        f"有点紧张，我{_SYNTH_HEIGHT_CM}cm，{_SYNTH_WEIGHT_KG}kg，想让衣服更有量感",
     ],
 )
 def test_clothing_question_or_fit_goal_is_authoritative_task_evidence(
@@ -239,11 +256,11 @@ def test_clothing_question_or_fit_goal_is_authoritative_task_evidence(
             response["action"] == "clarify"
         )
         assert contexts[0]["policy"]["required_action"] == response["action"]
-        if "190cm" in message:
+        if f"{_SYNTH_HEIGHT_CM}cm" in message:
             assert contexts[0]["session"]["fit_context"] == {
                 "purpose": "garment_fit_only",
-                "height_cm": 190.0,
-                "weight_kg": 80.0,
+                "height_cm": float(_SYNTH_HEIGHT_CM),
+                "weight_kg": float(_SYNTH_WEIGHT_KG),
                 "silhouette_goal": "add_garment_volume",
             }
         trace = _trace(client, response)
@@ -256,7 +273,7 @@ def test_isolated_measurements_do_not_create_task_or_fit_profile(
     contexts, calls = _install_cpa(monkeypatch)
     app = create_app(replace(offline_settings, cpa_text_enabled=True))
     with TestClient(app) as client:
-        response = _turn(client, "我190cm，80kg")
+        response = _turn(client, f"我{_SYNTH_HEIGHT_CM}cm，{_SYNTH_WEIGHT_KG}kg")
 
         assert calls == {"cpa": 1}
         assert response["conversation_mode"] == "stylist_chat"
@@ -269,8 +286,8 @@ def test_isolated_measurements_do_not_create_task_or_fit_profile(
         )
         assert stored.fit_context is None
         trace_text = json.dumps(_trace(client, response), ensure_ascii=False)
-        assert "190cm" not in trace_text
-        assert "80kg" not in trace_text
+        assert f"{_SYNTH_HEIGHT_CM}cm" not in trace_text
+        assert f"{_SYNTH_WEIGHT_KG}kg" not in trace_text
 
 
 def test_fear_of_awkward_silence_gets_acknowledgement_before_local_styling(
@@ -407,9 +424,9 @@ def test_invalid_advisory_never_weakens_unsafe_reply_rejection(
 @pytest.mark.parametrize(
     ("location", "echo"),
     [
-        ("reply", "按你190cm、80kg的数据来搭。"),
-        ("reply", "参考身高190厘米和体重80公斤来搭。"),
-        ("suggestion", "用190公分和80千克搭配"),
+        ("reply", f"按你{_SYNTH_HEIGHT_CM}cm、{_SYNTH_WEIGHT_KG}kg的数据来搭。"),
+        ("reply", f"参考身高{_SYNTH_HEIGHT_CM}厘米和体重{_SYNTH_WEIGHT_KG}公斤来搭。"),
+        ("suggestion", f"用{_SYNTH_HEIGHT_CM}公分和{_SYNTH_WEIGHT_KG}千克搭配"),
     ],
 )
 def test_cpa_cannot_repeat_current_fit_measurement_values(
@@ -424,7 +441,7 @@ def test_cpa_cannot_repeat_current_fit_measurement_values(
     with TestClient(app) as client:
         response = _turn(
             client,
-            "今天约会，帮我搭一套，我190cm，80kg，衣服想更有量感",
+            f"今天约会，帮我搭一套，我{_SYNTH_HEIGHT_CM}cm，{_SYNTH_WEIGHT_KG}kg，衣服想更有量感",
         )
 
         assert calls == {"cpa": 1}

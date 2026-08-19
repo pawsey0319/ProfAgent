@@ -2401,7 +2401,7 @@ def _assurance_png(width: int, height: int, *, informative: bool) -> bytes:
 
 def _assurance_vision_payload(
     *,
-    model: str = "grok-4.5-high",
+    model: str = "grok-4.6-high",
     partial: bool = False,
     free_text: bool = False,
     slot_mismatch: bool = False,
@@ -2443,7 +2443,7 @@ def _assurance_vision_transport(
     def handler(request: httpx.Request) -> httpx.Response:
         request_body = json.loads(request.content)
         _ensure(
-            request_body.get("model") == "grok-4.5-high",
+            request_body.get("model") == "grok-4.6-high",
             "ac13_exact_transport_model_request",
         )
         _ensure(
@@ -2649,7 +2649,7 @@ async def _assure_ac13_ac14(root: Path) -> dict[str, dict[str, Any]]:
 
         services.vision.set_transport(
             _assurance_vision_transport(
-                _assurance_vision_payload(model="grok-4.5-build")
+                _assurance_vision_payload(model="grok-4.6-build")
             )
         )
         concrete_build = await services.looks.score(
@@ -2664,7 +2664,7 @@ async def _assure_ac13_ac14(root: Path) -> dict[str, dict[str, Any]]:
             concrete_build.numeric_score_available
             and concrete_build_trace is not None
             and concrete_build_trace.provider.get("resolved_model")
-            == "grok-4.5-build"
+            == "grok-4.6-build"
             and concrete_build_trace.provider.get("model_verified") is True,
             "ac13_exact_concrete_build_allowlisted",
         )
@@ -2673,7 +2673,7 @@ async def _assure_ac13_ac14(root: Path) -> dict[str, dict[str, Any]]:
             ("model_mismatch", _assurance_vision_payload(model="grok-4.5"), 200),
             (
                 "model_prefix_mismatch",
-                _assurance_vision_payload(model="grok-4.5-high-preview"),
+                _assurance_vision_payload(model="grok-4.6-high-preview"),
                 200,
             ),
             ("malformed", _assurance_vision_payload(malformed_json=True), 200),
@@ -3701,8 +3701,8 @@ async def _assure_provider_privacy(root: Path) -> dict[str, Any]:
             {
                 "attempted": True,
                 "status": "ok",
-                "requested_model": "grok4.5",
-                "resolved_model": "grok-4.5-high",
+                "requested_model": "grok4.6",
+                "resolved_model": "grok-4.6-high",
                 "model_verified": True,
             },
         )
@@ -3786,7 +3786,7 @@ async def _assure_provider_privacy(root: Path) -> dict[str, Any]:
         _ensure(ordinary_trace is not None, "privacy_ordinary_trace_exists")
         _ensure(
             len(provider_calls) == 1
-            and ordinary.backend == "grok4.5"
+            and ordinary.backend == "grok4.6"
             and ordinary_trace.provider.get("attempted") is True
             and ordinary_trace.provider.get("status") == "ok",
             "privacy_ordinary_query_provider_call_one",
@@ -5093,16 +5093,16 @@ async def run_evaluation(
             "eval_sha256": eval_sha256,
             "rules": "scene_rules_v1|hard_filter_v1|response_validator_v1|stylist_score_v1",
             "ranker": "rule_bm25_rrf_v1",
-            "provider_contract": "cpa_grok4.5_v1",
+            "provider_contract": "cpa_grok4.6_v1",
             "providers": {
-                "llm": "cpa_text_grok4.5_v1|offline_rule_fallback",
+                "llm": "cpa_text_grok4.6_v1|offline_rule_fallback",
                 "dense": "hashed_dense_v1|disabled_fixture_baseline",
                 "catalog": "fixtures_v1.0_mock",
                 "vision": "garment_visibility_codes_v2|httpx_mock_only",
             },
             "model": {
-                "logical": "grok4.5",
-                "transport": "grok-4.5-high",
+                "logical": "grok4.6",
+                "transport": "grok-4.6-high",
                 "evaluation_mode": "offline_rule_fallback",
                 "external_calls": 0,
             },

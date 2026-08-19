@@ -2,9 +2,9 @@
 
 > 产品：以人为本的私人团队 Agent
 > 首个核心成员：私人明星穿搭师（`persona_id=stylist`）
-> 文档版本：v1.11
-> 状态：R1 Demo 与 S6–S10 对话、实验性 Static2D 增量本地验收通过（合成数据）
-> 日期：2026-08-07
+> 文档版本：v1.15
+> 状态：R1 Demo 与 S6–S14 验收通过；连续衣橱套数推荐、推荐级静态 2D、折叠衣橱、文本 CPA 4.6、专用 CPA Image 与 SQL 持久记忆纵切已完成（合成数据）；Memory 下一阶段方案待用户确认
+> 日期：2026-08-19
 > 产品代号：ProfAgent
 > 当前实现基线：`r1_demo_v1` + `fixtures_v1.0`
 > 面向读者：产品、设计、算法、后端、前端、测试、项目评审
@@ -38,22 +38,22 @@
 
 ### 0.3 当前真实状态
 
-截至本文日期，仓库已在原 L0 数据基线上实现并通过 R1 DoD Demo 子集本地验收的 `r1_demo_v1`。它是使用合成数据与进程内状态的产品 Demo，不是生产服务：
+截至本文日期，仓库已在原 L0 数据基线上实现并通过 R1 DoD Demo 子集本地验收的 `r1_demo_v1`。它是使用合成数据的产品 Demo；Memory 已有本地 SQLite/可选 PostgreSQL 持久仓储，但 Scene、Look、Trace 等其他状态仍以进程内 Demo 实现为主，不是生产服务：
 
 | 已完成 | 数量/说明 |
 |---|---|
 | 数据基线 | 3 个虚拟用户、50 件合成衣物、20 套人工/合成套装、50 件 Mock 商品、30 条固定评测样本 |
 | 数据能力 | JSON Schema、固定种子 `20260729` 生成、清单哈希、数据校验 |
 | Demo 运行时 | FastAPI 单进程提供 API 与中文 Web SPA；`conda run -n torch128 python -m profagent` 一条命令启动 |
-| 对话、场景与推荐 | 统一 Dialogue Orchestrator；每个新回合同步尝试一次 CPA，由固定 Stylist 人格、必要画像、权威 Scene 和最多 6 条脱敏历史生成自然中文；服务端等待完整结果最多 120 秒、浏览器最多 125 秒，期间只显示经过秒数，不先返回 provisional 或本地 assistant 正文；CPA 完整输出通过服务端 Validator 后才一次性显示，真实失败才使用本地 Stylist 回复；“等会儿/待会儿/一会儿/过会儿/一会就”映射当天高急，“马上”映射 now/high，均不追问时间；轻度情绪与明确穿搭任务同轮处理，只有显式暂停才锁存支持模式；用户主动提供的量体信息只转为当前 session 的服装版型上下文；本地状态机权威控制聊天/支持/澄清/推荐/终止、工具权限和安全门控；另含 SceneParser、服务端权威紧迫度、召回前 HardFilter、Rule + BM25 + RRF、可选 Dense 降级、Assembler、最终白名单 Validator、双层购物门控 |
+| 对话、场景与推荐 | 统一 Dialogue Orchestrator；Enter 发送、Shift+Enter 换行且 IME 不误提交；每个新回合同步最多尝试一次 CPA。推荐回合先由服务端在权威 Scene 与 owner 衣橱上完成 HardFilter、Rule/BM25/Dense/RRF、Assembler 与最终 Validator，再把无内部 ID 的方向摘要交给 CPA 写当前增量回复；明确 1–3 套由服务端解析，否定/纠正可覆盖早先数字，歧义不猜。服务端/浏览器等待上限 120/125 秒；轻度情绪与明确任务同轮处理，只有显式暂停才锁存；高急购物双层门控保持。 |
 | 共创闭环 | Team Home、聊天优先的 Stylist Studio、合成衣橱浏览、用户上传单帧静态图的分析、六维 Scorecard、每轮最多两项 Adjustment、不可变 Look 版本、比较/回退、满意定稿 |
-| 实验性 Static2D | 对 owner-bound 不可变 Look 调用 CPA `/images/generations`，尝试生成中性无身份模特或平铺参考图；AI 标识、可信度说明、owner/session 读取与删除已实现。身份图片不发送，身份一致性固定 `not_assessed`。当前 CPA 实例不支持用 transport `grok-4.5-high` 调用图像端点；2026-08-10 真实运行在 `0.229s` 内进入平铺/文字降级且不切换模型；这只是 R2 技术纵切，不是完整购前试演或真人虚拟试穿 |
-| 反馈与记忆 | 推荐反馈、拒绝建议去重、受控 `propose → confirm → commit`、敏感默认不写、查看与删除 |
+| 实验性 Static2D | 图片链路已与文本 transport 解耦，通过 CPA `/images/generations` 固定请求 `grok-imagine-image-quality`；真实成功协议未回报 actual model 时，仅凭 exact request + 受控 CPA receipt + 全图 Validator 接受，并诚实保持 `model_verified=false/resolved_model=null`。50 件合成衣橱已有 owner-bound、内容寻址、schema 2 六键来源 PNG 目录图；衣橱按类别折叠。S14 可在文字方向出现后为 1–3 个权威 outfit 异步生成独立静态 2D 组合参考，单项失败不影响文本或其他图。真实两图约 `7.06s/6.85s`，批量约 `7.13s`；仍不等同真人试穿、身份复刻或精确尺码/面料/垂坠。 |
+| 反馈与记忆 | 推荐反馈、拒绝建议去重、受控 `propose → confirm → commit`、敏感默认不写、查看与删除均已实现；Memory 使用本地默认 SQLite、生产可选 PostgreSQL 的事务仓储，支持跨实例确认/恢复与 ACL。硬记忆 SQL 精确读取且不进 RRF；软记忆按 BM25、deterministic hashed Dense surrogate、Recency、Importance weighted RRF + 轻量重排 Top 5。真实语义 embedding/Cross-Encoder 仍未上线 |
 | 可观测与降级 | 当前进程的 Trace 关联 Scene/Recommendation/Look/Scorecard/Adjustment/Final；LLM/Dense 失败回退规则推荐，Catalog 失败无商品，Vision 失败只给定性结果 |
 | 固定评测 | `conda run -n torch128 python -m profagent.eval` 一条命令运行 30 条固定样本及确定性对抗 assurance，输出版本化 JSON + Markdown |
-| 本地验收 | pytest `203 passed`；S10 CPA/Dialogue/Preview/Vision 专项 `51 passed`；Urgency `30/30`、高急 Shopping Gate `10/10`、Catalog `0/10`、ID 幻觉 `0/515`、硬约束违反 `0/423`、槽位完整 `74/74`；validate、Node、runtime/static 合同与临时端口 HTTP smoke 全绿；重启 8000 后“你好”真实 CPA 墙钟 `15.970s`（Provider `15,912ms`），截图约会句 `38.057s`（Provider `38,015ms`）返回 `today/high`、3 套方向、Catalog=0、情绪仅承接一次；两次均为 `status=ok/source=cpa/transport=grok-4.5-high/resolved=grok-4.5-build` |
+| 本地验收 | S14 独立门禁通过：pytest `278 passed`、S14 专项 `26 passed`、Dialogue/Preview/购物/Memory 相关 `241 passed`；Urgency `30/30`、高急 Shopping Gate `10/10`、Catalog `0/10`、ID 幻觉 `0/515`、硬约束违反 `0/423`、槽位完整 `74/74`；validate、Node 11 syntax + 5 runtime/static、随机非 8000 HTTP 与真实浏览器 DOM 全绿。截图链同 session 返回两套 owner 衣橱方案；折叠展开后目录 PNG `naturalWidth=1024`。真实 CPA 推荐两图均成功，actual model 未回报的证据语义保持。 |
 
-运行限制与真实边界：Web 固定演示合成用户 `u01`；Demo 没有生产级身份认证、持久数据库、跨进程状态或合规级持久审计；对话 session 使用最长 30 分钟滑动 TTL，记忆、反馈、Look 与 Trace 在重启后丢失；为保证并发同 request 严格 single-flight，R1 暂时串行所有 Dialogue 回合，不代表生产吞吐设计；衣橱界面以浏览/筛选为主而非完整编辑工作台；Final 的穿后状态仍为 `pending`。用户上传的当前穿搭图仅在当前进程内临时保存并支持删除；启用 Vision 时会按显式同意发送到配置的 CPA。Static2D 当前只生成中性无身份模特或平铺参考，任何身份参考图都不发送给生图 Provider。Catalog 仅使用合成 Mock 商品。CPA Provider 的逻辑模型为用户指定的 `grok4.5`；当前 CPA 将上游 `grok-4.5` 暴露为 transport `grok-4.5-high`，应用只接受显式精确 allowlist `{grok-4.5-high, grok-4.5-build}`；模型不可用、响应模型不匹配或输出越界时使用明确标记的本地回复，真正安全响应单独标识。任务内量体信息只保留在当前 owner-bound session，不进入长期记忆或 Trace 原值；该门控不等同完整 DLP。
+运行限制与真实边界：Web 固定演示合成用户 `u01`；Demo 没有生产级身份认证、Scene/Look/Trace 主数据库、对象存储、Redis 或合规级持久审计。已确认 Memory 可通过 SQLite 跨进程恢复并可选 PostgreSQL，但反馈、Look、Trace 和其他 session 状态在重启后仍会丢失；对话 session 使用最长 30 分钟滑动 TTL。为保证并发同 request 严格 single-flight，R1 暂时串行所有 Dialogue 回合，不代表生产吞吐设计；衣橱界面以浏览/筛选为主而非完整编辑工作台；Final 的穿后状态仍为 `pending`。用户上传的当前穿搭图仅在当前进程内临时保存并支持删除；启用 Vision 时会按显式同意发送到配置的 CPA。Static2D 当前只生成中性无身份模特或平铺参考，任何身份参考图都不发送给生图 Provider。Catalog 仅使用合成 Mock 商品。CPA 对话 Provider 的逻辑模型为 `grok4.6`、transport 为 `grok-4.6-high`，应用只接受显式精确 allowlist `{grok-4.6-high, grok-4.6-build}`；图片 Provider 独立固定请求 `grok-imagine-image-quality`，真实协议未回报 actual model 时不会伪造 resolved 值。任务内量体信息只保留在当前 owner-bound session，不进入长期记忆或 Trace 原值；该门控不等同完整 DLP。
 
 完整 R2 购前试演（外部候选商品导入、身份保持真人试穿、多场景对比与到货反馈）、第二专业成员与实际团队转交、真人专家、语义模板市场、真实购物/支付、3D、360°和视频均**未上线**，不得在对外材料中描述为已经完成。当前实验性 Static2D 仅用于验证“既有 Look → 中性无身份 2D 风格参考”的 CPA 技术链路，不属于 R1 DoD，也不代表完整 R2 已完成。
 
@@ -73,6 +73,10 @@
 | v1.9 | 2026-08-07 | S7 修正“轻度情绪抢占穿搭任务”、普通聊天后任务恢复、显式暂停锁存、任务内量体信息、可选 advisory 隔离和来源标签；服务端拒绝量体原值复述及人物比例评价，同步 180 项全量测试与最终复审证据 |
 | v1.10 | 2026-08-07 | S8 将同步 Dialogue 可见回复控制在 5 秒内：服务端 CPA 预算 3.5 秒、浏览器 4.5 秒，业务超时不跨回合熔断；修正“等会儿”等近时表达与重复情绪承接，同步 196 项全量测试和真实 8000 墙钟证据 |
 | v1.11 | 2026-08-10 | S9/S10 按用户最新口径改为同步等待完整 CPA 结果（服务端 120 秒、浏览器 125 秒），修复长等待防重入、reset/Trace 竞态与 CPA 正文二次改写；按 CPA 当前别名迁移 transport 为 `grok-4.5-high`，同步 203 项测试和真实 8000 CPA 墙钟证据 |
+| v1.12 | 2026-08-18 | 冻结 S12：未上线个人开发阶段继续 CPA-first；图片与文本模型解耦，专用 CPA 图片模型固定为 `grok-imagine-image-quality`；记忆采用 PostgreSQL-ready 真值、硬记忆精确读取、软记忆 BM25/Dense/Recency/Importance weighted RRF + 轻量重排。此版本记录实施中合同，不提前宣称完成 |
+| v1.13 | 2026-08-18 | 关闭 S12/S12R 本地实现与验收：真实 CPA Image 成功响应不回报顶层模型名，改为 request-bound receipt 验证且不伪造 actual/resolved；50 件目录资产迁移为 schema 2 六键来源、内容寻址 URL 与 prompt-hash 未保留声明；SQL Memory/RRF、246 项测试和单命令原子报告全绿 |
+| v1.14 | 2026-08-19 | 关闭 S13：文本 CPA 精确迁移为 `grok4.6 → grok-4.6-high → {grok-4.6-high,grok-4.6-build}`；修复衣橱目录图 hidden+lazy 加载死锁，真实浏览器 `naturalWidth=1024`；252 项全量、214 项定向、固定 eval 与真实 8000 CPA 冒烟全绿；Grok 4.6 外部审查建议由 Codex 逐项本地验证并以 0/0/0 关闭 |
+| v1.15 | 2026-08-19 | 关闭 S14：推荐回合先基于 owner 衣橱生成权威方向再由 CPA 表达，支持 1–3 套否定/纠正/歧义边界；增加推荐级并行静态 2D、Enter/Shift/IME 和类别折叠。278 项全量、26 项专项、241 项相关门禁、真实 Chrome 与真实 CPA 两图通过；Memory 仅完成四路线调研，待用户确认。 |
 
 ---
 
@@ -1156,6 +1160,9 @@ shopping_allowed =
 | MEM-07 | P0 | 记忆写入时明确目标命名空间 | 用户能区分“团队都可用”与“仅 Stylist 可用” |
 | MEM-08 | P0 | Look 版本和专业评分默认属于 Stylist 空间 | 未授权时其他成员不可访问 |
 | MEM-09 | P1 | 用户可将某条 Stylist 结论提升为共享档案 | 提升前展示可见成员和用途 |
+| MEM-10 | P1 | 生产记忆使用 PostgreSQL 真值并可跨进程恢复 | confirm/commit、删除、TTL、superseded、授权与审计在服务实例重启后保持一致；离线测试仓储须通过同一合同 |
+| MEM-11 | P0 | 硬记忆不参与近似召回 | 禁忌、授权、不穿项、拒绝且不重复、删除/过期/superseded 状态按 user/ACL 精确读取，漏召回与误恢复均为 0 |
+| MEM-12 | P1 | 软记忆使用多路召回与可版本化融合 | 预过滤后并行 BM25/Dense/Recency/Importance，weighted RRF + 轻量重排最多注入 5 条；报告消融、MRR、Recall、P95 与污染率 |
 
 ### 11.13 商品缺口与补购
 
@@ -1212,6 +1219,9 @@ shopping_allowed =
 | PREV-10 | P1 | 生成图和导出图包含 AI 标识及来源追踪 | 界面有显式提示，文件元数据写入要求字段；符合适用的生成内容标识规则 |
 | PREV-11 | P1 | 收集到货后真实结果 | 支持保留/退货、原因、实际穿着、真实试穿图可选和预览一致度；不高频催促 |
 | PREV-12 | P1 | 2D 任务失败可降级 | 回退到单品拼贴、平铺组合、文字解释和衣橱匹配结果，推荐主流程不中断 |
+| PREV-13 | P1 | 文本与图片 Provider 配置和验证完全解耦 | 文本使用 `grok4.6 → grok-4.6-high`，只接受精确 high/build 回报；图片只使用独立 CPA `grok-imagine-image-quality`，错误模型或前缀一律拒绝且不自动换模 |
+| PREV-14 | P1 | fixture 衣橱可生成可追踪 AI 目录图 | 每张图只绑定一个既有 garment ID，并记录模型、prompt hash、内容 hash、状态和 AI label；失败项不以占位图冒充成功 |
+| PREV-15 | P1 | 目录图、Look Sheet 与上身效果图分层 | 目录图/确定性 Look Sheet 表达衣物事实；上身效果只能标 `visualization_only`，不得承诺真实身份、尺码、面料或垂坠 |
 
 ### 11.17 真人造型师与语义模板
 

@@ -11,3 +11,4 @@ config.local.json
 *.key
 *.pem
 reports/runtime/
+.profagent/

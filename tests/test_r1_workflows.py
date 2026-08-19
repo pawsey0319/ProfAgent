@@ -184,7 +184,7 @@ def assert_qualitative_scorecard(card: dict, expected_status: str | None = None)
 
 def vision_payload(
     *,
-    model: str = "grok-4.5-high",
+    model: str = "grok-4.6-high",
     partial: bool = False,
     free_text: bool = False,
     slot_mismatch: bool = False,
@@ -224,7 +224,7 @@ def vision_payload(
 def vision_transport(payload: dict | None, *, status: int = 200) -> httpx.MockTransport:
     def handler(request: httpx.Request) -> httpx.Response:
         request_body = json.loads(request.content)
-        assert request_body["model"] == "grok-4.5-high"
+        assert request_body["model"] == "grok-4.6-high"
         assert request_body["response_format"] == {"type": "json_object"}
         assert request_body["temperature"] == 0
         user_content = request_body["messages"][1]["content"]
@@ -691,7 +691,7 @@ def test_strict_vision_matrix_reject_replay_and_decision_trace(offline_settings)
         assert "base64," not in score_trace_text
 
         services.vision.set_transport(
-            vision_transport(vision_payload(model="grok-4.5-build"))
+            vision_transport(vision_payload(model="grok-4.6-build"))
         )
         concrete_build_score = expect(
             client.post(
@@ -710,13 +710,13 @@ def test_strict_vision_matrix_reject_replay_and_decision_trace(offline_settings)
                 params={"user_id": "u01"},
             )
         )["trace"]
-        assert concrete_build_trace["provider"]["resolved_model"] == "grok-4.5-build"
+        assert concrete_build_trace["provider"]["resolved_model"] == "grok-4.6-build"
         assert concrete_build_trace["provider"]["model_verified"] is True
 
         degraded_payloads = {
             "model_mismatch": (vision_payload(model="grok-4.5"), 200),
             "model_prefix_mismatch": (
-                vision_payload(model="grok-4.5-high-preview"),
+                vision_payload(model="grok-4.6-high-preview"),
                 200,
             ),
             "malformed": (vision_payload(malformed_json=True), 200),
@@ -1420,8 +1420,8 @@ def test_cpa_privacy_short_circuit_spy_and_ordinary_call(
             {
                 "attempted": True,
                 "status": "ok",
-                "requested_model": "grok4.5",
-                "resolved_model": "grok-4.5-high",
+                "requested_model": "grok4.6",
+                "resolved_model": "grok-4.6-high",
                 "model_verified": True,
             },
         )
@@ -1503,7 +1503,7 @@ def test_cpa_privacy_short_circuit_spy_and_ordinary_call(
             )
         )
         assert len(provider_calls) == 1
-        assert ordinary["backend"] == "grok4.5"
+        assert ordinary["backend"] == "grok4.6"
         ordinary_trace = expect(
             client.get(
                 f"/trace/{ordinary['trace_id']}", params={"user_id": "u01"}

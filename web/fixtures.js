@@ -57,7 +57,7 @@
         counts: { users: 3, garments: 50, outfits: 20, catalog: 50, eval: 30 }
       },
       providers: {
-        llm: { status: "fixture", requested_model: "grok4.5" },
+        llm: { status: "fixture", requested_model: "grok4.6" },
         dense: { status: "fixture" },
         catalog: { status: "blocked_in_high_urgency" }
       },

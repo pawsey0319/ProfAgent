@@ -5,10 +5,17 @@ const {
   createInFlightGuard,
   hasExactCpaModel,
   isStrictCpaReply,
-  selectAssistantText
+  selectAssistantText,
+  shouldSubmitComposerKey
 } = require("./dialogue_runtime.js");
 
 async function run() {
+  assert.equal(shouldSubmitComposerKey({ key: "Enter", shiftKey: false, isComposing: false }), true);
+  assert.equal(shouldSubmitComposerKey({ key: "Enter", shiftKey: true, isComposing: false }), false, "Shift+Enter must remain a newline");
+  assert.equal(shouldSubmitComposerKey({ key: "Enter", shiftKey: false, isComposing: true }), false, "IME composition Enter must not submit");
+  assert.equal(shouldSubmitComposerKey({ key: "Enter", shiftKey: false, isComposing: false, keyCode: 229 }), false, "IME keyCode 229 must not submit");
+  assert.equal(shouldSubmitComposerKey({ key: "a", shiftKey: false, isComposing: false }), false);
+
   const guard = createInFlightGuard();
   let posts = 0;
   let inserted = 0;
@@ -45,23 +52,26 @@ async function run() {
   const strictProvider = {
     status: "ok",
     generation_source: "cpa",
-    requested_model: "grok4.5",
-    transport_model: "grok-4.5-high",
+    requested_model: "grok4.6",
+    transport_model: "grok-4.6-high",
     model_verified: true,
     degraded: false,
-    resolved_model: "grok-4.5-build"
+    resolved_model: "grok-4.6-build"
   };
   assert.equal(hasExactCpaModel(strictProvider), true);
   assert.equal(isStrictCpaReply(strictProvider), true);
-  assert.equal(isStrictCpaReply({ ...strictProvider, resolved_model: "grok-4.5-high" }), true);
+  assert.equal(isStrictCpaReply({ ...strictProvider, resolved_model: "grok-4.6-high" }), true);
   const rejectedModelMatrix = [
-    { name: "legacy transport", provider: { ...strictProvider, transport_model: "grok-4.5" } },
-    { name: "transport prefix", provider: { ...strictProvider, transport_model: "grok-4.5-high-preview" } },
-    { name: "other transport", provider: { ...strictProvider, transport_model: "grok-4.5-fast" } },
-    { name: "legacy resolved", provider: { ...strictProvider, resolved_model: "grok-4.5" } },
-    { name: "resolved prefix", provider: { ...strictProvider, resolved_model: "grok-4.5-high-preview" } },
-    { name: "other resolved", provider: { ...strictProvider, resolved_model: "grok-4.5-fast" } },
-    { name: "wrong logical request", provider: { ...strictProvider, requested_model: "grok-4.5-high" } },
+    { name: "legacy logical 4.5", provider: { ...strictProvider, requested_model: "grok4.5" } },
+    { name: "legacy transport 4.5", provider: { ...strictProvider, transport_model: "grok-4.5-high" } },
+    { name: "legacy resolved 4.5", provider: { ...strictProvider, resolved_model: "grok-4.5-build" } },
+    { name: "unsuffixed transport 4.6", provider: { ...strictProvider, transport_model: "grok-4.6" } },
+    { name: "unsuffixed resolved 4.6", provider: { ...strictProvider, resolved_model: "grok-4.6" } },
+    { name: "transport prefix", provider: { ...strictProvider, transport_model: "grok-4.6-high-preview" } },
+    { name: "other transport", provider: { ...strictProvider, transport_model: "grok-4.6-fast" } },
+    { name: "resolved prefix", provider: { ...strictProvider, resolved_model: "grok-4.6-high-preview" } },
+    { name: "other resolved", provider: { ...strictProvider, resolved_model: "grok-4.6-fast" } },
+    { name: "wrong logical request", provider: { ...strictProvider, requested_model: "grok-4.6-high" } },
     { name: "unverified", provider: { ...strictProvider, model_verified: false } },
     { name: "degraded", provider: { ...strictProvider, degraded: true } }
   ];
@@ -126,7 +136,7 @@ async function run() {
   assert.equal(oldTraceController.signal.aborted, true);
   assert.equal(traceWrites, 0, "reset must prevent an old trace from writing into the new UI");
 
-  console.log("web dialogue runtime S10 exact-high-model/guard/reset/CPA-text/trace contract: PASS");
+  console.log("web dialogue runtime S14 Enter/Shift/IME + exact-4.6-model/guard/reset/CPA-text/trace contract: PASS");
 }
 
 run().catch((error) => {

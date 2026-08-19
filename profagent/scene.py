@@ -75,7 +75,7 @@ class SceneStateStore:
     ) -> SceneRequest:
         """Update only the provider provenance after a deferred Dialogue call."""
 
-        if backend not in {"grok4.5", "rule_fallback"}:
+        if backend not in {"grok4.6", "rule_fallback"}:
             raise SceneStateConflict("unsupported scene backend")
         with self._lock:
             current = self._by_request.get(request_id)
@@ -326,7 +326,10 @@ class SceneParser:
             ("party", ("聚会", "派对", "社团活动")),
             ("date", ("约会",)),
             ("commute", ("通勤", "上班")),
-            ("meeting", ("会议", "开会", "客户", "汇报", "重要见面")),
+            (
+                "meeting",
+                ("会议", "开会", "客户", "汇报", "重要见面", "辩论", "演讲"),
+            ),
             ("home", ("居家", "在家")),
             ("daily", ("上课", "日常")),
         ]
@@ -926,7 +929,7 @@ class SceneParser:
                     **provider_trace,
                     "interaction_budget_seconds": interaction_budget,
                 }
-                backend = "grok4.5"
+                backend = "grok4.6"
             except (TimeoutError, asyncio.TimeoutError):
                 reason_code = "CPA_INTERACTION_BUDGET_EXCEEDED"
                 self.provider.mark_interaction_failure(reason_code)

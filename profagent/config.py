@@ -14,6 +14,8 @@ CPA_HEALTH_BUDGET_MAX_SECONDS = 1.5
 VISION_INTERACTION_BUDGET_MAX_SECONDS = 10.0
 DIALOGUE_TTL_MAX_SECONDS = 1800.0
 PREVIEW_2D_BUDGET_MAX_SECONDS = 45.0
+CPA_IMAGE_TIMEOUT_MAX_SECONDS = 45.0
+CPA_IMAGE_MODEL = "grok-imagine-image-quality"
 
 
 def _as_bool(value: str | None, default: bool) -> bool:
@@ -57,7 +59,7 @@ def _load_cpa_config() -> dict[str, str]:
     if not isinstance(payload, dict):
         return {}
     # Only import the two connection fields. In particular, ignore any model
-    # value because this project freezes grok4.5 -> grok-4.5-high separately.
+    # value because this project freezes grok4.6 -> grok-4.6-high separately.
     return {
         key: value.strip()
         for key in ("base_url", "api_key")
@@ -74,15 +76,21 @@ class Settings:
     port: int = 8000
     cpa_base_url: str = "http://127.0.0.1:8317/v1"
     cpa_api_key: str | None = field(default=None, repr=False)
-    grok_model: str = "grok4.5"
+    grok_model: str = "grok4.6"
     cpa_text_enabled: bool = True
+    cpa_image_enabled: bool = False
+    cpa_image_model: str = CPA_IMAGE_MODEL
     cpa_timeout_seconds: float = 120.0
+    cpa_image_timeout_seconds: float = CPA_IMAGE_TIMEOUT_MAX_SECONDS
+    cpa_image_download_hosts: tuple[str, ...] = ()
     cpa_scene_budget_seconds: float = CPA_SCENE_BUDGET_MAX_SECONDS
     cpa_dialogue_budget_seconds: float = CPA_DIALOGUE_BUDGET_MAX_SECONDS
     cpa_health_budget_seconds: float = CPA_HEALTH_BUDGET_MAX_SECONDS
     vision_interaction_budget_seconds: float = VISION_INTERACTION_BUDGET_MAX_SECONDS
     dialogue_ttl_seconds: float = DIALOGUE_TTL_MAX_SECONDS
     preview_2d_budget_seconds: float = PREVIEW_2D_BUDGET_MAX_SECONDS
+    database_url: str | None = field(default=None, repr=False)
+    wardrobe_catalog_manifest: Path | None = None
     dense_enabled: bool = False
     dense_force_failure: bool = False
     catalog_enabled: bool = True
@@ -139,14 +147,43 @@ class Settings:
             maximum=PREVIEW_2D_BUDGET_MAX_SECONDS,
         )
 
+    @property
+    def effective_cpa_image_timeout_seconds(self) -> float:
+        return _bounded_positive_float(
+            self.cpa_image_timeout_seconds,
+            default=CPA_IMAGE_TIMEOUT_MAX_SECONDS,
+            maximum=CPA_IMAGE_TIMEOUT_MAX_SECONDS,
+        )
+
     @classmethod
     def from_env(cls) -> "Settings":
         root = Path(__file__).resolve().parents[1]
         local_cpa = _load_cpa_config()
-        requested_model = os.getenv("PROFAGENT_GROK_MODEL", "grok4.5").strip()
-        # The project contract freezes this logical model. Refuse accidental drift.
-        if requested_model != "grok4.5":
-            requested_model = "grok4.5"
+        requested_model = os.getenv("PROFAGENT_GROK_MODEL", "grok4.6").strip()
+        # The project contract freezes this logical model. Fail closed instead
+        # of silently switching an operator's explicitly configured model.
+        if requested_model != "grok4.6":
+            raise ValueError("PROFAGENT_GROK_MODEL must be exactly grok4.6")
+        requested_image_model = os.getenv(
+            "PROFAGENT_CPA_IMAGE_MODEL", CPA_IMAGE_MODEL
+        ).strip()
+        if requested_image_model != CPA_IMAGE_MODEL:
+            requested_image_model = CPA_IMAGE_MODEL
+        database_url = os.getenv("PROFAGENT_DATABASE_URL")
+        if not database_url:
+            database_url = f"sqlite:///{(root / '.profagent' / 'memory.sqlite3').as_posix()}"
+        manifest_value = os.getenv("PROFAGENT_WARDROBE_CATALOG_MANIFEST")
+        image_download_hosts = tuple(
+            sorted(
+                {
+                    host.strip().rstrip(".").lower()
+                    for host in os.getenv(
+                        "PROFAGENT_CPA_IMAGE_DOWNLOAD_HOSTS", ""
+                    ).split(",")
+                    if host.strip()
+                }
+            )
+        )
         return cls(
             root_dir=root,
             host=os.getenv("PROFAGENT_HOST", "127.0.0.1"),
@@ -175,9 +212,19 @@ class Settings:
             cpa_text_enabled=_as_bool(
                 os.getenv("PROFAGENT_CPA_TEXT_ENABLED"), True
             ),
+            cpa_image_enabled=_as_bool(
+                os.getenv("PROFAGENT_CPA_IMAGE_ENABLED"), True
+            ),
+            cpa_image_model=requested_image_model,
             cpa_timeout_seconds=float(
                 os.getenv("PROFAGENT_CPA_TIMEOUT_SECONDS", "120.0")
             ),
+            cpa_image_timeout_seconds=_bounded_positive_float(
+                os.getenv("PROFAGENT_CPA_IMAGE_TIMEOUT_SECONDS"),
+                default=CPA_IMAGE_TIMEOUT_MAX_SECONDS,
+                maximum=CPA_IMAGE_TIMEOUT_MAX_SECONDS,
+            ),
+            cpa_image_download_hosts=image_download_hosts,
             cpa_scene_budget_seconds=_bounded_positive_float(
                 os.getenv("PROFAGENT_CPA_SCENE_BUDGET_SECONDS"),
                 default=CPA_SCENE_BUDGET_MAX_SECONDS,
@@ -207,6 +254,12 @@ class Settings:
                 os.getenv("PROFAGENT_PREVIEW_2D_BUDGET_SECONDS"),
                 default=PREVIEW_2D_BUDGET_MAX_SECONDS,
                 maximum=PREVIEW_2D_BUDGET_MAX_SECONDS,
+            ),
+            database_url=database_url.strip(),
+            wardrobe_catalog_manifest=(
+                Path(manifest_value).expanduser()
+                if manifest_value
+                else root / "data" / "manifests" / "wardrobe_generated_v1.json"
             ),
             dense_enabled=_as_bool(os.getenv("PROFAGENT_DENSE_ENABLED"), False),
             dense_force_failure=_as_bool(

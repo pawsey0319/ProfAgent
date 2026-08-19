@@ -1,0 +1,373 @@
+{
+  "schema_version": 2,
+  "report_id": "s12_memory_image_v1",
+  "scope": "independent S12R technical acceptance",
+  "overall_status": "PASS",
+  "external_calls": {
+    "text_cpa": 0,
+    "image_generation": 0
+  },
+  "fixed_data_mutated": false,
+  "executed_commands": [
+    "python -m pytest -q tests/test_s12_image_memory.py",
+    "python -m pytest -q tests/test_preview_static_2d.py",
+    "python -m pytest -q",
+    "python -m profagent.eval",
+    "python scripts/validate.py",
+    "node --check web/app.js",
+    "node --check web/dialogue_runtime.js",
+    "node --check web/image_asset_runtime.js",
+    "node --check web/dialogue_runtime_test.cjs",
+    "node --check web/image_asset_runtime_test.cjs",
+    "node --check web/static_contract_test.cjs",
+    "node web/dialogue_runtime_test.cjs",
+    "node web/image_asset_runtime_test.cjs",
+    "node web/static_contract_test.cjs",
+    "python scripts/tester_s12_http_smoke.py",
+    "git diff --check",
+    "git diff --exit-code -- data/fixtures data/eval/eval.jsonl scripts/generate.py scripts/validate.py",
+    "git check-ignore .profagent/memory.sqlite3"
+  ],
+  "gates": {
+    "full_pytest": {
+      "passed": 246,
+      "status": "pass"
+    },
+    "s12_image_memory": {
+      "passed": 21,
+      "status": "pass"
+    },
+    "preview_static_2d": {
+      "passed": 34,
+      "status": "pass"
+    },
+    "fixed_eval": {
+      "status": "PASS",
+      "report_version": "r1_demo_v1",
+      "metrics": {
+        "urgency_accuracy": {
+          "numerator": 30,
+          "denominator": 30,
+          "value": 1.0,
+          "unit": "ratio",
+          "threshold": {
+            "operator": ">=",
+            "value": 0.95
+          },
+          "status": "PASS",
+          "failed_case_ids": []
+        },
+        "high_urgency_shopping_gate_accuracy": {
+          "numerator": 10,
+          "denominator": 10,
+          "value": 1.0,
+          "unit": "ratio",
+          "threshold": {
+            "operator": "==",
+            "value": 1.0
+          },
+          "status": "PASS",
+          "failed_case_ids": []
+        },
+        "high_urgency_catalog_calls": {
+          "numerator": 0,
+          "denominator": 10,
+          "value": 0,
+          "unit": "invocations",
+          "threshold": {
+            "operator": "==",
+            "value": 0
+          },
+          "status": "PASS",
+          "failed_case_ids": []
+        },
+        "item_hallucinations": {
+          "numerator": 0,
+          "denominator": 515,
+          "value": 0,
+          "unit": "violations",
+          "threshold": {
+            "operator": "==",
+            "value": 0
+          },
+          "status": "PASS",
+          "failed_case_ids": []
+        },
+        "hard_constraint_violations": {
+          "numerator": 0,
+          "denominator": 423,
+          "value": 0,
+          "unit": "violations",
+          "threshold": {
+            "operator": "==",
+            "value": 0
+          },
+          "status": "PASS",
+          "failed_case_ids": [],
+          "definition": "observed_outfit_alternative_catalog_product_and_validation_constraint_violations",
+          "excluded_release_gates": [
+            "catalog_expected_presence"
+          ]
+        },
+        "slot_completeness": {
+          "numerator": 74,
+          "denominator": 74,
+          "value": 1.0,
+          "unit": "ratio",
+          "threshold": {
+            "operator": ">=",
+            "value": 0.95
+          },
+          "status": "PASS",
+          "failed_case_ids": []
+        }
+      }
+    },
+    "validate": {
+      "status": "pass",
+      "stdout_sha256": "64c0b718eb76544a2b97805fadd958337504c46075575a43660a57da99e487ce",
+      "nonempty_output_lines": 1
+    },
+    "node": {
+      "status": "pass",
+      "syntax_files": 6,
+      "runtime_contracts": 3,
+      "runtime_summaries": [
+        "web dialogue runtime S10 exact-high-model/guard/reset/CPA-text/trace contract: PASS",
+        "web S12R static A/B + catalog batch C provenance/owner/fallback runtime contract: PASS",
+        "web static S12R honest-image-provenance/owner/trace/in-flight/125s/gates contract: PASS"
+      ]
+    },
+    "temporary_http": {
+      "status": "pass",
+      "port_is_not_8000": true,
+      "health_ready": true,
+      "home_status": 200,
+      "owner_asset_counts": {
+        "u01": 28,
+        "u02": 12,
+        "u03": 10
+      },
+      "served_png_samples": {
+        "u01": {
+          "garment_id": "g001",
+          "bytes": 660725
+        },
+        "u02": {
+          "garment_id": "g029",
+          "bytes": 774601
+        },
+        "u03": {
+          "garment_id": "g041",
+          "bytes": 665484
+        }
+      },
+      "asset_version": "wardrobe_generated_v1_s12r2",
+      "catalog_provenance": {
+        "requested_model": "grok-imagine-image-quality",
+        "request_model_pinned": true,
+        "model_reported": false,
+        "model_verified": false,
+        "resolved_model": null,
+        "verification_basis": "batch_exact_request_contract"
+      },
+      "high_urgency": "high",
+      "shopping_allowed": false,
+      "catalog_call_count": 0,
+      "static_2d_status": "degraded",
+      "three_d_video_routes": "absent_or_rejected"
+    },
+    "hygiene": {
+      "status": "pass",
+      "diff_check": true,
+      "fixed_data_diff_empty": true,
+      "sqlite_ignored": true,
+      "sqlite_tracked_count": 0,
+      "sqlite_candidate_count": 0
+    }
+  },
+  "manifest_and_png": {
+    "status": "pass",
+    "manifest_items": 50,
+    "png_files": 50,
+    "fixture_rows": 50,
+    "one_to_one_fixture_id_owner": true,
+    "owner_counts": {
+      "u01": 28,
+      "u02": 12,
+      "u03": 10
+    },
+    "generation_status_counts": {
+      "reused": 50
+    },
+    "asset_version": "wardrobe_generated_v1_s12r2",
+    "status_all_succeeded": true,
+    "requested_model": "grok-imagine-image-quality",
+    "request_model_pinned": true,
+    "model_reported": false,
+    "model_verified": false,
+    "resolved_model": null,
+    "verification_basis": "batch_exact_request_contract",
+    "per_file_provider_receipt_claimed": false,
+    "prompt_hash_allowed_pairs": [
+      {
+        "prompt_sha256": null,
+        "prompt_hash_status": "not_preserved"
+      },
+      {
+        "prompt_sha256": "lowercase_64_hex",
+        "prompt_hash_status": "recorded_at_generation"
+      }
+    ],
+    "prompt_hash_status_counts": {
+      "not_preserved": 50
+    },
+    "current_null_not_preserved": true,
+    "paths_relative_and_confined": true,
+    "bytes_sha256_dimensions_match": 50,
+    "unique_sha256": 50,
+    "total_bytes": 29230158,
+    "png_static_single_frame": 50,
+    "embedded_metadata_exact_six_keys": 50,
+    "reviewer_visual_signoff": "50/50 (external reviewer evidence; not re-scored here)"
+  },
+  "memory_contract": {
+    "status": "pass",
+    "persistence_restart_and_legacy_migration": true,
+    "ineligible_retrieval_counts": {
+      "unconfirmed": 0,
+      "deleted": 0,
+      "expired": 0,
+      "superseded": 0,
+      "sensitive": 0,
+      "cross_user": 0,
+      "wrong_namespace": 0,
+      "wrong_member": 0,
+      "wrong_team": 0
+    },
+    "hard_memory_in_rrf": false,
+    "late_id_beyond_20_retrieved": true,
+    "branch_top20_union_fused": true,
+    "rrf_k": 60,
+    "candidate_limit_per_branch": 20,
+    "weights": {
+      "bm25": 1.0,
+      "dense": 1.0,
+      "recency": 0.75,
+      "importance": 1.25
+    },
+    "top_k": 5,
+    "concurrent_cas_single_record": true,
+    "local_trace_retrievable": true,
+    "trace_content_logged": false,
+    "trace_vectors_logged": false
+  },
+  "image_provider_adversarial": {
+    "status": "pass",
+    "protocol_class_a_reported_exact": {
+      "accepted_model": "grok-imagine-image-quality",
+      "model_reported": true,
+      "model_verified": true,
+      "resolved_model": "grok-imagine-image-quality",
+      "verification_basis": "reported_model_exact",
+      "raw_receipt_redacted": true
+    },
+    "protocol_class_b_unreported_with_receipt": {
+      "request_model_pinned": true,
+      "cpa_trace_verified": true,
+      "model_reported": false,
+      "model_verified": false,
+      "resolved_model": null,
+      "verification_basis": "exact_request_with_cpa_trace",
+      "raw_receipt_redacted": true
+    },
+    "present_null_empty_nonstring_wrong_prefixed_models_rejected": true,
+    "missing_or_unsafe_receipt_rejected": true,
+    "duplicate_json_keys_rejected": [
+      "model",
+      "data",
+      "b64_json",
+      "url"
+    ],
+    "post_envelope_8mib_stream_early_abort": true,
+    "url_allowlist_and_public_dns": true,
+    "redirect_userinfo_nondefault_port_rejected": true,
+    "content_type_magic_decode_bound": true,
+    "download_5mib_limit": true
+  },
+  "supervisor_real_provider_evidence": {
+    "source": "supervisor-reported real project provider smoke; not rerun by tester",
+    "exit_code": 0,
+    "latency_seconds": 5.2885,
+    "media_type": "image/jpeg",
+    "size_bytes": 228841,
+    "response_source": "b64_json",
+    "request_model_pinned": true,
+    "cpa_trace_verified": true,
+    "model_reported": false,
+    "model_verified": false,
+    "resolved_model": null,
+    "verification_basis": "exact_request_with_cpa_trace"
+  },
+  "controlled_memory_ablation": {
+    "status": "pass",
+    "dataset_kind": "controlled_synthetic",
+    "truth_queries": 10,
+    "corpus_records": 24,
+    "dense_backend": "deterministic_hashed_surrogate_v1",
+    "rrf": {
+      "k": 60,
+      "candidate_limit_per_branch": 20,
+      "weights": {
+        "bm25": 1.0,
+        "dense": 1.0,
+        "recency": 0.75,
+        "importance": 1.25
+      },
+      "production_top_k": 5
+    },
+    "methods": {
+      "bm25_only": {
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "mrr": 1.0,
+        "p95_latency_ms": 2.5744,
+        "measured_rankings": 200
+      },
+      "hashed_dense_only": {
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "mrr": 1.0,
+        "p95_latency_ms": 0.6316,
+        "measured_rankings": 200
+      },
+      "weighted_rrf": {
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "mrr": 0.8833,
+        "p95_latency_ms": 3.201,
+        "measured_rankings": 200
+      },
+      "weighted_rrf_deterministic_rerank": {
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "mrr": 1.0,
+        "p95_latency_ms": 3.149,
+        "measured_rankings": 200
+      }
+    },
+    "limitations": "Small controlled synthetic truth set. Hashed dense is a deterministic surrogate, not a semantic embedding model. These numbers do not demonstrate production semantic quality or improvement."
+  },
+  "privacy": {
+    "manifest_paths_are_relative": true,
+    "trace_has_no_memory_content_or_vectors": true,
+    "reports_have_no_prompt_text_key_material_base64_payload_or_absolute_user_path": true,
+    "sqlite_expected_location": ".profagent/memory.sqlite3",
+    "sqlite_git_ignored": true
+  },
+  "findings": {
+    "P0": 0,
+    "P1": 0,
+    "P2": 0
+  }
+}

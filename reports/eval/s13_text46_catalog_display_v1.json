@@ -1,0 +1,203 @@
+{
+  "schema_version": 1,
+  "report_id": "s13_text46_catalog_display_v1",
+  "scope": "independent S13 CPA Text 4.6 and wardrobe catalog image display acceptance",
+  "overall_status": "PASS",
+  "external_calls": {
+    "text_cpa": 0,
+    "image_generation": 0
+  },
+  "port_8000_touched": false,
+  "production_code_modified_by_tester": false,
+  "fixed_truth_or_threshold_modified_by_tester": false,
+  "commands": [
+    "D:\\anaconda\\envs\\torch128\\python.exe -m pytest -q tests/test_cpa_interaction_budget.py tests/test_dialogue_turn.py tests/test_dialogue_s7a.py tests/test_dialogue_s8a.py tests/test_preview_static_2d.py tests/test_s12_image_memory.py",
+    "D:\\anaconda\\envs\\torch128\\python.exe -m pytest -q",
+    "D:\\anaconda\\envs\\torch128\\python.exe scripts/validate.py",
+    "D:\\anaconda\\envs\\torch128\\python.exe -m profagent.eval",
+    "node --check web/app.js",
+    "node --check web/dialogue_runtime.js",
+    "node --check web/image_asset_runtime.js",
+    "node --check web/dialogue_runtime_test.cjs",
+    "node --check web/image_asset_runtime_test.cjs",
+    "node --check web/static_contract_test.cjs",
+    "node --check web/catalog_image_browser_smoke.cjs",
+    "node web/dialogue_runtime_test.cjs",
+    "node web/image_asset_runtime_test.cjs",
+    "node web/static_contract_test.cjs",
+    "D:\\anaconda\\envs\\torch128\\python.exe scripts/tester_s12_http_smoke.py",
+    "git diff --exit-code -- data/fixtures data/eval/eval.jsonl scripts/generate.py scripts/validate.py",
+    "git diff --check"
+  ],
+  "pytest": {
+    "targeted": 214,
+    "full": 252
+  },
+  "model_contract": {
+    "logical": "grok4.6",
+    "transport": "grok-4.6-high",
+    "accepted_reported_models": [
+      "grok-4.6-high",
+      "grok-4.6-build"
+    ],
+    "legacy_4_5_rejected": true,
+    "prefix_and_other_models_rejected": true,
+    "exact_frontend_source_gate": true
+  },
+  "catalog_image_display": {
+    "hidden_lazy_deadlock_absent": true,
+    "pending_image_layout_eligible": true,
+    "load_error_and_cached_complete_paths_tested": true,
+    "owner_version_content_hash_provenance_gate_preserved": true,
+    "real_browser_dom": {
+      "status": "pass",
+      "uses_same_non_8000_server": true,
+      "summary": "web catalog image real-browser smoke: PASS naturalWidth=1024"
+    }
+  },
+  "fixed_eval": {
+    "status": "PASS",
+    "metrics": {
+      "urgency_accuracy": {
+        "numerator": 30,
+        "denominator": 30,
+        "value": 1.0,
+        "unit": "ratio",
+        "threshold": {
+          "operator": ">=",
+          "value": 0.95
+        },
+        "status": "PASS",
+        "failed_case_ids": []
+      },
+      "high_urgency_shopping_gate_accuracy": {
+        "numerator": 10,
+        "denominator": 10,
+        "value": 1.0,
+        "unit": "ratio",
+        "threshold": {
+          "operator": "==",
+          "value": 1.0
+        },
+        "status": "PASS",
+        "failed_case_ids": []
+      },
+      "high_urgency_catalog_calls": {
+        "numerator": 0,
+        "denominator": 10,
+        "value": 0,
+        "unit": "invocations",
+        "threshold": {
+          "operator": "==",
+          "value": 0
+        },
+        "status": "PASS",
+        "failed_case_ids": []
+      },
+      "item_hallucinations": {
+        "numerator": 0,
+        "denominator": 515,
+        "value": 0,
+        "unit": "violations",
+        "threshold": {
+          "operator": "==",
+          "value": 0
+        },
+        "status": "PASS",
+        "failed_case_ids": []
+      },
+      "hard_constraint_violations": {
+        "numerator": 0,
+        "denominator": 423,
+        "value": 0,
+        "unit": "violations",
+        "threshold": {
+          "operator": "==",
+          "value": 0
+        },
+        "status": "PASS",
+        "failed_case_ids": [],
+        "definition": "observed_outfit_alternative_catalog_product_and_validation_constraint_violations",
+        "excluded_release_gates": [
+          "catalog_expected_presence"
+        ]
+      },
+      "slot_completeness": {
+        "numerator": 74,
+        "denominator": 74,
+        "value": 1.0,
+        "unit": "ratio",
+        "threshold": {
+          "operator": ">=",
+          "value": 0.95
+        },
+        "status": "PASS",
+        "failed_case_ids": []
+      }
+    }
+  },
+  "validate": {
+    "status": "pass",
+    "summary": "validation passed: users=3 garments=50 outfits=20 catalog=50 eval=30"
+  },
+  "node": {
+    "status": "pass",
+    "syntax_files": 7,
+    "runtime_contracts": 3,
+    "summaries": [
+      "web dialogue runtime S13 exact-4.6-model/guard/reset/CPA-text/trace contract: PASS",
+      "web S12R catalog provenance + image display lifecycle runtime contract: PASS",
+      "web static S13 text-model/catalog-image-display/provenance/trace/gates contract: PASS"
+    ]
+  },
+  "temporary_http": {
+    "status": "pass",
+    "port_is_not_8000": true,
+    "health_ready": true,
+    "home_status": 200,
+    "owner_asset_counts": {
+      "u01": 28,
+      "u02": 12,
+      "u03": 10
+    },
+    "served_png_samples": {
+      "u01": {
+        "garment_id": "g001",
+        "bytes": 660725
+      },
+      "u02": {
+        "garment_id": "g029",
+        "bytes": 774601
+      },
+      "u03": {
+        "garment_id": "g041",
+        "bytes": 665484
+      }
+    },
+    "asset_version": "wardrobe_generated_v1_s12r2",
+    "catalog_provenance": {
+      "requested_model": "grok-imagine-image-quality",
+      "request_model_pinned": true,
+      "model_reported": false,
+      "model_verified": false,
+      "resolved_model": null,
+      "verification_basis": "batch_exact_request_contract"
+    },
+    "high_urgency": "high",
+    "shopping_allowed": false,
+    "catalog_call_count": 0,
+    "static_2d_status": "degraded",
+    "catalog_browser_dom": {
+      "status": "pass",
+      "uses_same_non_8000_server": true,
+      "summary": "web catalog image real-browser smoke: PASS naturalWidth=1024"
+    },
+    "three_d_video_routes": "absent_or_rejected"
+  },
+  "fixed_eval_command_output_nonempty": true,
+  "findings": {
+    "P0": 0,
+    "P1": 0,
+    "P2": 0
+  }
+}

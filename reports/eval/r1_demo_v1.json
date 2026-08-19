@@ -1,6 +1,6 @@
 {
   "report_version": "r1_demo_v1",
-  "generated_at": "2026-08-10T17:18:33+08:00",
+  "generated_at": "2026-08-19T13:51:08+08:00",
   "status": "PASS",
   "command": "conda run -n torch128 python -m profagent.eval",
   "versions": {
@@ -9,16 +9,16 @@
     "eval_sha256": "a534e04346a60b837528248e38891d9e17a1024895f36aea9433e209409bff66",
     "rules": "scene_rules_v1|hard_filter_v1|response_validator_v1|stylist_score_v1",
     "ranker": "rule_bm25_rrf_v1",
-    "provider_contract": "cpa_grok4.5_v1",
+    "provider_contract": "cpa_grok4.6_v1",
     "providers": {
-      "llm": "cpa_text_grok4.5_v1|offline_rule_fallback",
+      "llm": "cpa_text_grok4.6_v1|offline_rule_fallback",
       "dense": "hashed_dense_v1|disabled_fixture_baseline",
       "catalog": "fixtures_v1.0_mock",
       "vision": "garment_visibility_codes_v2|httpx_mock_only"
     },
     "model": {
-      "logical": "grok4.5",
-      "transport": "grok-4.5-high",
+      "logical": "grok4.6",
+      "transport": "grok-4.6-high",
       "evaluation_mode": "offline_rule_fallback",
       "external_calls": 0
     },

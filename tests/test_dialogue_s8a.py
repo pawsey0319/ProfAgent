@@ -137,7 +137,7 @@ def test_successful_dialogue_waits_for_complete_validated_cpa_response_once(
             200,
             request=httpx.Request("POST", url),
             json={
-                "model": "grok-4.5-build",
+                "model": "grok-4.6-build",
                 "choices": [
                     {"message": {"content": json.dumps(payload, ensure_ascii=False)}}
                 ],
@@ -149,7 +149,11 @@ def test_successful_dialogue_waits_for_complete_validated_cpa_response_once(
         offline_settings,
         cpa_text_enabled=True,
         cpa_timeout_seconds=120,
-        cpa_dialogue_budget_seconds=0.5,
+        # This test validates synchronous completion, not the timeout path.
+        # Keep the injected budget comfortably above the 80 ms mock delay so
+        # Windows scheduler/CI jitter cannot cancel a healthy child task.
+        # Timeout cancellation is covered separately with a 50 ms budget.
+        cpa_dialogue_budget_seconds=2.0,
     )
     app = create_app(settings)
     with TestClient(app) as client:
@@ -167,7 +171,7 @@ def test_successful_dialogue_waits_for_complete_validated_cpa_response_once(
         assert returned_at - started >= 0.07
         assert response["provider"]["status"] == "ok"
         assert response["provider"]["generation_source"] == "cpa"
-        assert response["provider"]["resolved_model"] == "grok-4.5-build"
+        assert response["provider"]["resolved_model"] == "grok-4.6-build"
         assert response["assistant_message"] == expected_reply
         assert response["recommendation"] is not None
         assert len(response["recommendation"]["outfits"]) == 3
@@ -179,7 +183,7 @@ def test_successful_dialogue_waits_for_complete_validated_cpa_response_once(
         provider_trace = trace["provider"]
         assert provider_trace["status"] == "ok"
         assert provider_trace["latency_ms"] >= 50
-        assert provider_trace["interaction_budget_seconds"] == 0.5
+        assert provider_trace["interaction_budget_seconds"] == 2.0
         serialized_trace = json.dumps(trace, ensure_ascii=False)
         assert expected_reply not in serialized_trace
         assert "看看首选方向" not in serialized_trace
