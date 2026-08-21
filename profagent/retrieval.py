@@ -369,7 +369,7 @@ class HybridRetriever:
         controlled_soft_terms = tuple(
             term
             for term in soft_memory_terms
-            if re.fullmatch(r"(?:fit|style|comfort):[a-z_]+", term)
+            if re.fullmatch(r"(?:fit|style|comfort|color):[a-z_]+", term)
         )
         if controlled_soft_terms:
             semantic_query += " " + " ".join(controlled_soft_terms)

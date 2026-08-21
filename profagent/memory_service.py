@@ -266,7 +266,7 @@ class MemorySignal(BaseModel):
     memory_id: str
     namespace: MemoryNamespace
     type: MemoryType
-    applied_signal: Literal["long_walk", "no_high_heels", "no_skirts"]
+    applied_signal: str
     # Private policy context. `exclude=True` prevents accidental model dumps;
     # Scene/Trace code must never serialize this grounded target.
     target_item_id: str | None = Field(default=None, exclude=True, repr=False)
@@ -276,6 +276,19 @@ class MemorySignal(BaseModel):
     shoe_signature: ShoeSimilaritySignature | None = Field(
         default=None, exclude=True, repr=False
     )
+
+    @field_validator("applied_signal")
+    @classmethod
+    def validate_applied_signal(cls, value: str) -> str:
+        if value in {"long_walk", "no_high_heels", "no_skirts"}:
+            return value
+        prefix, separator, color = value.partition(":")
+        if separator and prefix in {"prefer_color", "avoid_color"}:
+            from .memory_candidates import COLOR_VALUES
+
+            if color in COLOR_VALUES:
+                return value
+        raise ValueError("memory signal is outside the controlled closure")
 
 
 @dataclass(frozen=True)
@@ -392,6 +405,17 @@ class MemoryService:
 
     @staticmethod
     def _semantic_key(record: MemoryRecord, context: MemoryTargetContext | None) -> str:
+        from .memory_candidates import canonical_candidate_for_content
+
+        candidate = canonical_candidate_for_content(record.type, record.content)
+        if candidate is not None:
+            key = (
+                f"canonical:{candidate.canonical_kind}:"
+                f"{candidate.canonical_value}"
+            )
+            if context is not None:
+                key = f"{key}:{context.target_item_id}"
+            return key
         normalized = re.sub(r"\s+", "", record.content).lower()
         controlled = {
             "不穿高跟鞋": "hard:no_high_heels",
@@ -413,6 +437,11 @@ class MemoryService:
     def _memory_class_for(
         cls, memory_type: MemoryType, content: str
     ) -> MemoryClass:
+        from .memory_candidates import canonical_candidate_for_content
+
+        candidate = canonical_candidate_for_content(memory_type, content)
+        if candidate is not None:
+            return candidate.memory_class
         normalized = re.sub(r"\s+", "", content)
         if memory_type in {"constraint", "comfort_constraint"} or normalized in {
             "不穿高跟鞋",
@@ -499,7 +528,11 @@ class MemoryService:
 
     @classmethod
     def is_approved_content(cls, memory_type: str, content: str) -> bool:
-        return content in cls._APPROVED_CONTENT.get(memory_type, frozenset())
+        if content in cls._APPROVED_CONTENT.get(memory_type, frozenset()):
+            return True
+        from .memory_candidates import canonical_candidate_for_content
+
+        return canonical_candidate_for_content(memory_type, content) is not None
 
     def _trace(
         self,
@@ -794,8 +827,16 @@ class MemoryService:
     def _derive_signal(
         record: MemoryRecord,
         context: MemoryTargetContext | None,
-    ) -> Literal["long_walk", "no_high_heels", "no_skirts"] | None:
+    ) -> str | None:
         """Fail closed: only exact controlled type/content pairs become signals."""
+        from .memory_candidates import canonical_candidate_for_content
+
+        candidate = canonical_candidate_for_content(record.type, record.content)
+        if candidate is not None:
+            if candidate.canonical_kind == "color_preference":
+                return f"prefer_color:{candidate.canonical_value}"
+            if candidate.canonical_kind == "color_avoidance":
+                return f"avoid_color:{candidate.canonical_value}"
         text = re.sub(r"\s+", "", record.content).lower()
         if record.type == "feedback":
             if (
@@ -821,6 +862,14 @@ class MemoryService:
             "不穿裙装": "no_skirts",
         }
         return controlled.get(text)
+
+    @staticmethod
+    def _is_hard_signal(applied_signal: str | None) -> bool:
+        return applied_signal in {
+            "long_walk",
+            "no_high_heels",
+            "no_skirts",
+        } or bool(applied_signal and applied_signal.startswith("avoid_color:"))
 
     def active_signals(self, user_id: str) -> tuple[MemorySignal, ...]:
         """Return only committed, non-sensitive, user-confirmed safe signals."""
@@ -883,6 +932,11 @@ class MemoryService:
 
     @staticmethod
     def _soft_term(record: MemoryRecord) -> tuple[str, ...]:
+        from .memory_candidates import canonical_candidate_for_content
+
+        candidate = canonical_candidate_for_content(record.type, record.content)
+        if candidate is not None:
+            return (candidate.soft_term,) if candidate.soft_term is not None else ()
         controlled = {
             "偏爱直筒裤": ("fit:straight",),
             "偏爱简洁风格": ("style:simple",),
@@ -894,6 +948,11 @@ class MemoryService:
 
     @staticmethod
     def _applicability_tags(record: MemoryRecord) -> frozenset[str]:
+        from .memory_candidates import canonical_candidate_for_content
+
+        candidate = canonical_candidate_for_content(record.type, record.content)
+        if candidate is not None:
+            return frozenset(candidate.applicability_tags)
         controlled = {
             "偏爱直筒裤": frozenset({"goal:comfortable"}),
             "偏爱简洁风格": frozenset(
@@ -985,9 +1044,9 @@ class MemoryService:
                 self._context_load(context_raw) if context_raw is not None else None
             )
             # Hard memory is consumed only by active_signals(), never by RRF.
-            if (
-                record.memory_class == "hard_constraint"
-                or self._derive_signal(record, context) is not None
+            applied_signal = self._derive_signal(record, context)
+            if record.memory_class == "hard_constraint" or self._is_hard_signal(
+                applied_signal
             ):
                 continue
             if self._soft_term(record):
@@ -1196,9 +1255,9 @@ class MemoryService:
             context = (
                 self._context_load(context_raw) if context_raw is not None else None
             )
-            if (
-                record.memory_class == "hard_constraint"
-                or self._derive_signal(record, context) is not None
+            applied_signal = self._derive_signal(record, context)
+            if record.memory_class == "hard_constraint" or self._is_hard_signal(
+                applied_signal
             ):
                 continue
             if self._soft_term(record):

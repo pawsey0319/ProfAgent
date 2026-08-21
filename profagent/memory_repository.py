@@ -332,7 +332,16 @@ class SqlMemoryRepository:
             "profile_stable": {"不穿高跟鞋", "不穿裙装", "偏爱直筒裤"},
             "feedback": {"偏好久走与长时间站立时选择舒适鞋履"},
         }
-        return isinstance(content, str) and content in approved.get(memory_type, set())
+        if not isinstance(content, str):
+            return False
+        if content in approved.get(memory_type, set()):
+            return True
+        # S16 extends the same fail-closed vocabulary through the canonical
+        # validator. Import lazily to avoid weakening the repository boundary or
+        # creating an import cycle during MemoryService construction.
+        from .memory_candidates import canonical_candidate_for_content
+
+        return canonical_candidate_for_content(memory_type, content) is not None
 
     @staticmethod
     def _acl_is_canonical(row: dict[str, Any], namespace: str) -> bool:

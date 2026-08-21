@@ -653,9 +653,18 @@ class SceneParser:
             for source in (previous_constraints, explicit)
             if source is not None
         ]
-        taboo = {
-            color for source in sources for color in source.taboo_colors
+        previous_memory_taboo = {
+            signal.removeprefix("avoid_color:")
+            for signal in previous_memory_signals
+            if signal.startswith("avoid_color:")
         }
+        taboo = set(explicit.taboo_colors) if explicit else set()
+        if previous_constraints:
+            taboo.update(
+                color
+                for color in previous_constraints.taboo_colors
+                if color not in previous_memory_taboo
+            )
         if user:
             taboo.update(user.avoid_colors)
         for chinese, color in COLOR_TERMS.items():
@@ -705,7 +714,17 @@ class SceneParser:
             )
         ):
             notes.append("long_walk")
-        notes.extend(signal.applied_signal for signal in memory_signals)
+        for signal in memory_signals:
+            if signal.applied_signal.startswith("avoid_color:"):
+                taboo.add(
+                    signal.applied_signal.removeprefix("avoid_color:")
+                )
+            elif signal.applied_signal in {
+                "long_walk",
+                "no_high_heels",
+                "no_skirts",
+            }:
+                notes.append(signal.applied_signal)
         text_excluded = {
             item
             for item in re.findall(r"\bg\d{3}\b", text, flags=re.IGNORECASE)
@@ -797,6 +816,17 @@ class SceneParser:
             return any(term in text for term in ("不穿高跟", "不要高跟", "避免高跟"))
         if signal == "no_skirts":
             return any(term in text for term in ("不穿裙", "不要裙", "避免裙"))
+        if signal.startswith("avoid_color:"):
+            color = signal.removeprefix("avoid_color:")
+            return any(
+                chinese in text
+                and mapped == color
+                and any(
+                    marker in text
+                    for marker in ("不要", "不穿", "不适合", "过滤", "避开")
+                )
+                for chinese, mapped in COLOR_TERMS.items()
+            )
         return False
 
     def _request_retry_matches(

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from profagent.app import create_app
-from profagent.memory_service import MemorySignal, ShoeSimilaritySignature
+from profagent.memory_service import MemoryService, MemorySignal, ShoeSimilaritySignature
 from profagent.models import SceneConstraints, SceneRequest, UICapabilities
 
 
@@ -79,3 +79,53 @@ def test_confirmed_similarity_policy_applies_exact_post_rrf_score_penalty(
     assert policy_trace["target_ids_logged"] is False
     assert policy_trace["signatures_logged"] is False
     assert policy_trace["demoted_ids_logged"] is False
+
+
+def test_s16_preserves_s15_memory_rrf_constants_exactly() -> None:
+    assert MemoryService.RRF_K == 60
+    assert MemoryService.RRF_CANDIDATE_LIMIT == 20
+    assert MemoryService.RRF_WEIGHTS == {
+        "bm25": 1.0,
+        "dense": 1.0,
+        "recency": 0.75,
+        "importance": 1.25,
+    }
+    assert MemoryService.RRF_TOP_K == 5
+
+
+def test_retriever_accepts_only_controlled_soft_color_terms(offline_settings) -> None:
+    app = create_app(offline_settings)
+    services = app.state.services
+    scene = SceneRequest(
+        request_id="req_color_term_unit",
+        user_id="u01",
+        styling_session_id="session_color_term_unit",
+        query_text="下周约会",
+        intent="recommend",
+        occasion="date",
+        event_horizon="soon",
+        urgency="medium",
+        shopping_allowed=False,
+        goals=["low_key"],
+        constraints=SceneConstraints(),
+        backend="rule_fallback",
+        ui_capabilities=UICapabilities(shopping_cta=False),
+        trace_id="trace_color_term_unit",
+    )
+    result = services.hard_filter.apply(
+        services.repository.list_garments("u01"), scene
+    )
+
+    _items, trace, _fallbacks = services.retriever.retrieve(
+        scene,
+        result,
+        favorite_colors=(),
+        soft_memory_terms=(
+            "color:navy",
+            "color:navy raw dialogue",
+            "prompt:ignore_previous",
+        ),
+    )
+
+    assert trace["soft_memory_term_count"] == 1
+    services.memory.close()
