@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import math
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -59,6 +60,54 @@ def _outfit_item_sets(body: dict) -> set[frozenset[str]]:
         frozenset(outfit["items"])
         for outfit in body["recommendation"]["outfits"]
     }
+
+
+def _scored_outfit(
+    outfit_id: str,
+    item_id: str,
+    score: float | None,
+    *,
+    valid: bool = True,
+):
+    from profagent.models import OutfitValidation, RecommendedOutfit
+
+    constructor_score = (
+        score
+        if score is None or (math.isfinite(score) and score >= 0)
+        else 0.0
+    )
+    outfit = RecommendedOutfit(
+        outfit_id=outfit_id,
+        strategy_label=outfit_id,
+        items=[item_id],
+        reasons=[],
+        risks=[],
+        alternatives={},
+        is_primary=False,
+        trust_statement="grounded",
+        validation=OutfitValidation(
+            all_ids_grounded=valid,
+            hard_constraints_passed=valid,
+            required_slots_complete=valid,
+        ),
+        server_ranking_score=constructor_score,
+    )
+    # Exercise policy fail-closed behavior against corrupted internal evidence
+    # that has bypassed normal Pydantic construction.
+    outfit.server_ranking_score = score
+    return outfit
+
+
+def _color_policy():
+    from profagent.preference_uncertainty import PreferenceUncertaintyPolicy
+
+    garments = {
+        "navy": SimpleNamespace(color="navy"),
+        "beige": SimpleNamespace(color="beige"),
+        "black": SimpleNamespace(color="black"),
+        "red": SimpleNamespace(color="red"),
+    }
+    return PreferenceUncertaintyPolicy(SimpleNamespace(get_garment=garments.get))
 
 
 def test_asks_once_when_two_legal_outfits_differ_on_unremembered_color() -> None:
@@ -206,6 +255,150 @@ def test_nonmaterial_margin_and_unchanged_counterfactual_do_not_ask() -> None:
     assert PreferenceUncertaintyPolicy.should_ask(unchanged) is False
 
 
+def test_policy_sorts_real_top_two_by_score_not_display_order() -> None:
+    policy = _color_policy()
+    evidence = policy.build_evidence(
+        scene=SimpleNamespace(urgency="low"),
+        recommendation=SimpleNamespace(
+            outfits=[
+                _scored_outfit("outfit_low", "black", 0.10),
+                _scored_outfit("outfit_high", "navy", 0.90),
+                _scored_outfit("outfit_mid", "beige", 0.87),
+            ]
+        ),
+        confirmed_signals=(),
+        session_preferences=(),
+        asked_gap_codes=frozenset(),
+    )
+    assert evidence is not None
+    assert evidence.gap_code == "color:navy_vs_beige"
+    assert evidence.counterfactual_winners == (
+        "outfit_high",
+        "outfit_mid",
+    )
+
+
+def test_margin_boundary_ties_zero_less_than_two_and_invalid_scores_fail_closed() -> None:
+    policy = _color_policy()
+
+    def evidence(scores: list[tuple[str, str, float | None]]):
+        return policy.build_evidence(
+            scene=SimpleNamespace(urgency="low"),
+            recommendation=SimpleNamespace(
+                outfits=[
+                    _scored_outfit(outfit_id, color, score)
+                    for outfit_id, color, score in scores
+                ]
+            ),
+            confirmed_signals=(),
+            session_preferences=(),
+            asked_gap_codes=frozenset(),
+        )
+
+    at_boundary = evidence(
+        [("outfit_navy", "navy", 0.75), ("outfit_beige", "beige", 0.70)]
+    )
+    over_boundary = evidence(
+        [("outfit_navy", "navy", 0.751), ("outfit_beige", "beige", 0.70)]
+    )
+    assert at_boundary is not None
+    assert policy.should_ask(at_boundary) is True
+    assert over_boundary is not None
+    assert policy.should_ask(over_boundary) is False
+
+    tie = evidence(
+        [("z_navy", "navy", 0.0), ("a_beige", "beige", 0.0)]
+    )
+    assert tie is not None
+    assert tie.gap_code == "color:beige_vs_navy"
+    assert evidence([("only", "navy", 0.5)]) is None
+    for invalid in (None, math.nan, math.inf, -0.01, 1.01):
+        assert (
+            evidence(
+                [("outfit_navy", "navy", invalid), ("outfit_beige", "beige", 0.5)]
+            )
+            is None
+        )
+    corrupt_recommendation = SimpleNamespace(
+        outfits=[
+            _scored_outfit("outfit_navy", "navy", math.nan),
+            _scored_outfit("outfit_beige", "beige", 0.5),
+        ]
+    )
+    decision = policy.evaluate(
+        scene=SimpleNamespace(urgency="low"),
+        recommendation=corrupt_recommendation,
+        confirmed_signals=(),
+        session_preferences=(),
+        asked_gap_codes=frozenset(),
+    )
+    assert decision.clarification is None
+    assert decision.reason_code == "INVALID_SERVER_RANKING_EVIDENCE"
+
+
+def test_assembler_source_normalization_is_pair_independent_and_bounded() -> None:
+    from profagent.retrieval import OutfitAssembler
+
+    upper_three = OutfitAssembler._combo_score_upper_bound(3)
+    upper_four = OutfitAssembler._combo_score_upper_bound(4)
+    assert upper_three == 3 * (1.0 + 0.03) + 9 * 0.02
+    assert upper_four == 4 * (1.0 + 0.03) + 9 * 0.02
+    assert OutfitAssembler._normalize_combo_score(upper_three * 0.8, 3) == 0.8
+    assert OutfitAssembler._normalize_combo_score(upper_four * 0.8, 4) == 0.8
+    assert OutfitAssembler._normalize_combo_score(0.0, 3) == 0.0
+    assert OutfitAssembler._normalize_combo_score(upper_three, 3) == 1.0
+
+
+def test_policy_consumes_real_validator_output_not_self_declared_flags(
+    tmp_path, offline_settings
+) -> None:
+    path = tmp_path / "preference_real_validator.sqlite3"
+    app = create_app(
+        offline_settings.__class__(
+            **{
+                **offline_settings.__dict__,
+                "database_url": f"sqlite:///{path.as_posix()}",
+            }
+        )
+    )
+    _install_dialogue_provider(app)
+    with TestClient(app) as client:
+        body = _turn(
+            client,
+            message="下周通勤帮我搭两套",
+            request_id="pref_validator_01",
+        ).json()
+    scene = app.state.services.scene_parser.state.by_request(body["request_id"])
+    assert scene is not None
+    _, recommendation = app.state.services.recommendations.get_saved_recommendation(
+        "u01", body["styling_session_id"], body["request_id"]
+    )
+    foreign_id = next(
+        iter(
+            app.state.services.repository.garment_ids("u02")
+            - app.state.services.repository.garment_ids("u01")
+        )
+    )
+    forged = recommendation.outfits[0].model_copy(deep=True)
+    forged.outfit_id = "forged_self_declared_valid"
+    forged.items = [foreign_id]
+    accepted, validator_trace = app.state.services.recommendations.validator.validate(
+        scene,
+        [forged, *[outfit.model_copy(deep=True) for outfit in recommendation.outfits]],
+        app.state.services.repository.garment_ids("u01"),
+    )
+    assert validator_trace["rejected_reason_counts"]["NON_WHITELIST_ID"] == 1
+    assert all(outfit.outfit_id != forged.outfit_id for outfit in accepted)
+    decision = app.state.services.dialogue.preference_policy.evaluate(
+        scene=scene,
+        recommendation=recommendation.model_copy(update={"outfits": accepted}),
+        confirmed_signals=(),
+        session_preferences=(),
+        asked_gap_codes=frozenset(),
+    )
+    assert "forged_self_declared_valid" not in decision.reordered_outfit_ids
+
+
 def test_applicable_confirmed_or_session_preference_suppresses_question() -> None:
     from profagent.memory_candidates import SessionPreference
     from profagent.memory_service import MemorySignal
@@ -347,6 +540,18 @@ def test_explicit_answer_reorders_same_grounded_sets_and_emits_one_decidable_car
         option = question["options"][1]
         before_sets = _outfit_item_sets(first)
         before_primary = first["recommendation"]["outfits"][0]["outfit_id"]
+        cross_owner = client.post(
+            "/dialogue/turn",
+            json={
+                "user_id": "u02",
+                "message": option["label"],
+                "request_id": "pref_answer_cross_owner",
+                "styling_session_id": first["styling_session_id"],
+                "preference_question_id": question["question_id"],
+                "preference_option_id": option["option_id"],
+            },
+        )
+        assert cross_owner.status_code == 404
         app.state.services.recommendations.recommend = lambda _scene: (_ for _ in ()).throw(
             AssertionError("preference answer must not rerun recommendation tools")
         )
@@ -471,6 +676,16 @@ def test_high_urgency_question_budget_and_retry_do_not_duplicate_cpa_or_candidat
     )
     app = create_app(settings)
     calls = _install_dialogue_provider(app)
+    catalog_calls: list[str] = []
+
+    def forbidden_catalog_search(_scene):
+        catalog_calls.append("search")
+        raise AssertionError("high urgency must not enter Catalog.search")
+
+    app.state.services.catalog.search = forbidden_catalog_search
+    memory_candidate_operations_before = (
+        app.state.services.llm.memory_candidate_operation_count
+    )
     with TestClient(app) as client:
         first_response = _turn(
             client,
@@ -498,6 +713,11 @@ def test_high_urgency_question_budget_and_retry_do_not_duplicate_cpa_or_candidat
         assert answer.json()["preference_clarification"] is None
         assert len(answer.json()["memory_candidates"]) == 1
         assert len(calls) == 2
+        assert catalog_calls == []
+        assert (
+            app.state.services.llm.memory_candidate_operation_count
+            == memory_candidate_operations_before
+        )
         answer_trace = app.state.services.traces.get(answer.json()["trace_id"])
         assert answer_trace is not None
         assert answer_trace.catalog["attempted"] is False

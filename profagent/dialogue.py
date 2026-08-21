@@ -1764,6 +1764,7 @@ class DialogueService:
             provider_suggestions
             or self._default_suggestions(mode, action)
         )
+        assistant_history_message = assistant_message
         if preference_clarification is not None:
             assistant_message = (
                 assistant_message.rstrip()
@@ -1799,7 +1800,9 @@ class DialogueService:
             user_history_text = "[task_control_omitted]"
         else:
             user_history_text = self._provider_safe_text(current_text_for_provider)
-        _, assistant_history_text = self._fit_candidate(assistant_message[:600])
+        _, assistant_history_text = self._fit_candidate(
+            assistant_history_message[:600]
+        )
         assistant_history_text = (
             "[sensitive_response_omitted]"
             if sensitive

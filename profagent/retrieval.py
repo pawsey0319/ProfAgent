@@ -454,6 +454,18 @@ def _occasion_semihard_pass(items: Iterable[Garment], scene: SceneRequest) -> bo
 
 
 class OutfitAssembler:
+    # Source-normalization contract for _combo_score. Outfit fixture/schema
+    # permits at most six items; per-item rank is in [0, 1], occasion contributes
+    # at most 0.03 per item, and the controlled goal map contains nine distinct
+    # matchable styles at 0.02 each. The bound depends only on the outfit's item
+    # count and these frozen source constants, never on a candidate pair, recall
+    # size, or display/diversity order.
+    _MAX_COMBO_ITEM_COUNT = 6
+    _MAX_RANK_SCORE_PER_ITEM = 1.0
+    _MAX_OCCASION_BONUS_PER_ITEM = 0.03
+    _STYLE_BONUS_PER_MATCH = 0.02
+    _MAX_STYLE_MATCH_COUNT = len(set().union(*GOAL_STYLE_MAP.values()))
+
     def __init__(self, repository: FixtureRepository, hard_filter: HardFilter):
         self.repository = repository
         self.hard_filter = hard_filter
@@ -468,6 +480,30 @@ class OutfitAssembler:
         desired = set().union(*(GOAL_STYLE_MAP.get(goal, set()) for goal in scene.goals))
         score += len(styles.intersection(desired)) * 0.02
         return score
+
+    @classmethod
+    def _combo_score_upper_bound(cls, item_count: int) -> float:
+        if not 1 <= item_count <= cls._MAX_COMBO_ITEM_COUNT:
+            raise ValueError("combo item count is outside the validated schema")
+        return (
+            item_count
+            * (
+                cls._MAX_RANK_SCORE_PER_ITEM
+                + cls._MAX_OCCASION_BONUS_PER_ITEM
+            )
+            + cls._MAX_STYLE_MATCH_COUNT * cls._STYLE_BONUS_PER_MATCH
+        )
+
+    @classmethod
+    def _normalize_combo_score(cls, raw_score: float, item_count: int) -> float:
+        upper_bound = cls._combo_score_upper_bound(item_count)
+        if (
+            not math.isfinite(raw_score)
+            or raw_score < 0
+            or raw_score > upper_bound + 1e-12
+        ):
+            raise ValueError("combo score is outside its fixed source bound")
+        return min(1.0, raw_score / upper_bound)
 
     @staticmethod
     def _signature(combo: tuple[Garment, ...]) -> tuple[Any, ...]:
@@ -669,8 +705,9 @@ class OutfitAssembler:
                         hard_constraints_passed=True,
                         required_slots_complete=True,
                     ),
-                    server_ranking_score=max(
-                        0.0, self._combo_score(combo, rank_score, scene)
+                    server_ranking_score=self._normalize_combo_score(
+                        self._combo_score(combo, rank_score, scene),
+                        len(combo),
                     ),
                 )
             )

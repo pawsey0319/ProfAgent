@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import dataclass
 
 from .memory_candidates import COLOR_LABELS, COLOR_VALUES, SessionPreference
@@ -79,15 +80,36 @@ class PreferenceUncertaintyPolicy:
         return next((color for color in COLOR_VALUES if color in colors), None)
 
     @classmethod
-    def _normalized_scores(cls, outfits) -> tuple[float, float] | None:
+    def _ranked_valid_outfits(cls, recommendation: InitialRecommendation):
+        outfits = cls._valid_outfits(recommendation)
         if len(outfits) < 2:
             return None
-        raw = [outfit.server_ranking_score for outfit in outfits[:2]]
-        if any(score is None for score in raw):
-            return None
-        left, right = (float(raw[0]), float(raw[1]))
-        scale = max(abs(left), abs(right), 1.0)
-        return left / scale, right / scale
+        for outfit in outfits:
+            score = outfit.server_ranking_score
+            if (
+                score is None
+                or not math.isfinite(float(score))
+                or not 0 <= float(score) <= 1
+            ):
+                return None
+        return sorted(
+            outfits,
+            key=lambda outfit: (
+                -float(outfit.server_ranking_score),
+                outfit.outfit_id,
+            ),
+        )
+
+    @classmethod
+    def _ranking_skip_reason(
+        cls, recommendation: InitialRecommendation
+    ) -> str | None:
+        outfits = cls._valid_outfits(recommendation)
+        if len(outfits) < 2:
+            return "INSUFFICIENT_HARD_VALID_OUTFITS"
+        if cls._ranked_valid_outfits(recommendation) is None:
+            return "INVALID_SERVER_RANKING_EVIDENCE"
+        return None
 
     @staticmethod
     def _has_applicable_preference(
@@ -119,9 +141,8 @@ class PreferenceUncertaintyPolicy:
         session_preferences: tuple[SessionPreference, ...],
         asked_gap_codes: frozenset[str],
     ) -> PreferenceUncertaintyEvidence | None:
-        outfits = self._valid_outfits(recommendation)
-        scores = self._normalized_scores(outfits)
-        if scores is None:
+        outfits = self._ranked_valid_outfits(recommendation)
+        if outfits is None:
             return None
         first, second = outfits[:2]
         first_colors = self._colors(first.items)
@@ -131,8 +152,9 @@ class PreferenceUncertaintyPolicy:
         if left is None or right is None or left == right:
             return None
         gap_code = f"color:{left}_vs_{right}"
-        normalized_left, normalized_right = scores
-        margin = abs(normalized_left - normalized_right)
+        normalized_left = float(first.server_ranking_score)
+        normalized_right = float(second.server_ranking_score)
+        margin = round(abs(normalized_left - normalized_right), 12)
         left_winner = (
             first.outfit_id
             if normalized_left + self._COUNTERFACTUAL_BOOST
@@ -244,7 +266,12 @@ class PreferenceUncertaintyPolicy:
             asked_gap_codes=asked_gap_codes,
         )
         if evidence is None:
-            return PreferenceDecision(None, original, "NO_MATERIAL_GAP")
+            return PreferenceDecision(
+                None,
+                original,
+                self._ranking_skip_reason(recommendation)
+                or "NO_MATERIAL_GAP",
+            )
         if not self.should_ask(evidence):
             reason = (
                 "APPLICABLE_PREFERENCE_PRESENT"
