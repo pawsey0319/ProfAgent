@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from threading import RLock
-from typing import Literal
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict
 
@@ -60,6 +60,51 @@ class MemoryCandidatePrefilter:
             allowed=True,
             code="MEMORY_TEXT_READY",
         )
+
+
+class MemoryCandidateProvider(Protocol):
+    async def extract_memory_candidates(
+        self,
+        text: str,
+        *,
+        allowed_kinds: tuple[str, ...],
+        allowed_values: dict[str, tuple[str, ...]],
+    ) -> tuple[tuple[dict[str, object], ...], dict[str, object]]: ...
+
+
+class MemoryCandidateService:
+    """Shared S16 ingress that owns the pre-provider privacy boundary.
+
+    Task 3 extends the safe branch with strict provider schema mapping and Task 4
+    exposes it through HTTP. Sensitive input returns before either dependency is
+    invoked, so it cannot create proposals, durable rows, outbox facts, or Trace.
+    """
+
+    def __init__(
+        self,
+        *,
+        memory: MemoryService,
+        provider: MemoryCandidateProvider,
+    ) -> None:
+        self.memory = memory
+        self.provider = provider
+        self.prefilter = MemoryCandidatePrefilter()
+
+    async def extract(self, text: str) -> MemoryCandidatePrefilterResult:
+        result = self.prefilter.prefilter(text)
+        if not result.allowed:
+            return result
+        allowed_values: dict[str, list[str]] = {}
+        for kind, value in CANONICAL_MEMORY_MAP:
+            allowed_values.setdefault(kind, []).append(value)
+        await self.provider.extract_memory_candidates(
+            text,
+            allowed_kinds=tuple(allowed_values),
+            allowed_values={
+                kind: tuple(values) for kind, values in allowed_values.items()
+            },
+        )
+        return result
 
 
 @dataclass(frozen=True)

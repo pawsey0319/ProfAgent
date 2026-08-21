@@ -14,6 +14,7 @@ from profagent.memory_candidates import (
     CanonicalMemoryCandidate,
     MemoryCandidateError,
     MemoryCandidatePrefilter,
+    MemoryCandidateService,
     SessionPreference,
     SessionPreferenceStore,
     canonicalize_candidate,
@@ -112,18 +113,104 @@ def test_current_non_color_vocabulary_is_closed(
         canonicalize_candidate(kind, f"{value}_from_provider")
 
 
-def test_sensitive_text_is_blocked_before_provider_or_repository() -> None:
-    calls = {"provider": 0, "repository": 0}
-    result = MemoryCandidatePrefilter().prefilter("我体重80kg，帮我长期记住")
+class _RecordingCandidateProvider:
+    def __init__(self) -> None:
+        self.interaction_count = 0
+        self.last_text: str | None = None
 
-    if result.allowed:
-        calls["provider"] += 1
-        calls["repository"] += 1
+    async def extract_memory_candidates(
+        self,
+        text: str,
+        *,
+        allowed_kinds: tuple[str, ...],
+        allowed_values: dict[str, tuple[str, ...]],
+    ) -> tuple[tuple[dict[str, object], ...], dict[str, object]]:
+        self.interaction_count += 1
+        self.last_text = text
+        assert "color_preference" in allowed_kinds
+        assert "navy" in allowed_values["color_preference"]
+        return (), {"attempted": True}
+
+
+def _repository_write_counts(path) -> dict[str, int]:
+    connection = sqlite3.connect(path)
+    counts = {
+        table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        for table in (
+            "memory_proposals",
+            "memory_records",
+            "memory_outbox",
+        )
+    }
+    connection.close()
+    return counts
+
+
+def test_sensitive_ingress_blocks_real_provider_repository_outbox_and_trace(
+    tmp_path, offline_settings
+) -> None:
+    raw = "我体重80kg，帮我长期记住"
+    path = tmp_path / "sensitive_ingress.sqlite3"
+    settings = replace(
+        offline_settings,
+        database_url=f"sqlite:///{path.as_posix()}",
+    )
+    app = create_app(settings)
+    services = app.state.services
+    memory = services.memory
+    provider = services.llm
+    traces = services.traces
+    ingress = MemoryCandidateService(memory=memory, provider=provider)
+    before = _repository_write_counts(path)
+
+    assert provider._chat_attempted is False
+    result = asyncio.run(ingress.extract(raw))
 
     assert result.code == "SENSITIVE_MEMORY_DEFAULT_NO_WRITE"
     assert result.allowed is False
-    assert calls == {"provider": 0, "repository": 0}
+    assert provider._chat_attempted is False
+    assert _repository_write_counts(path) == before == {
+        "memory_proposals": 0,
+        "memory_records": 0,
+        "memory_outbox": 0,
+    }
+    assert traces._records == {}
     assert "80" not in result.model_dump_json()
+    connection = sqlite3.connect(path)
+    persisted = "\n".join(
+        str(value)
+        for table in ("memory_proposals", "memory_records", "memory_outbox")
+        for row in connection.execute(f"SELECT * FROM {table}").fetchall()
+        for value in row
+    )
+    connection.close()
+    assert raw not in persisted
+    assert raw not in json.dumps(traces._records, ensure_ascii=False, default=str)
+    memory.close()
+
+
+def test_safe_ingress_reaches_injected_candidate_provider(tmp_path) -> None:
+    path = tmp_path / "safe_ingress.sqlite3"
+    memory = MemoryService(
+        TraceStore(),
+        database_url=f"sqlite:///{path.as_posix()}",
+        root_dir=tmp_path,
+    )
+    provider = _RecordingCandidateProvider()
+    ingress = MemoryCandidateService(memory=memory, provider=provider)
+
+    result = asyncio.run(ingress.extract("我偏爱藏青色"))
+
+    assert result.code == "MEMORY_TEXT_READY"
+    assert result.allowed is True
+    assert provider.interaction_count == 1
+    assert provider.last_text == "我偏爱藏青色"
+    assert _repository_write_counts(path) == {
+        "memory_proposals": 0,
+        "memory_records": 0,
+        "memory_outbox": 0,
+    }
+    memory.close()
 
 
 def test_direct_identifier_is_blocked_without_echoing_the_value() -> None:
