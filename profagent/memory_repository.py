@@ -37,6 +37,13 @@ class MemoryRepository(Protocol):
     def consume_soft_index_outbox(self, user_id: str, namespaces: tuple[str, ...], memory_ids: tuple[str, ...], *, consumer_name: str, index_version: str, consumed_at: str) -> tuple[tuple[str, ...], tuple[str, ...]]: ...
     def soft_index_ids(self, user_id: str, namespaces: tuple[str, ...]) -> tuple[str, ...]: ...
     def outbox_events(self, user_id: str | None = None) -> list[dict[str, Any]]: ...
+    def put_candidate_batch(self, request: dict[str, Any], candidates: list[dict[str, Any]]) -> None: ...
+    def candidate_request(self, request_id: str) -> dict[str, Any] | None: ...
+    def candidate_state(self, candidate_id: str) -> dict[str, Any] | None: ...
+    def candidate_decision(self, candidate_id: str, idempotency_key: str) -> dict[str, Any] | None: ...
+    def record_candidate_decision(self, candidate_id: str, idempotency_key: str, fingerprint: str, status: str, response: dict[str, Any]) -> dict[str, Any]: ...
+    def candidate_proposal_managed(self, proposal_id: str) -> bool: ...
+    def candidate_rejected(self, *, user_id: str, styling_session_id: str, namespace: str, canonical_kind: str, canonical_value: str) -> bool: ...
     def close(self) -> None: ...
 
 
@@ -222,6 +229,41 @@ class SqlMemoryRepository:
                 PRIMARY KEY (user_id, namespace, semantic_key)
             )
             """,
+            """
+            CREATE TABLE IF NOT EXISTS memory_candidate_requests (
+                request_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS memory_candidates (
+                candidate_id TEXT PRIMARY KEY,
+                proposal_id TEXT NOT NULL UNIQUE,
+                request_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                styling_session_id TEXT,
+                namespace TEXT NOT NULL,
+                canonical_kind TEXT NOT NULL,
+                canonical_value TEXT NOT NULL,
+                status TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                FOREIGN KEY(request_id) REFERENCES memory_candidate_requests(request_id)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS memory_candidate_decisions (
+                candidate_id TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                PRIMARY KEY (candidate_id, idempotency_key),
+                FOREIGN KEY(candidate_id) REFERENCES memory_candidates(candidate_id)
+            )
+            """,
         )
         with self._transaction():
             for statement in statements:
@@ -247,6 +289,9 @@ class SqlMemoryRepository:
             )
             self._execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_memory_outbox_fact ON memory_outbox (memory_id, operation, truth_version)"
+            )
+            self._execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_candidate_owner ON memory_candidates (user_id, styling_session_id, namespace, status, expires_at)"
             )
 
     def _ensure_acl_columns(self) -> None:
@@ -1250,6 +1295,191 @@ class SqlMemoryRepository:
                 ),
             )
             return proposal, record, True
+
+    def put_candidate_batch(
+        self,
+        request: dict[str, Any],
+        candidates: list[dict[str, Any]],
+    ) -> None:
+        """Persist only server-canonical candidate state, never source text."""
+
+        with self._transaction():
+            existing = self._fetchall(
+                "SELECT user_id,fingerprint,payload_json FROM memory_candidate_requests WHERE request_id=?",
+                (request["request_id"],),
+            )
+            if existing:
+                row = existing[0]
+                if (
+                    row["user_id"] == request["user_id"]
+                    and row["fingerprint"] == request["fingerprint"]
+                    and json.loads(row["payload_json"]) == request["response"]
+                ):
+                    return
+                raise MemoryRepositoryError("memory candidate request conflicts")
+            self._execute(
+                """
+                INSERT INTO memory_candidate_requests (
+                    request_id,user_id,fingerprint,expires_at,payload_json
+                ) VALUES (?,?,?,?,?)
+                """,
+                (
+                    request["request_id"],
+                    request["user_id"],
+                    request["fingerprint"],
+                    str(request["expires_at"]),
+                    _canonical(request["response"]),
+                ),
+            )
+            for candidate in candidates:
+                self._execute(
+                    """
+                    INSERT INTO memory_candidates (
+                        candidate_id,proposal_id,request_id,user_id,
+                        styling_session_id,namespace,canonical_kind,
+                        canonical_value,status,expires_at,payload_json
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        candidate["candidate_id"],
+                        candidate["proposal_id"],
+                        request["request_id"],
+                        candidate["user_id"],
+                        candidate.get("styling_session_id"),
+                        candidate["namespace"],
+                        candidate["canonical_kind"],
+                        candidate["canonical_value"],
+                        candidate["status"],
+                        str(candidate["expires_at"]),
+                        _canonical(candidate),
+                    ),
+                )
+
+    def candidate_request(self, request_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            rows = self._fetchall(
+                "SELECT user_id,fingerprint,expires_at,payload_json FROM memory_candidate_requests WHERE request_id=?",
+                (request_id,),
+            )
+        if not rows:
+            return None
+        row = rows[0]
+        return {
+            "user_id": row["user_id"],
+            "fingerprint": row["fingerprint"],
+            "expires_at": float(row["expires_at"]),
+            "response": json.loads(row["payload_json"]),
+        }
+
+    def candidate_state(self, candidate_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            rows = self._fetchall(
+                "SELECT payload_json,status FROM memory_candidates WHERE candidate_id=?",
+                (candidate_id,),
+            )
+        if not rows:
+            return None
+        payload = json.loads(rows[0]["payload_json"])
+        payload["status"] = rows[0]["status"]
+        return payload
+
+    def candidate_decision(
+        self, candidate_id: str, idempotency_key: str
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            rows = self._fetchall(
+                "SELECT fingerprint,payload_json FROM memory_candidate_decisions WHERE candidate_id=? AND idempotency_key=?",
+                (candidate_id, idempotency_key),
+            )
+        if not rows:
+            return None
+        return {
+            "fingerprint": rows[0]["fingerprint"],
+            "response": json.loads(rows[0]["payload_json"]),
+        }
+
+    def record_candidate_decision(
+        self,
+        candidate_id: str,
+        idempotency_key: str,
+        fingerprint: str,
+        status: str,
+        response: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self._transaction():
+            existing = self._fetchall(
+                "SELECT fingerprint,payload_json FROM memory_candidate_decisions WHERE candidate_id=? AND idempotency_key=?",
+                (candidate_id, idempotency_key),
+            )
+            if existing:
+                if existing[0]["fingerprint"] != fingerprint:
+                    raise MemoryRepositoryError(
+                        "memory candidate idempotency key conflicts"
+                    )
+                return json.loads(existing[0]["payload_json"])
+            rows = self._fetchall(
+                "SELECT status,payload_json FROM memory_candidates WHERE candidate_id=?",
+                (candidate_id,),
+            )
+            if not rows or rows[0]["status"] != "active":
+                raise MemoryRepositoryError("memory candidate is not active")
+            state = json.loads(rows[0]["payload_json"])
+            state["status"] = status
+            self._execute(
+                "UPDATE memory_candidates SET status=?,payload_json=? WHERE candidate_id=?",
+                (status, _canonical(state), candidate_id),
+            )
+            self._execute(
+                """
+                INSERT INTO memory_candidate_decisions (
+                    candidate_id,idempotency_key,fingerprint,payload_json
+                ) VALUES (?,?,?,?)
+                """,
+                (
+                    candidate_id,
+                    idempotency_key,
+                    fingerprint,
+                    _canonical(response),
+                ),
+            )
+            return response
+
+    def candidate_proposal_managed(self, proposal_id: str) -> bool:
+        with self._lock:
+            return bool(
+                self._fetchall(
+                    "SELECT candidate_id FROM memory_candidates WHERE proposal_id=?",
+                    (proposal_id,),
+                )
+            )
+
+    def candidate_rejected(
+        self,
+        *,
+        user_id: str,
+        styling_session_id: str,
+        namespace: str,
+        canonical_kind: str,
+        canonical_value: str,
+    ) -> bool:
+        with self._lock:
+            return bool(
+                self._fetchall(
+                    """
+                    SELECT candidate_id FROM memory_candidates
+                    WHERE user_id=? AND styling_session_id=? AND namespace=?
+                      AND canonical_kind=? AND canonical_value=?
+                      AND status='rejected'
+                    """,
+                    (
+                        user_id,
+                        styling_session_id,
+                        namespace,
+                        canonical_kind,
+                        canonical_value,
+                    ),
+                )
+            )
 
     def load_state(
         self,

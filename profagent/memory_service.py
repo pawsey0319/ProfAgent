@@ -405,13 +405,15 @@ class MemoryService:
 
     @staticmethod
     def _semantic_key(record: MemoryRecord, context: MemoryTargetContext | None) -> str:
-        from .memory_candidates import canonical_candidate_for_content
+        from .memory_candidates import (
+            canonical_candidate_for_content,
+            canonical_semantic_key,
+        )
 
         candidate = canonical_candidate_for_content(record.type, record.content)
         if candidate is not None:
-            key = (
-                f"canonical:{candidate.canonical_kind}:"
-                f"{candidate.canonical_value}"
+            key = canonical_semantic_key(
+                candidate.canonical_kind, candidate.canonical_value
             )
             if context is not None:
                 key = f"{key}:{context.target_item_id}"
@@ -638,12 +640,21 @@ class MemoryService:
         return MemoryOperationResponse(proposal=proposal, trace_id=trace_id)
 
     def confirm(
-        self, proposal_id: str, payload: MemoryConfirmInput
+        self,
+        proposal_id: str,
+        payload: MemoryConfirmInput,
+        *,
+        candidate_authorized: bool = False,
     ) -> MemoryOperationResponse:
         self._refresh()
         with self._lock:
             current = self._proposals.get(proposal_id)
             if current is None or current.user_id != payload.user_id:
+                raise MemoryNotFound(proposal_id)
+            if (
+                self.repository.candidate_proposal_managed(proposal_id)
+                and not candidate_authorized
+            ):
                 raise MemoryNotFound(proposal_id)
             proposal = current.model_copy(deep=True)
 
@@ -1300,6 +1311,9 @@ class MemoryService:
                 if item.user_id == user_id
                 and item.status == "proposed"
                 and (namespace is None or item.namespace == namespace)
+                and not self.repository.candidate_proposal_managed(
+                    item.proposal_id
+                )
             ]
             records = [
                 item.model_copy(deep=True)

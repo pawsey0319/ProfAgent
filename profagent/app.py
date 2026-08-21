@@ -57,7 +57,7 @@ from .models import (
     WardrobePatchResponse,
     WardrobeResponse,
 )
-from .providers import DenseAdapter, GrokLLMProvider
+from .providers import DenseAdapter, GrokLLMProvider, ProviderUnavailable
 from .preview import (
     Preview2DInput,
     Preview2DResponse,
@@ -80,7 +80,17 @@ from .memory_service import (
     MemoryProposeInput,
     MemoryService,
 )
-from .memory_candidates import MemoryCandidateService
+from .memory_candidates import (
+    MemoryCandidateConflict,
+    MemoryCandidateDecisionError,
+    MemoryCandidateDecisionInput,
+    MemoryCandidateDecisionResponse,
+    MemoryCandidateError,
+    MemoryCandidateExtractInput,
+    MemoryCandidateExtractResponse,
+    MemoryCandidateNotFound,
+    MemoryCandidateService,
+)
 from .repository import FixtureRepository
 from .retrieval import HardFilter, HybridRetriever, OutfitAssembler, RecommendationValidator
 from .scene import SceneParser, SceneStateConflict, SceneStateStore
@@ -111,6 +121,11 @@ class AppServices:
         self.memory_candidates = MemoryCandidateService(
             memory=self.memory,
             provider=self.llm,
+            session_is_active=lambda user_id, session_id: (
+                (scene := self.state.by_session(session_id)) is not None
+                and scene.user_id == user_id
+            ),
+            ttl_seconds=settings.effective_dialogue_ttl_seconds,
         )
         self.image_provider = GrokImageProvider(settings)
         self.dense = DenseAdapter(settings)
@@ -703,6 +718,57 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         except PreviewNotFound:
             raise HTTPException(status_code=404, detail="preview not found")
+
+    @app.post(
+        "/memory/candidates/extract",
+        response_model=MemoryCandidateExtractResponse,
+    )
+    async def extract_memory_candidates(
+        payload: MemoryCandidateExtractInput,
+    ) -> MemoryCandidateExtractResponse:
+        if services.repository.get_user(payload.user_id) is None:
+            raise HTTPException(status_code=404, detail="unknown user_id")
+        if payload.styling_session_id:
+            session = services.state.by_session(payload.styling_session_id)
+            if session is None or session.user_id != payload.user_id:
+                raise HTTPException(
+                    status_code=404, detail="styling session not found for user"
+                )
+        try:
+            result = await services.memory_candidates.extract(payload)
+            if not isinstance(result, MemoryCandidateExtractResponse):
+                raise MemoryCandidateError(
+                    "memory candidate response contract mismatch"
+                )
+            return result
+        except MemoryCandidateConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except ProviderUnavailable:
+            raise HTTPException(
+                status_code=503,
+                detail="memory candidate provider unavailable",
+            )
+        except MemoryCandidateError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    @app.post(
+        "/memory/candidates/{candidate_id}/decide",
+        response_model=MemoryCandidateDecisionResponse,
+    )
+    async def decide_memory_candidate(
+        candidate_id: str,
+        payload: MemoryCandidateDecisionInput,
+    ) -> MemoryCandidateDecisionResponse:
+        if services.repository.get_user(payload.user_id) is None:
+            raise HTTPException(status_code=404, detail="memory candidate not found")
+        try:
+            return services.memory_candidates.decide(candidate_id, payload)
+        except MemoryCandidateNotFound:
+            raise HTTPException(status_code=404, detail="memory candidate not found")
+        except MemoryCandidateConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except (MemoryCandidateDecisionError, MemoryCandidateError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
 
     @app.post("/memory/propose", response_model=MemoryOperationResponse)
     async def propose_memory(payload: MemoryProposeInput) -> MemoryOperationResponse:

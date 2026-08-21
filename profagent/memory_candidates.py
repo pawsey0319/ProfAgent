@@ -1,13 +1,24 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import re
+import time
+import uuid
 from dataclasses import dataclass
 from threading import RLock
-from typing import Literal, Protocol
+from typing import Callable, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .memory_service import MemoryClass, MemoryService, MemoryType
+from .memory_service import (
+    MemoryClass,
+    MemoryConfirmInput,
+    MemoryProposeInput,
+    MemoryService,
+    MemoryType,
+)
+from .memory_repository import MemoryRepositoryError
 
 
 CanonicalMemoryKind = Literal[
@@ -22,6 +33,18 @@ CanonicalMemoryKind = Literal[
 
 
 class MemoryCandidateError(ValueError):
+    pass
+
+
+class MemoryCandidateNotFound(KeyError):
+    pass
+
+
+class MemoryCandidateConflict(MemoryCandidateError):
+    pass
+
+
+class MemoryCandidateDecisionError(MemoryCandidateError):
     pass
 
 
@@ -78,6 +101,56 @@ class MemoryCandidateExtractionResult(BaseModel):
     provider_evidence: dict[str, object] | None = None
 
 
+class MemoryCandidateExtractInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str
+    styling_session_id: str | None = None
+    namespace: Literal["shared", "stylist"]
+    text: str = Field(min_length=1, max_length=1000)
+    request_id: str
+
+
+class MemoryCandidateDecisionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str
+    styling_session_id: str | None = None
+    decision: Literal["remember", "session_only", "reject", "rephrase"]
+    idempotency_key: str
+
+
+class MemoryCandidateCard(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    candidate_id: str
+    confirmation_copy: str
+    confidence_band: Literal["high", "medium", "low"]
+    conflict_copy: str | None = None
+    allowed_actions: tuple[
+        Literal["remember", "session_only", "reject", "rephrase"], ...
+    ]
+
+
+class MemoryCandidateExtractResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    request_id: str
+    status: Literal["ready", "needs_rephrase", "blocked"]
+    candidates: tuple[MemoryCandidateCard, ...]
+    trace_id: str
+
+
+class MemoryCandidateDecisionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    candidate_id: str
+    decision: Literal["remember", "session_only", "reject", "rephrase"]
+    status: Literal["committed", "session_only", "rejected"]
+    record_id: str | None
+    trace_id: str
+
+
 class MemoryCandidatePrefilter:
     """Reject sensitive free text before any provider or repository call."""
 
@@ -111,6 +184,36 @@ class MemoryCandidateProvider(Protocol):
     ) -> tuple[tuple[dict[str, object], ...], dict[str, object]]: ...
 
 
+@dataclass
+class _ServerMemoryCandidate:
+    candidate_id: str
+    user_id: str
+    styling_session_id: str | None
+    namespace: Literal["shared", "stylist"]
+    proposal_id: str
+    canonical_kind: CanonicalMemoryKind
+    canonical_value: str
+    confidence_band: Literal["high", "medium", "low"]
+    expires_at: float
+    status: Literal[
+        "active", "committed", "session_only", "rejected", "rephrase"
+    ] = "active"
+
+
+@dataclass(frozen=True)
+class _ExtractReceipt:
+    user_id: str
+    fingerprint: str
+    expires_at: float
+    response: MemoryCandidateExtractResponse
+
+
+@dataclass(frozen=True)
+class _DecisionReceipt:
+    fingerprint: str
+    response: MemoryCandidateDecisionResponse
+
+
 class MemoryCandidateService:
     """Shared S16 ingress that owns the pre-provider privacy boundary.
 
@@ -124,12 +227,27 @@ class MemoryCandidateService:
         *,
         memory: MemoryService,
         provider: MemoryCandidateProvider,
+        session_is_active: Callable[[str, str], bool] | None = None,
+        ttl_seconds: float = 1800.0,
     ) -> None:
+        if ttl_seconds <= 0:
+            raise ValueError("ttl_seconds must be positive")
         self.memory = memory
         self.provider = provider
         self.prefilter = MemoryCandidatePrefilter()
+        self.session_preferences = SessionPreferenceStore(ttl_seconds)
+        self._session_is_active = session_is_active or (lambda _user, _session: False)
+        self._ttl_seconds = ttl_seconds
+        self._candidates: dict[str, _ServerMemoryCandidate] = {}
+        self._extract_receipts: dict[str, _ExtractReceipt] = {}
+        self._decision_receipts: dict[
+            tuple[str, str], _DecisionReceipt
+        ] = {}
+        self._rejected: set[tuple[str, str, str, str, str]] = set()
+        self._lock = RLock()
+        self._extract_lock = asyncio.Lock()
 
-    async def extract(self, text: str) -> MemoryCandidateExtractionResult:
+    async def _extract_transient(self, text: str) -> MemoryCandidateExtractionResult:
         result = self.prefilter.prefilter(text)
         if not result.allowed:
             return MemoryCandidateExtractionResult(
@@ -199,6 +317,475 @@ class MemoryCandidateService:
             candidates=tuple(mapped),
             provider_evidence=evidence.model_dump(),
         )
+
+    @staticmethod
+    def _fingerprint(*parts: str | None) -> str:
+        serialized = "\x1f".join("" if part is None else part for part in parts)
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    def _trace(
+        self,
+        *,
+        user_id: str,
+        request_id: str,
+        styling_session_id: str | None,
+        operation: str,
+        outcome: str,
+        candidate_count: int,
+    ) -> str:
+        trace_id = f"trace_memory_candidate_{uuid.uuid4().hex}"
+        self.memory.traces.start(
+            trace_id=trace_id,
+            request_id=request_id,
+            styling_session_id=styling_session_id or "memory_candidate_unbound",
+            query_text="",
+            user_id=user_id,
+        )
+        self.memory.traces.update(
+            trace_id,
+            dialogue={
+                "memory_candidate": {
+                    "operation": operation,
+                    "outcome": outcome,
+                    "candidate_count": candidate_count,
+                    "content_logged": False,
+                    "provider_reasoning_logged": False,
+                    "authority": "server",
+                }
+            },
+        )
+        return trace_id
+
+    def _has_conflict(
+        self,
+        *,
+        user_id: str,
+        namespace: Literal["shared", "stylist"],
+        candidate: ExtractedMemoryCandidate,
+    ) -> bool:
+        listed = self.memory.list(user_id, namespace)
+        candidate_key = canonical_semantic_key(
+            candidate.canonical_kind, candidate.canonical_value
+        )
+        for record in listed.records:
+            existing = canonical_candidate_for_content(
+                record.type, record.content
+            )
+            if existing is not None and canonical_semantic_key(
+                existing.canonical_kind, existing.canonical_value
+            ) == candidate_key:
+                return True
+        return False
+
+    def _is_suppressed(
+        self,
+        payload: MemoryCandidateExtractInput,
+        candidate: ExtractedMemoryCandidate,
+    ) -> bool:
+        if payload.styling_session_id is None:
+            return False
+        key = (
+            payload.user_id,
+            payload.styling_session_id,
+            payload.namespace,
+            candidate.canonical_kind,
+            candidate.canonical_value,
+        )
+        return key in self._rejected or self.memory.repository.candidate_rejected(
+            user_id=payload.user_id,
+            styling_session_id=payload.styling_session_id,
+            namespace=payload.namespace,
+            canonical_kind=candidate.canonical_kind,
+            canonical_value=candidate.canonical_value,
+        )
+
+    @staticmethod
+    def _state_dump(state: _ServerMemoryCandidate) -> dict[str, object]:
+        return {
+            "candidate_id": state.candidate_id,
+            "user_id": state.user_id,
+            "styling_session_id": state.styling_session_id,
+            "namespace": state.namespace,
+            "proposal_id": state.proposal_id,
+            "canonical_kind": state.canonical_kind,
+            "canonical_value": state.canonical_value,
+            "confidence_band": state.confidence_band,
+            "expires_at": state.expires_at,
+            "status": state.status,
+        }
+
+    @staticmethod
+    def _state_load(payload: dict[str, object]) -> _ServerMemoryCandidate:
+        expected = {
+            "candidate_id",
+            "user_id",
+            "styling_session_id",
+            "namespace",
+            "proposal_id",
+            "canonical_kind",
+            "canonical_value",
+            "confidence_band",
+            "expires_at",
+            "status",
+        }
+        if set(payload) != expected:
+            raise MemoryCandidateError("stored memory candidate is invalid")
+        namespace = payload["namespace"]
+        kind = payload["canonical_kind"]
+        value = payload["canonical_value"]
+        confidence = payload["confidence_band"]
+        status = payload["status"]
+        if (
+            namespace not in {"shared", "stylist"}
+            or not isinstance(kind, str)
+            or not isinstance(value, str)
+            or confidence not in {"high", "medium", "low"}
+            or status
+            not in {"active", "committed", "session_only", "rejected", "rephrase"}
+        ):
+            raise MemoryCandidateError("stored memory candidate is invalid")
+        canonical = canonicalize_candidate(kind, value)
+        return _ServerMemoryCandidate(
+            candidate_id=str(payload["candidate_id"]),
+            user_id=str(payload["user_id"]),
+            styling_session_id=(
+                str(payload["styling_session_id"])
+                if payload.get("styling_session_id") is not None
+                else None
+            ),
+            namespace=namespace,
+            proposal_id=str(payload["proposal_id"]),
+            canonical_kind=canonical.canonical_kind,
+            canonical_value=canonical.canonical_value,
+            confidence_band=confidence,
+            expires_at=float(payload["expires_at"]),
+            status=status,
+        )
+
+    def _extract_receipt(
+        self, request_id: str
+    ) -> _ExtractReceipt | None:
+        cached = self._extract_receipts.get(request_id)
+        if cached is not None:
+            return cached
+        durable = self.memory.repository.candidate_request(request_id)
+        if durable is None:
+            return None
+        receipt = _ExtractReceipt(
+            user_id=str(durable["user_id"]),
+            fingerprint=str(durable["fingerprint"]),
+            expires_at=float(durable["expires_at"]),
+            response=MemoryCandidateExtractResponse.model_validate(
+                durable["response"]
+            ),
+        )
+        self._extract_receipts[request_id] = receipt
+        return receipt
+
+    def _candidate_state(
+        self, candidate_id: str
+    ) -> _ServerMemoryCandidate | None:
+        cached = self._candidates.get(candidate_id)
+        durable = self.memory.repository.candidate_state(candidate_id)
+        if durable is None:
+            return cached
+        loaded = self._state_load(durable)
+        self._candidates[candidate_id] = loaded
+        return loaded
+
+    async def extract(
+        self, payload: MemoryCandidateExtractInput | str
+    ) -> MemoryCandidateExtractResponse | MemoryCandidateExtractionResult:
+        # The string form remains an internal, transient ingress for Task 2/3
+        # provider contract tests. Only the typed form can create proposals.
+        if isinstance(payload, str):
+            return await self._extract_transient(payload)
+        async with self._extract_lock:
+            return await self._extract_and_create(payload)
+
+    async def _extract_and_create(
+        self, payload: MemoryCandidateExtractInput
+    ) -> MemoryCandidateExtractResponse:
+        fingerprint = self._fingerprint(
+            payload.user_id,
+            payload.styling_session_id,
+            payload.namespace,
+            payload.request_id,
+            payload.text,
+        )
+        with self._lock:
+            previous = self._extract_receipt(payload.request_id)
+            if previous is not None:
+                if (
+                    previous.user_id != payload.user_id
+                    or previous.fingerprint != fingerprint
+                ):
+                    raise MemoryCandidateConflict("request_id conflicts")
+                if previous.expires_at <= time.time():
+                    raise MemoryCandidateConflict("memory candidate request expired")
+                return previous.response
+
+        transient = await self._extract_transient(payload.text)
+        if not transient.allowed:
+            trace_id = self._trace(
+                user_id=payload.user_id,
+                request_id=payload.request_id,
+                styling_session_id=payload.styling_session_id,
+                operation="extract",
+                outcome="blocked",
+                candidate_count=0,
+            )
+            response = MemoryCandidateExtractResponse(
+                request_id=payload.request_id,
+                status="blocked",
+                candidates=(),
+                trace_id=trace_id,
+            )
+            expires_at = time.time() + self._ttl_seconds
+            with self._lock:
+                self._extract_receipts[payload.request_id] = _ExtractReceipt(
+                    user_id=payload.user_id,
+                    fingerprint=fingerprint,
+                    expires_at=expires_at,
+                    response=response,
+                )
+            return response
+
+        cards: list[MemoryCandidateCard] = []
+        states: list[_ServerMemoryCandidate] = []
+        now = time.time()
+        for candidate in transient.candidates:
+            if self._is_suppressed(payload, candidate):
+                continue
+            proposal = self.memory.propose(
+                MemoryProposeInput(
+                    user_id=payload.user_id,
+                    styling_session_id=payload.styling_session_id,
+                    namespace=payload.namespace,
+                    type=candidate.memory_type,
+                    content=candidate.content,
+                )
+            ).proposal
+            if proposal.commit_blocked:
+                raise MemoryCandidateError("server canonical proposal rejected")
+            candidate_id = f"mcand_{uuid.uuid4().hex}"
+            state = _ServerMemoryCandidate(
+                candidate_id=candidate_id,
+                user_id=payload.user_id,
+                styling_session_id=payload.styling_session_id,
+                namespace=payload.namespace,
+                proposal_id=proposal.proposal_id,
+                canonical_kind=candidate.canonical_kind,
+                canonical_value=candidate.canonical_value,
+                confidence_band=candidate.confidence_band,
+                expires_at=now + self._ttl_seconds,
+            )
+            actions: tuple[
+                Literal["remember", "session_only", "reject", "rephrase"], ...
+            ] = ("remember", "session_only", "reject", "rephrase")
+            conflict_copy = (
+                "已有同类已确认记忆；确认后将由服务端建立新版本。"
+                if self._has_conflict(
+                    user_id=payload.user_id,
+                    namespace=payload.namespace,
+                    candidate=candidate,
+                )
+                else None
+            )
+            states.append(state)
+            cards.append(
+                MemoryCandidateCard(
+                    candidate_id=candidate_id,
+                    confirmation_copy=candidate.confirmation_copy,
+                    confidence_band=candidate.confidence_band,
+                    conflict_copy=conflict_copy,
+                    allowed_actions=actions,
+                )
+            )
+        status: Literal["ready", "needs_rephrase", "blocked"] = (
+            "ready" if cards else "needs_rephrase"
+        )
+        trace_id = self._trace(
+            user_id=payload.user_id,
+            request_id=payload.request_id,
+            styling_session_id=payload.styling_session_id,
+            operation="extract",
+            outcome=status,
+            candidate_count=len(cards),
+        )
+        response = MemoryCandidateExtractResponse(
+            request_id=payload.request_id,
+            status=status,
+            candidates=tuple(cards),
+            trace_id=trace_id,
+        )
+        expires_at = now + self._ttl_seconds
+        try:
+            self.memory.repository.put_candidate_batch(
+                {
+                    "request_id": payload.request_id,
+                    "user_id": payload.user_id,
+                    "fingerprint": fingerprint,
+                    "expires_at": expires_at,
+                    "response": response.model_dump(mode="json"),
+                },
+                [self._state_dump(state) for state in states],
+            )
+        except MemoryRepositoryError as exc:
+            for state in states:
+                self.memory.confirm(
+                    state.proposal_id,
+                    MemoryConfirmInput(user_id=state.user_id, decision="reject"),
+                )
+            raise MemoryCandidateConflict(
+                "memory candidate request conflicts"
+            ) from exc
+        with self._lock:
+            for state in states:
+                self._candidates[state.candidate_id] = state
+            self._extract_receipts[payload.request_id] = _ExtractReceipt(
+                user_id=payload.user_id,
+                fingerprint=fingerprint,
+                expires_at=expires_at,
+                response=response,
+            )
+        return response
+
+    def decide(
+        self,
+        candidate_id: str,
+        payload: MemoryCandidateDecisionInput,
+    ) -> MemoryCandidateDecisionResponse:
+        fingerprint = self._fingerprint(
+            payload.user_id,
+            payload.styling_session_id,
+            payload.decision,
+            payload.idempotency_key,
+        )
+        with self._lock:
+            state = self._candidate_state(candidate_id)
+            if (
+                state is None
+                or state.user_id != payload.user_id
+                or state.styling_session_id != payload.styling_session_id
+                or state.expires_at <= time.time()
+            ):
+                raise MemoryCandidateNotFound(candidate_id)
+            receipt = self._decision_receipts.get(
+                (candidate_id, payload.idempotency_key)
+            )
+            if receipt is None:
+                durable_receipt = self.memory.repository.candidate_decision(
+                    candidate_id, payload.idempotency_key
+                )
+                if durable_receipt is not None:
+                    receipt = _DecisionReceipt(
+                        fingerprint=str(durable_receipt["fingerprint"]),
+                        response=MemoryCandidateDecisionResponse.model_validate(
+                            durable_receipt["response"]
+                        ),
+                    )
+                    self._decision_receipts[
+                        (candidate_id, payload.idempotency_key)
+                    ] = receipt
+            if receipt is not None:
+                if receipt.fingerprint != fingerprint:
+                    raise MemoryCandidateConflict("idempotency key conflicts")
+                return receipt.response
+            if state.status != "active":
+                raise MemoryCandidateConflict("candidate already decided")
+            if payload.decision == "session_only" and (
+                payload.styling_session_id is None
+                or not self._session_is_active(
+                    payload.user_id, payload.styling_session_id
+                )
+            ):
+                raise MemoryCandidateDecisionError(
+                    "session_only requires an active styling session"
+                )
+
+            if payload.decision == "remember":
+                operation = self.memory.confirm(
+                    state.proposal_id,
+                    MemoryConfirmInput(
+                        user_id=payload.user_id,
+                        decision="confirm",
+                    ),
+                    candidate_authorized=True,
+                )
+                if operation.record is None:
+                    raise MemoryCandidateDecisionError("candidate commit failed")
+                status: Literal["committed", "session_only", "rejected"] = (
+                    "committed"
+                )
+                record_id = operation.record.memory_id
+                state.status = "committed"
+            else:
+                operation = self.memory.confirm(
+                    state.proposal_id,
+                    MemoryConfirmInput(
+                        user_id=payload.user_id,
+                        decision="reject",
+                    ),
+                    candidate_authorized=True,
+                )
+                record_id = None
+                if payload.decision == "session_only":
+                    assert payload.styling_session_id is not None
+                    self.session_preferences.put(
+                        SessionPreference(
+                            user_id=payload.user_id,
+                            styling_session_id=payload.styling_session_id,
+                            canonical_kind=state.canonical_kind,
+                            canonical_value=state.canonical_value,
+                            expires_at=time.time() + self._ttl_seconds,
+                        )
+                    )
+                    status = "session_only"
+                    state.status = "session_only"
+                else:
+                    status = "rejected"
+                    state.status = payload.decision
+                    if (
+                        payload.decision == "reject"
+                        and payload.styling_session_id is not None
+                    ):
+                        self._rejected.add(
+                            (
+                                payload.user_id,
+                                payload.styling_session_id,
+                                state.namespace,
+                                state.canonical_kind,
+                                state.canonical_value,
+                            )
+                        )
+            response = MemoryCandidateDecisionResponse(
+                candidate_id=candidate_id,
+                decision=payload.decision,
+                status=status,
+                record_id=record_id,
+                trace_id=operation.trace_id,
+            )
+            try:
+                authoritative = self.memory.repository.record_candidate_decision(
+                    candidate_id,
+                    payload.idempotency_key,
+                    fingerprint,
+                    state.status,
+                    response.model_dump(mode="json"),
+                )
+            except MemoryRepositoryError as exc:
+                raise MemoryCandidateConflict(
+                    "memory candidate decision conflicts"
+                ) from exc
+            response = MemoryCandidateDecisionResponse.model_validate(authoritative)
+            self._decision_receipts[(candidate_id, payload.idempotency_key)] = (
+                _DecisionReceipt(
+                    fingerprint=fingerprint,
+                    response=response,
+                )
+            )
+            return response
 
 
 @dataclass(frozen=True)
@@ -417,6 +1004,23 @@ def canonicalize_candidate(kind: str, value: str) -> CanonicalMemoryCandidate:
         raise MemoryCandidateError(
             "candidate is outside the controlled closure"
         ) from exc
+
+
+def canonical_semantic_key(kind: str, value: str) -> str:
+    """Return the server-owned conflict key for one validated candidate.
+
+    Positive and negative preferences for the same color are contradictory and
+    therefore share one version head. Other kinds keep their exact canonical
+    identity, allowing a user to retain multiple non-conflicting preferences.
+    """
+
+    candidate = canonicalize_candidate(kind, value)
+    if candidate.canonical_kind in {"color_preference", "color_avoidance"}:
+        return f"canonical:color:{candidate.canonical_value}"
+    return (
+        f"canonical:{candidate.canonical_kind}:"
+        f"{candidate.canonical_value}"
+    )
 
 
 def canonical_candidate_for_content(

@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import time
 from dataclasses import replace
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from profagent.app import create_app
@@ -149,6 +151,632 @@ def _repository_write_counts(path) -> dict[str, int]:
     }
     connection.close()
     return counts
+
+
+def _provider_evidence() -> dict[str, object]:
+    return {
+        "attempted": True,
+        "status": "ok",
+        "requested_model": "grok4.6",
+        "transport_model": "grok-4.6-high",
+        "resolved_model": "grok-4.6-build",
+        "model_verified": True,
+        "latency_ms": 1.0,
+    }
+
+
+def _install_candidate_batch(app, *rows: tuple[str, str, str]) -> list[int]:
+    calls = [0]
+
+    async def extract(_text, *, allowed_kinds, allowed_values):
+        calls[0] += 1
+        return (
+            tuple(
+                {
+                    "canonical_kind": kind,
+                    "canonical_value": value,
+                    "applicability_tags": [],
+                    "confidence_band": confidence,
+                }
+                for kind, value, confidence in rows
+            ),
+            _provider_evidence(),
+        )
+
+    app.state.services.llm.extract_memory_candidates = extract
+    return calls
+
+
+def _candidate_extract_payload(
+    *,
+    request_id: str,
+    text: str = "我偏爱藏青色和简洁风格",
+    styling_session_id: str | None = None,
+) -> dict[str, object]:
+    return {
+        "user_id": "u01",
+        "styling_session_id": styling_session_id,
+        "namespace": "stylist",
+        "text": text,
+        "request_id": request_id,
+    }
+
+
+def _open_styling_session(
+    client: TestClient, styling_session_id: str, request_id: str
+) -> None:
+    response = client.post(
+        "/scene/parse",
+        json={
+            "user_id": "u01",
+            "query_text": "下周通勤想穿得简洁一点",
+            "request_id": request_id,
+            "styling_session_id": styling_session_id,
+            "event_horizon": "soon",
+        },
+    )
+    assert response.status_code == 200, response.text
+
+
+def _sqlite_text(path) -> str:
+    connection = sqlite3.connect(path)
+    try:
+        tables = [
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+            if not str(row[0]).startswith("sqlite_")
+        ]
+        return "\n".join(
+            str(value)
+            for table in tables
+            for row in connection.execute(f'SELECT * FROM "{table}"').fetchall()
+            for value in row
+        )
+    finally:
+        connection.close()
+
+
+def test_http_extract_is_multicard_opaque_idempotent_and_raw_free(
+    tmp_path, offline_settings
+) -> None:
+    raw = "我偏爱藏青色和简洁风格"
+    path = tmp_path / "candidate_http_extract.sqlite3"
+    settings = replace(
+        offline_settings,
+        database_url=f"sqlite:///{path.as_posix()}",
+    )
+    app = create_app(settings)
+    calls = _install_candidate_batch(
+        app,
+        ("color_preference", "navy", "high"),
+        ("style_preference", "simple", "medium"),
+    )
+
+    with TestClient(app) as client:
+        payload = _candidate_extract_payload(request_id="memory_extract_01", text=raw)
+        response = client.post("/memory/candidates/extract", json=payload)
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert set(body) == {"request_id", "status", "candidates", "trace_id"}
+        assert body["request_id"] == "memory_extract_01"
+        assert body["status"] == "ready"
+        assert len(body["candidates"]) == 2
+        assert calls == [1]
+        for card in body["candidates"]:
+            assert set(card) == {
+                "candidate_id",
+                "confirmation_copy",
+                "confidence_band",
+                "conflict_copy",
+                "allowed_actions",
+            }
+            assert card["candidate_id"].startswith("mcand_")
+            assert raw not in json.dumps(card, ensure_ascii=False)
+            assert "canonical" not in json.dumps(card, ensure_ascii=False)
+            assert card["allowed_actions"] == [
+                "remember",
+                "session_only",
+                "reject",
+                "rephrase",
+            ]
+
+        replay = client.post("/memory/candidates/extract", json=payload)
+        assert replay.status_code == 200
+        assert replay.json() == body
+        assert calls == [1]
+        listed = client.get("/memory", params={"user_id": "u01"}).json()
+        assert listed["proposals"] == []
+
+        conflicting = client.post(
+            "/memory/candidates/extract",
+            json={**payload, "text": "我偏爱米色"},
+        )
+        assert conflicting.status_code == 409
+        assert raw not in json.dumps(
+            app.state.services.traces._records, ensure_ascii=False, default=str
+        )
+        assert raw not in _sqlite_text(path)
+
+
+def test_http_sensitive_extract_blocks_before_provider_and_leaks_no_raw_text(
+    tmp_path, offline_settings
+) -> None:
+    raw = "我的手机号是13812345678，请记住我喜欢藏青色"
+    path = tmp_path / "candidate_http_sensitive.sqlite3"
+    app = create_app(
+        replace(
+            offline_settings,
+            cpa_text_enabled=True,
+            database_url=f"sqlite:///{path.as_posix()}",
+        )
+    )
+    provider = app.state.services.llm
+    before = provider.memory_candidate_operation_count
+    with TestClient(app) as client:
+        response = client.post(
+            "/memory/candidates/extract",
+            json=_candidate_extract_payload(
+                request_id="memory_sensitive_01", text=raw
+            ),
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "blocked"
+        assert response.json()["candidates"] == []
+        assert provider.memory_candidate_operation_count == before == 0
+        assert _repository_write_counts(path) == {
+            "memory_proposals": 0,
+            "memory_records": 0,
+            "memory_outbox": 0,
+        }
+        connection = sqlite3.connect(path)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM memory_candidate_requests"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM memory_candidates"
+        ).fetchone()[0] == 0
+        connection.close()
+        assert raw not in response.text
+        assert raw not in _sqlite_text(path)
+        assert raw not in json.dumps(
+            app.state.services.traces._records, ensure_ascii=False, default=str
+        )
+
+
+def test_http_provider_failure_is_honest_and_creates_no_candidate_state(
+    tmp_path, offline_settings
+) -> None:
+    path = tmp_path / "candidate_http_provider_failure.sqlite3"
+    app = create_app(
+        replace(
+            offline_settings,
+            database_url=f"sqlite:///{path.as_posix()}",
+        )
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/memory/candidates/extract",
+            json=_candidate_extract_payload(request_id="memory_failure_01"),
+        )
+        assert response.status_code == 503
+        assert response.json()["error"]["message"] == (
+            "memory candidate provider unavailable"
+        )
+        assert "CPA 生成" not in response.text
+        assert _repository_write_counts(path) == {
+            "memory_proposals": 0,
+            "memory_records": 0,
+            "memory_outbox": 0,
+        }
+        connection = sqlite3.connect(path)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM memory_candidate_requests"
+        ).fetchone()[0] == 0
+        connection.close()
+        assert app.state.services.traces._records == {}
+
+
+def test_http_decision_rejects_browser_authority_fields(
+    tmp_path, offline_settings
+) -> None:
+    path = tmp_path / "candidate_http_authority.sqlite3"
+    app = create_app(
+        replace(
+            offline_settings,
+            database_url=f"sqlite:///{path.as_posix()}",
+        )
+    )
+    _install_candidate_batch(app, ("color_preference", "navy", "high"))
+
+    with TestClient(app) as client:
+        extracted = client.post(
+            "/memory/candidates/extract",
+            json=_candidate_extract_payload(request_id="memory_authority_01"),
+        )
+        assert extracted.status_code == 200, extracted.text
+        candidate_id = extracted.json()["candidates"][0]["candidate_id"]
+        forbidden = {
+            "canonical_kind": "color_preference",
+            "canonical_value": "navy",
+            "memory_class": "preference_event",
+            "supersedes_memory_id": "mem_fake",
+            "confirmation_count": 999,
+            "source": "user_confirmed",
+            "acl_visibility": "team",
+            "ranking_score": 1.0,
+            "commit": True,
+        }
+        base = {
+            "user_id": "u01",
+            "styling_session_id": None,
+            "decision": "remember",
+            "idempotency_key": "memory_decision_authority",
+        }
+        for field, value in forbidden.items():
+            response = client.post(
+                f"/memory/candidates/{candidate_id}/decide",
+                json={**base, field: value},
+            )
+            assert response.status_code == 422, (field, response.text)
+            assert str(value) not in response.text
+        listed = client.get("/memory", params={"user_id": "u01"}).json()
+        assert listed["proposals"] == []
+        assert listed["records"] == []
+        assert app.state.services.memory.repository.candidate_state(
+            candidate_id
+        )["status"] == "active"
+
+
+def test_http_remember_is_acl_bound_idempotent_and_restart_safe(
+    tmp_path, offline_settings
+) -> None:
+    raw = "请长期记住我偏爱藏青色"
+    path = tmp_path / "candidate_http_remember.sqlite3"
+    settings = replace(
+        offline_settings,
+        database_url=f"sqlite:///{path.as_posix()}",
+    )
+    app = create_app(settings)
+    _install_candidate_batch(app, ("color_preference", "navy", "high"))
+
+    with TestClient(app) as client:
+        extracted = client.post(
+            "/memory/candidates/extract",
+            json=_candidate_extract_payload(
+                request_id="memory_remember_01", text=raw
+            ),
+        )
+        assert extracted.status_code == 200, extracted.text
+        candidate_id = extracted.json()["candidates"][0]["candidate_id"]
+        decision = {
+            "user_id": "u01",
+            "styling_session_id": None,
+            "decision": "remember",
+            "idempotency_key": "memory_decision_remember_01",
+        }
+        cross_owner = client.post(
+            f"/memory/candidates/{candidate_id}/decide",
+            json={**decision, "user_id": "u02"},
+        )
+        unknown = client.post(
+            "/memory/candidates/mcand_unknown/decide", json=decision
+        )
+        assert cross_owner.status_code == unknown.status_code == 404
+        assert cross_owner.json()["error"]["message"] == unknown.json()["error"]["message"]
+
+        committed = client.post(
+            f"/memory/candidates/{candidate_id}/decide", json=decision
+        )
+        assert committed.status_code == 200, committed.text
+        assert committed.json()["status"] == "committed"
+        assert committed.json()["record_id"].startswith("mem_")
+        replay = client.post(
+            f"/memory/candidates/{candidate_id}/decide", json=decision
+        )
+        assert replay.status_code == 200
+        assert replay.json() == committed.json()
+        conflict = client.post(
+            f"/memory/candidates/{candidate_id}/decide",
+            json={**decision, "decision": "reject"},
+        )
+        assert conflict.status_code == 409
+        assert _repository_write_counts(path)["memory_records"] == 1
+        assert _repository_write_counts(path)["memory_outbox"] == 1
+        assert raw not in _sqlite_text(path)
+
+    restarted = create_app(settings)
+    with TestClient(restarted) as client:
+        listed = client.get("/memory", params={"user_id": "u01"})
+        assert listed.status_code == 200
+        body = listed.json()
+        assert body["proposals"] == []
+        assert [record["content"] for record in body["records"]] == ["偏爱藏青色"]
+        assert raw not in listed.text
+
+
+def test_http_candidate_receipt_survives_restart_and_legacy_confirm_cannot_bypass(
+    tmp_path, offline_settings
+) -> None:
+    path = tmp_path / "candidate_http_restart.sqlite3"
+    settings = replace(
+        offline_settings,
+        database_url=f"sqlite:///{path.as_posix()}",
+    )
+    app = create_app(settings)
+    calls = _install_candidate_batch(
+        app, ("style_preference", "simple", "high")
+    )
+    payload = _candidate_extract_payload(request_id="memory_restart_01")
+    with TestClient(app) as client:
+        extracted = client.post(
+            "/memory/candidates/extract", json=payload
+        )
+        assert extracted.status_code == 200, extracted.text
+        body = extracted.json()
+        candidate_id = body["candidates"][0]["candidate_id"]
+        connection = sqlite3.connect(path)
+        proposal_id = connection.execute(
+            "SELECT proposal_id FROM memory_candidates WHERE candidate_id=?",
+            (candidate_id,),
+        ).fetchone()[0]
+        connection.close()
+        listed = client.get("/memory", params={"user_id": "u01"}).json()
+        assert listed["proposals"] == []
+        bypass = client.post(
+            f"/memory/{proposal_id}/confirm",
+            json={"user_id": "u01", "decision": "confirm"},
+        )
+        assert bypass.status_code == 404
+        assert calls == [1]
+
+    restarted = create_app(settings)
+    restarted_calls = _install_candidate_batch(
+        restarted, ("style_preference", "business", "low")
+    )
+    with TestClient(restarted) as client:
+        restarted_bypass = client.post(
+            f"/memory/{proposal_id}/confirm",
+            json={"user_id": "u01", "decision": "confirm"},
+        )
+        assert restarted_bypass.status_code == 404
+        replay = client.post("/memory/candidates/extract", json=payload)
+        assert replay.status_code == 200
+        assert replay.json()["candidates"] == body["candidates"]
+        assert restarted_calls == [0]
+        decided = client.post(
+            f"/memory/candidates/{candidate_id}/decide",
+            json={
+                "user_id": "u01",
+                "styling_session_id": None,
+                "decision": "remember",
+                "idempotency_key": "memory_decision_restart_01",
+            },
+        )
+        assert decided.status_code == 200, decided.text
+        assert decided.json()["status"] == "committed"
+        listed = client.get("/memory", params={"user_id": "u01"}).json()
+        assert [record["content"] for record in listed["records"]] == [
+            "偏爱简洁风格"
+        ]
+
+
+def test_http_session_only_requires_active_owner_session_and_never_commits(
+    tmp_path, offline_settings
+) -> None:
+    path = tmp_path / "candidate_http_session.sqlite3"
+    app = create_app(
+        replace(
+            offline_settings,
+            database_url=f"sqlite:///{path.as_posix()}",
+        )
+    )
+    _install_candidate_batch(app, ("style_preference", "simple", "medium"))
+
+    with TestClient(app) as client:
+        _open_styling_session(client, "session_memory_01", "scene_memory_01")
+        extracted = client.post(
+            "/memory/candidates/extract",
+            json=_candidate_extract_payload(
+                request_id="memory_session_01",
+                styling_session_id="session_memory_01",
+            ),
+        )
+        assert extracted.status_code == 200, extracted.text
+        card = extracted.json()["candidates"][0]
+        assert "session_only" in card["allowed_actions"]
+        candidate_id = card["candidate_id"]
+        decision = {
+            "user_id": "u01",
+            "styling_session_id": "session_memory_01",
+            "decision": "session_only",
+            "idempotency_key": "memory_decision_session_01",
+        }
+        response = client.post(
+            f"/memory/candidates/{candidate_id}/decide", json=decision
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "session_only"
+        assert response.json()["record_id"] is None
+        replay = client.post(
+            f"/memory/candidates/{candidate_id}/decide", json=decision
+        )
+        assert replay.json() == response.json()
+        active = app.state.services.memory_candidates.session_preferences.active(
+            "u01", "session_memory_01", now=time.time()
+        )
+        assert len(active) == 1
+        assert active[0].canonical_kind == "style_preference"
+        assert _repository_write_counts(path)["memory_records"] == 0
+        assert _repository_write_counts(path)["memory_outbox"] == 0
+        assert client.get("/memory", params={"user_id": "u01"}).json() == {
+            "api_version": "r1_demo_v1",
+            "user_id": "u01",
+            "namespace": None,
+            "proposals": [],
+            "records": [],
+            "retrieval_index_count": 0,
+        }
+
+
+def test_http_session_only_without_bound_active_session_is_rejected(
+    tmp_path, offline_settings
+) -> None:
+    path = tmp_path / "candidate_http_missing_session.sqlite3"
+    app = create_app(
+        replace(
+            offline_settings,
+            database_url=f"sqlite:///{path.as_posix()}",
+        )
+    )
+    _install_candidate_batch(app, ("style_preference", "simple", "low"))
+    with TestClient(app) as client:
+        extracted = client.post(
+            "/memory/candidates/extract",
+            json=_candidate_extract_payload(request_id="memory_missing_session_01"),
+        )
+        candidate_id = extracted.json()["candidates"][0]["candidate_id"]
+        response = client.post(
+            f"/memory/candidates/{candidate_id}/decide",
+            json={
+                "user_id": "u01",
+                "styling_session_id": None,
+                "decision": "session_only",
+                "idempotency_key": "memory_decision_missing_session_01",
+            },
+        )
+        assert response.status_code == 422
+        assert _repository_write_counts(path)["memory_records"] == 0
+        assert _repository_write_counts(path)["memory_outbox"] == 0
+
+
+def test_http_reject_suppresses_same_session_while_rephrase_does_not_persist(
+    tmp_path, offline_settings
+) -> None:
+    path = tmp_path / "candidate_http_reject.sqlite3"
+    app = create_app(
+        replace(
+            offline_settings,
+            database_url=f"sqlite:///{path.as_posix()}",
+        )
+    )
+    _install_candidate_batch(app, ("color_preference", "navy", "high"))
+    with TestClient(app) as client:
+        _open_styling_session(client, "session_memory_02", "scene_memory_02")
+        first = client.post(
+            "/memory/candidates/extract",
+            json=_candidate_extract_payload(
+                request_id="memory_reject_01",
+                styling_session_id="session_memory_02",
+            ),
+        ).json()
+        candidate_id = first["candidates"][0]["candidate_id"]
+        rejected = client.post(
+            f"/memory/candidates/{candidate_id}/decide",
+            json={
+                "user_id": "u01",
+                "styling_session_id": "session_memory_02",
+                "decision": "reject",
+                "idempotency_key": "memory_decision_reject_01",
+            },
+        )
+        assert rejected.status_code == 200
+        assert rejected.json()["status"] == "rejected"
+        repeated = client.post(
+            "/memory/candidates/extract",
+            json=_candidate_extract_payload(
+                request_id="memory_reject_02",
+                styling_session_id="session_memory_02",
+            ),
+        )
+        assert repeated.status_code == 200
+        assert repeated.json()["status"] == "needs_rephrase"
+        assert repeated.json()["candidates"] == []
+
+        _open_styling_session(client, "session_memory_03", "scene_memory_03")
+        rephrased_candidate = client.post(
+            "/memory/candidates/extract",
+            json=_candidate_extract_payload(
+                request_id="memory_rephrase_01",
+                styling_session_id="session_memory_03",
+            ),
+        ).json()["candidates"][0]["candidate_id"]
+        rephrased = client.post(
+            f"/memory/candidates/{rephrased_candidate}/decide",
+            json={
+                "user_id": "u01",
+                "styling_session_id": "session_memory_03",
+                "decision": "rephrase",
+                "idempotency_key": "memory_decision_rephrase_01",
+            },
+        )
+        assert rephrased.status_code == 200
+        assert rephrased.json()["status"] == "rejected"
+        visible_again = client.post(
+            "/memory/candidates/extract",
+            json=_candidate_extract_payload(
+                request_id="memory_rephrase_02",
+                styling_session_id="session_memory_03",
+            ),
+        )
+        assert len(visible_again.json()["candidates"]) == 1
+        assert _repository_write_counts(path)["memory_records"] == 0
+        assert _repository_write_counts(path)["memory_outbox"] == 0
+
+
+def test_http_supersede_is_server_authored_atomic_and_not_browser_selectable(
+    tmp_path, offline_settings
+) -> None:
+    path = tmp_path / "candidate_http_supersede.sqlite3"
+    app = create_app(
+        replace(
+            offline_settings,
+            database_url=f"sqlite:///{path.as_posix()}",
+        )
+    )
+    _install_candidate_batch(app, ("color_preference", "navy", "high"))
+    with TestClient(app) as client:
+        first_card = client.post(
+            "/memory/candidates/extract",
+            json=_candidate_extract_payload(request_id="memory_supersede_01"),
+        ).json()["candidates"][0]
+        first = client.post(
+            f"/memory/candidates/{first_card['candidate_id']}/decide",
+            json={
+                "user_id": "u01",
+                "styling_session_id": None,
+                "decision": "remember",
+                "idempotency_key": "memory_decision_supersede_01",
+            },
+        )
+        assert first.status_code == 200, first.text
+        first_memory_id = first.json()["record_id"]
+
+        _install_candidate_batch(
+            app, ("color_avoidance", "navy", "high")
+        )
+        second_card = client.post(
+            "/memory/candidates/extract",
+            json=_candidate_extract_payload(request_id="memory_supersede_02"),
+        ).json()["candidates"][0]
+        assert second_card["conflict_copy"] is not None
+        second = client.post(
+            f"/memory/candidates/{second_card['candidate_id']}/decide",
+            json={
+                "user_id": "u01",
+                "styling_session_id": None,
+                "decision": "remember",
+                "idempotency_key": "memory_decision_supersede_02",
+            },
+        )
+        assert second.status_code == 200, second.text
+        listed = client.get("/memory", params={"user_id": "u01"}).json()
+        assert len(listed["records"]) == 1
+        assert listed["records"][0]["content"] == "不穿藏青色"
+        assert listed["records"][0]["supersedes_memory_id"] == first_memory_id
+        assert _repository_write_counts(path)["memory_records"] == 2
+        assert _repository_write_counts(path)["memory_outbox"] == 3
 
 
 def test_sensitive_ingress_blocks_real_provider_repository_outbox_and_trace(
