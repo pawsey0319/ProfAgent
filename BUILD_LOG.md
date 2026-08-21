@@ -1,7 +1,7 @@
 # ProfAgent R1 Demo BUILD LOG
 
-> 唯一需求权威：`docs/PRD.md`（v1.15）。
-> 当前状态：**R1 DoD Demo 子集及 S6–S14 实现与验收已关闭。S14 已完成连续场景内的明确套数衣橱推荐、推荐级静态 2D 与衣橱类别折叠；全量 278 项、S14 专项 26 项、相关 241 项、固定评测、真实浏览器与真实 CPA 推荐两图均通过。Memory 新架构仅完成调研，仍待用户确认后另立实现阶段。**
+> 唯一需求权威：`docs/PRD.md`（v1.16）。
+> 当前状态：**R1 DoD Demo 子集及 S6–S15 实现与验收已关闭。S15 Memory 路线 A 已完成事务真值、生命周期/ACL、最小 outbox、可重建软投影与确定性结构化重排；全量 300 项、S15 专项 19 项、Memory 相关 44 项、固定评测、双实例/重启与真实浏览器均通过。LangMem、Mem0、Graphiti 与学习型 reranker 未上线。**
 > 目标：交付可运行的 R1 Stylist MVP Demo，并通过 PRD 23.1 的 Demo 子集验收。
 
 ## 0. 基线与执行约束
@@ -535,6 +535,60 @@ CPA Grok 生图限定为独立可选 `static_2d` Provider Adapter：
 - **reviewer 关闭项**：初审发现的“首命中吞掉套数纠正”“衣橱反问语义可绕过”“并发失败项读取兄弟共享 Provider health”，以及复审发现的“改成/最后要/那就等无否定词显式纠正未生效”四项 P1，均已回派并以否定/纠正/歧义、请求/陈述边界和并发交错逐项证据关闭；最终只读终审为 `[P0/P1/P2]=0/0/0`。
 - **tester 最终门禁**：S14 专项 `26 passed`、Dialogue/Preview/购物/Memory 相关 `241 passed`、full `278 passed`；validate `3/50/20/50/30`，fixed eval Urgency `30/30`、高急 Gate `10/10`、Catalog `0/10`、幻觉 `0/515`、硬约束 `0/423`、Slots `74/74`；Node 11 syntax + 5 runtime/static、随机非 8000 mock HTTP、真实 Chrome、privacy/secret/diff 全绿。证据见 `reports/eval/s14_continuity_preview_v1.{json,md}` 与 `reports/demo/s14_real_recommendation_previews.{json,md}`。
 - **Memory 决策门**：S14M 只完成调研，未修改 production/schema/RRF 权重或用户数据。推荐先采用“PostgreSQL/SQLite 事务真值 + hard SQL + soft RRF 派生索引”，LangMem、Mem0、Graphiti 仅作为后续可重建侧车；待用户确认方案后另立实现阶段。详见 `reports/research/s14_memory_options.md`。
+
+### S15 — Memory 路线 A：事务真值、可重建索引与确定性重排（2026-08-19，已关闭）
+
+用户已确认先采用方案 A，并确认第一版使用 **Weighted RRF + 确定性结构化 rerank，不调用额外模型**。本阶段复用 S12 已有 PostgreSQL/SQLite 仓储、ACL、事务 CAS、`propose→confirm→commit`、硬记忆 SQL 直读与记忆管理页，不重造另一套 Memory，也不接入 LangMem、Mem0、Graphiti 或 Cross-Encoder。
+
+#### S15-0 — 合同与迁移冻结（`supervisor`）
+
+- **目标**：冻结五层记忆语义、生命周期/来源字段、事务 outbox、派生索引重建、`structured_rerank_v1` 公式、记忆管理呈现与降级边界；先迁移旧 SQLite/PostgreSQL schema，再启用新读写路径。
+- **记忆分层**：`profile_current`、`hard_constraint`、`preference_event`、`episodic_summary`、`working_context`。`working_context` 仍为 session+TTL，不冒充长期记忆；`episodic_summary` 只允许受控摘要并经用户确认，不保存原始对话或模型思维链。
+- **对应 AC / 硬规则**：AC-07/09/10/13/14/17，MEM-01–12，SAFE-04/08，OBS-01/03/05；敏感默认不写，未确认/删除/过期/superseded/跨 user/team/member/namespace 为 0，硬记忆永远不进 RRF，Trace 不含正文、向量、原始来源文本或敏感值。
+- **验收口径**：旧数据库幂等迁移且记录不丢；字段缺失、非法枚举、客户端伪造来源/确认次数/排序特征均 fail-closed；README/PRD/API/AC/BUILD 只在最终门禁后宣称 S15 完成。
+
+#### S15A — 事务真值、生命周期与 outbox（委托 `backend`）
+
+- **目标**：在现有 `memory_proposals/memory_records/memory_audit` 上增量加入 `memory_class/valid_from/valid_to/supersedes_memory_id/source_kind/provenance_version/consent_version/confirmation_count`；commit、supersede、delete、expire 与内容最小化 outbox 事件在同一事务提交。派生索引只消费已确认、非敏感、ACL 合法的记录，按 memory ID 回真值表复验。
+- **硬规则**：outbox 不保存记忆正文、向量、用户原话或私有衣物 ID；失败不得留下“真值已改、事件未写”的半事务。删除/过期/superseded 立即从真值资格集合消失，即使派生索引暂时失败也不能被召回。PostgreSQL 为生产真值，SQLite 通过同一合同用于离线和测试。
+- **对应 AC**：AC-07/09/13/17，MEM-01/02/03/04/05/06/07/08/09/10/11，SAFE-04，OBS-01/03/05。
+- **验收口径**：故障注入证明事务原子性；跨实例重复 confirm 仍只产生一个权威 record/outbox 版本；重启后记录、授权、TTL、superseded、审计和索引版本一致；可从 SQL 真值全量重建派生索引且结果确定。
+
+#### S15B — Soft Memory Weighted RRF + `structured_rerank_v1`（委托 `backend`）
+
+- **召回不变**：SQL 对 user/confirmed/non-sensitive/active/ACL 做全量预过滤；BM25、`deterministic_hashed_surrogate_v1` Dense、Recency、Importance 各取 Top 20，并按 `k=60`、权重 `1.0/1.0/0.75/1.25` 做 RRF 并集。硬记忆只走 `active_signals()`。
+- **重排公式**：`final = 0.60*rrf_norm + 0.15*context_match + 0.10*specificity + 0.10*confirmation_strength + 0.05*lexical_norm`。所有特征由服务端 Scene、受控记忆类别/适用标签、确认历史和 BM25 计算，范围 `[0,1]`；客户端和 CPA 均不得提交或覆盖。并列依次按 BM25、Importance、稳定 memory ID，最终最多 Top 5。
+- **硬规则**：重排只改变已通过 SQL 预过滤的软记忆顺序，不能恢复硬过滤项；不调用 CPA、Cross-Encoder 或第三方 Memory；无适用证据时不得凭模型猜测 context/specificity。Trace 只记录算法版本、受控分值分桶/ID、名次、权重、候选数和耗时，不记录正文或向量。
+- **对应 AC**：AC-03/04/05/07/10/13/17，MEM-04/06/11/12，OBS-01/03/05。
+- **验收口径**：同 query/数据/版本结果确定；场景精确偏好优先于仅近期但无关记忆；全局偏好仍可回退；被拒绝/删除/过期/跨 ACL 污染率 0；受控消融报告包含 BM25、Dense、RRF、RRF+rerank 的 Recall@5/10、MRR、P95 和污染率，并明确合成边界。
+
+#### S15C — 记忆管理可见性（委托 `frontend`）
+
+- **目标**：复用现有“待确认/已提交/删除”页面，增加受控的记忆分层、命名空间、适用期、来源类型、确认强度和 superseded/expired 状态说明；working context 明确标注为“仅本次会话”，不显示为长期记忆。
+- **硬规则**：前端不计算 RRF/rerank、不信任客户端缓存决定有效性、不展示 outbox 内部状态、正文以外的私有来源或 Trace；敏感/blocked 仍只显示脱敏状态。删除后立即移出可用列表，API 失败不得假装成功。
+- **对应 AC**：AC-07/09/13/17，MEM-01/03/05/07/08/09，SAFE-04/08。
+- **验收口径**：Node/runtime/static 与真实浏览器验证提议、确认、查看、删除、namespace、过期/替代状态；离线 fixture 明确只读；无第二成员、社区或自动共享入口。
+
+#### S15R — 里程碑审查、独立测试与收口（`reviewer` → `tester` → `supervisor`）
+
+- **reviewer**：每个 backend/frontend 冻结里程碑后只读审查事务原子性、迁移、ACL、敏感/删除传播、hard/soft 分流、特征可伪造性、Trace 隐私与排序污染，输出 `[P0]/[P1]/[P2]`，发现回派 owner。
+- **tester**：严格串行使用 `conda run -n torch128 ...`；新增 schema/migration/outbox/rebuild/restart/cross-instance/rerank/污染/管理页测试，跑 full、固定 eval、validate、Node、随机非 8000 HTTP 与浏览器；不得改 fixture/eval 真值或放宽阈值。
+- **关闭门槛**：Memory 新专项、全量与固定指标全绿；硬记忆漏召回/误恢复 0，软记忆污染 0，重启/删除/TTL/supersede/ACL 一致，RRF+rerank 的受控报告可复现；最终文档和 Demo 一致后才将 S15 标为已关闭。
+
+#### S15 执行与验收记录（2026-08-19）
+
+- **后端/前端实现**：在既有仓储增量加入五类语义、来源/同意/有效期/确认次数、粘性 quarantine、事务 outbox/幂等 consumer、可重建 ID-only soft projection 与 PostgreSQL/SQLite 并发头；硬记忆继续 SQL 直读。前端只接受 `committed+active` 长期记录，完整绑定 propose/confirm/edit/reject/delete 回执，未知元数据仅保留 owner-bound 脱敏删除入口。
+- **重排冻结**：四路 Top 20、`k=60` 与 `1/1/.75/1.25` RRF 不变；`structured_rerank_v1` 使用 `0.60/0.15/0.10/0.10/0.05` 的 RRF/context/specificity/confirmation/lexical 权重。所有特征来自权威 Scene 与服务端受控标签；不调用 CPA、Cross-Encoder 或第三方 Memory。
+- **reviewer 对抗闭环**：初审发现 mutation 回执欠绑定、未来有效期误召回、来源组合、PostgreSQL CAS/gap race、无 consumer、跨 owner payload 泄漏、quarantine 洗白和无事件陈旧投影等问题；均回派 owner 修复并逐项重放。最终 backend/frontend 只读审查 `[P0/P1/P2]=0/0/0`。
+- **tester 最终门禁**：`conda run --no-capture-output -n torch128 python scripts/tester_s15_report.py` exit 0 并原子生成 `reports/eval/s15_memory_route_a_v1.{json,md}`；S15 `19 passed`、Memory 相关 `44 passed`、full `300 passed`。固定 eval Urgency `30/30`、高急 Gate `10/10`、Catalog `0/10`、幻觉 `0/515`、硬约束 `0/423`、Slots `74/74`；Node 14 syntax + 7 runtime/static、随机非 8000 HTTP、双实例/重启 SQLite、ACL/生命周期/删除回执与真实 Chrome 全绿，CPA 调用 0。
+- **合成检索边界**：受控 benchmark 中 RRF+rerank 的 Recall@5/Recall@10/MRR 为 `.708333/.833333/1`；该数字仅验证确定性合同与排序方向，不代表真实用户质量或生产语义提升。
+
+#### S16+ — 已同步的未来规划（本阶段不实施）
+
+1. **S16 候选：A + LangMem 后台提取（路线 B）**：仅在积累真实对话与误提取标注后启用；回复完成后异步产生结构化候选，仍经本项目敏感过滤、用户确认和 SQL 提交，不允许自动改写人格/安全 prompt。
+2. **替代评估：A + Mem0 侧车（路线 C）**：仅当“自研检索维护成本”超过接入与双写治理成本时立项；Mem0 只能作为 soft RRF 的可重建通道，结果必须回 SQL 校验，和 B 不同时起步。
+3. **远期：A + Graphiti 时序图（路线 D）**：只有出现跨场景偏好演化、多实体关系、双时间追溯与图解释的真实需求后再建；图仍是 SQL outbox 派生投影，不成为授权、删除或硬约束真值。
+4. **学习型 reranker**：只有受控 deterministic V1 在真实反馈集上出现明确质量瓶颈，且隐私/延迟预算通过后，才评估小型本地 Cross-Encoder；其输出仍不能越过 SQL/HardFilter。
 
 ## 2. 并行与冲突控制
 

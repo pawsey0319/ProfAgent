@@ -367,7 +367,7 @@ class RecommendationService:
         memory_soft_trace: dict[str, object] | None = None
         if self.memory is not None:
             soft_memory_terms, memory_soft_trace = self.memory.retrieve_soft(
-                scene.user_id, scene.query_text
+                scene.user_id, scene.query_text, scene=scene
             )
         ranked, retrieval_trace, fallback_events = self.retriever.retrieve(
             scene,

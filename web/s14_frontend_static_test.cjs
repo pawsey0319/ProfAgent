@@ -33,6 +33,6 @@ assert.match(app, /outfit_ids: expected\.outfits\.map/);
 assert.doesNotMatch(app.slice(app.indexOf("body: JSON.stringify({", app.indexOf("function generateRecommendationPreviews")), app.indexOf("timeoutMs: RECOMMENDATION_PREVIEW_TIMEOUT_MS")), /garment|product|prompt|model|render_mode|identity/i);
 assert.match(app, /AI 生成的 2D 视觉参考；不代表真实试穿、精确尺码、面料或垂坠。/);
 assert.match(app, /recommendationPreviewRuntime\.normalizeBatch/);
-assert.match(html, /recommendation_preview_runtime\.js\?v=s14-recommendation-preview-accordion-20260819/);
+assert.match(html, /recommendation_preview_runtime\.js\?v=s15-memory-visibility-20260819/);
 
 console.log("web S14 frontend Enter/accordion/async-preview static contract: PASS");

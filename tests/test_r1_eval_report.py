@@ -306,6 +306,8 @@ def test_frozen_eval_writes_stable_json_and_markdown(project_root: Path) -> None
         "s13_text46_catalog_display_v1.md",
         "s14_continuity_preview_v1.json",
         "s14_continuity_preview_v1.md",
+        "s15_memory_route_a_v1.json",
+        "s15_memory_route_a_v1.md",
     ]
 
 

@@ -2,7 +2,7 @@
 
 ProfAgent 的首位专业成员是私人穿搭师（Stylist）。本仓库现提供一个本地可运行的 R1 Demo：它使用合成衣橱与 Mock 商品完成中文场景解析、衣橱内推荐、穿搭共创、六维评分、调整、Look 版本、定稿、受控记忆和可追溯评测。
 
-这是产品 Demo，不是生产服务。业务数据仍以仓库合成 fixture 为基线；S12 已将受控 Memory 改为可跨进程恢复的 SQL 仓储（本地默认 SQLite，生产配置可用 PostgreSQL），并为 50 件合成衣物加入可追溯 AI 目录图。S14 增加了连续场景内的明确套数推荐、推荐级两张静态 2D 参考和按类别折叠的衣橱浏览。当前 Web 仍固定演示合成用户 `u01`，没有生产级身份认证、持久 Trace/Scene/Look 主库、完整衣橱编辑工作台、真实商品、穿后结果回流、支付或真人服务。
+这是产品 Demo，不是生产服务。业务数据仍以仓库合成 fixture 为基线；S12 已将受控 Memory 改为可跨进程恢复的 SQL 仓储（本地默认 SQLite，生产配置可用 PostgreSQL），并为 50 件合成衣物加入可追溯 AI 目录图。S14 增加了连续场景内的明确套数推荐、推荐级两张静态 2D 参考和按类别折叠的衣橱浏览；S15 路线 A 增加事务 outbox、可重建软索引和确定性结构化重排。当前 Web 仍固定演示合成用户 `u01`，没有生产级身份认证、持久 Trace/Scene/Look 主库、完整衣橱编辑工作台、真实商品、穿后结果回流、支付或真人服务。
 
 ## 快速启动
 
@@ -47,9 +47,9 @@ conda run -n torch128 python -m pytest -q
 
 ## 本地验收结果（2026-08-19）
 
-R1 DoD Demo 子集及 S6–S14 增量已在 `torch128` 串行验收通过：pytest `278 passed`，S14 专项 `26 passed`、Dialogue/Preview/购物/Memory 相关 `241 passed`；Urgency `30/30`、高急切度 Shopping Gate `10/10`、高急切度 Catalog 调用 `0/10`、衣物/商品 ID 幻觉 `0/515`、硬约束违反 `0/423`、槽位完整 `74/74`，固定评测 `overall=PASS`。截图链“今晚辩论赛”→“帮我搭两套”在同一 session 继承场景并返回两套 owner 衣橱组合，Catalog 为 0；真实 CPA 推荐两图并行总墙钟约 `7,126.3ms`，两次尝试约 `7,059.1ms/6,845.4ms`，均返回可解码 JPEG。CPA 未回报实际图片模型，因此仍保持 `model_verified=false/resolved_model=null`。真实浏览器验证衣橱折叠初始 0 卡片，展开后 owner-bound PNG `naturalWidth=1024`。文本合同仍为 `grok4.6 → grok-4.6-high → {grok-4.6-high,grok-4.6-build}`，服务端/浏览器等待上限仍为 120/125 秒。
+R1 DoD Demo 子集及 S6–S15 增量已在 `torch128` 串行验收通过：pytest `300 passed`，S15 专项 `19 passed`、Memory 相关 `44 passed`；Urgency `30/30`、高急切度 Shopping Gate `10/10`、高急切度 Catalog 调用 `0/10`、衣物/商品 ID 幻觉 `0/515`、硬约束违反 `0/423`、槽位完整 `74/74`，固定评测 `overall=PASS`。S15 的随机非 8000 HTTP、双实例/重启 SQLite、ACL/生命周期/删除回执、真实 Chrome 记忆页与 14 项 Node 语法检查 + 7 套 runtime/static 均通过。S14 截图链仍能在同一 session 返回两套 owner 衣橱组合且 Catalog 为 0；真实 CPA 推荐两图并行总墙钟约 `7,126.3ms`，两次尝试约 `7,059.1ms/6,845.4ms`，均返回可解码 JPEG。CPA 未回报实际图片模型，因此仍保持 `model_verified=false/resolved_model=null`。文本合同仍为 `grok4.6 → grok-4.6-high → {grok-4.6-high,grok-4.6-build}`，服务端/浏览器等待上限仍为 120/125 秒。
 
-可复查 [固定评测报告](reports/eval/r1_demo_v1.md)、[S14 连续推荐与 2D 验收](reports/eval/s14_continuity_preview_v1.md)、[S14 真实 CPA 推荐两图](reports/demo/s14_real_recommendation_previews.md)、[S14 Memory 方案调研](reports/research/s14_memory_options.md)、[S13 文本 4.6 与目录图验收](reports/eval/s13_text46_catalog_display_v1.md)、[Grok 4.6 外部审查](reports/review/s13_grok46_external_review.md)与 [Codex 相互验证](reports/review/s13_codex_mutual_verification.md)。S14 reviewer 初审发现的套数纠正、自然语言反问衣橱和并发图片来源证据问题均已修复，tester 最终为 `[P0/P1/P2]=0/0/0`。上述结论只适用于合成数据与 Demo 边界，不代表生产就绪。
+可复查 [固定评测报告](reports/eval/r1_demo_v1.md)、[S15 Memory 路线 A 验收](reports/eval/s15_memory_route_a_v1.md)、[S14 连续推荐与 2D 验收](reports/eval/s14_continuity_preview_v1.md)、[S14 真实 CPA 推荐两图](reports/demo/s14_real_recommendation_previews.md)、[S14 Memory 方案调研](reports/research/s14_memory_options.md)、[S13 文本 4.6 与目录图验收](reports/eval/s13_text46_catalog_display_v1.md)、[Grok 4.6 外部审查](reports/review/s13_grok46_external_review.md)与 [Codex 相互验证](reports/review/s13_codex_mutual_verification.md)。S15 reviewer 对跨 owner payload、粘性隔离、PostgreSQL 并发、outbox consumer 和 mutation 回执的发现均已修复，最终 reviewer/tester 为 `[P0/P1/P2]=0/0/0`。上述结论只适用于合成数据与 Demo 边界，不代表生产就绪。
 
 ## Demo 能力
 
@@ -62,7 +62,7 @@ R1 DoD Demo 子集及 S6–S14 增量已在 `torch128` 串行验收通过：pyte
 - 共创闭环：上传并分析一张静态当前穿搭图、六维情境化评分、每轮最多两项调整、接受/拒绝/部分接受、复评与满意定稿。
 - 衣橱工作台与实验性 Static2D：当前 owner 衣物按类别折叠，初始只显示类别和数量，展开后才加载目录卡与图片；50 件 fixture 均已有生成资产，但三位合成用户仍严格 owner 隔离。图片链路与文本完全分离，只通过 CPA `/images/generations` 固定请求 `grok-imagine-image-quality`。除不可变 Look 预览外，S14 还会在文字推荐卡出现后，为每个已验证方向异步生成“中性无身份模特或平铺”的静态 2D 组合参考；单图失败不删除文字推荐。图片必须通过请求/回执来源、owner/ID、静态解码、哈希与来源校验才展示。实际模型未回报时诚实保持未验证；任何身份参考图都不发给生图 Provider，身份一致性固定为 `not_assessed`，不宣称真人试穿或精确尺码、面料、垂坠。
 - Look 轨迹：v1→vN 不可变，可比较；回退通过创建新版本完成，不覆盖历史。
-- 记忆治理：仅支持受控类型和模板，必须 `propose → confirm → commit`；敏感内容默认不写，用户可查看和删除。已确认的硬记忆按 SQL/ACL 精确读取，绝不进 RRF；软偏好在同一预过滤后按 BM25、deterministic hashed Dense surrogate、Recency、Importance 四路 Top 20 以 weighted RRF 融合（`k=60`，权重 `1.0/1.0/0.75/1.25`），确定性轻量重排后最多注入 5 条受控信号。本地 SQLite 会保留记忆跨进程重启；真实语义 embedding/Cross-Encoder 仍未上线。
+- 记忆治理：仅支持受控类型和模板，必须 `propose → confirm → commit`；敏感内容默认不写，用户可查看和删除。SQL 真值与内容最小化 outbox 同事务更新，软投影可从真值重建且每次召回仍复验 owner/ACL/生命周期；已确认的硬记忆按 SQL 精确读取，绝不进 RRF。软偏好在同一预过滤后按 BM25、deterministic hashed Dense surrogate、Recency、Importance 四路 Top 20 以 weighted RRF 融合（`k=60`，权重 `1.0/1.0/0.75/1.25`），再按 `structured_rerank_v1` 的 `0.60 RRF + 0.15 context + 0.10 specificity + 0.10 confirmation + 0.05 lexical` 确定性重排，最多注入 5 条受控信号。本地 SQLite 会保留记忆跨进程重启，生产可选 PostgreSQL；LangMem、Mem0、Graphiti、真实语义 embedding 与 Cross-Encoder 均未上线。
 - Debug / 评测：查看当前进程的 Trace、版本关联和 Provider 降级状态；评测区展示固定 CLI 命令与报告位置，不在网页内直接启动评测。
 
 评分只评价“当前穿搭 × 当前目标”，不会评价颜值、身材、体重、年龄、性吸引力或人的价值。图片证据不足、Vision 失败或返回非受控证据时只给定性反馈，不显示伪精确总分。

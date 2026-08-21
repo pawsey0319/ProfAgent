@@ -5,12 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="ProfAgent R1 Stylist Demo：从场景理解到衣橱穿搭方向的可解释决策。">
   <title>ProfAgent · 私人穿搭团队</title>
-  <link rel="stylesheet" href="./styles.css?v=s14-recommendation-preview-accordion-20260819">
-  <script defer src="./dialogue_runtime.js?v=s14-recommendation-preview-accordion-20260819"></script>
-  <script defer src="./image_asset_runtime.js?v=s14-recommendation-preview-accordion-20260819"></script>
-  <script defer src="./recommendation_preview_runtime.js?v=s14-recommendation-preview-accordion-20260819"></script>
-  <script defer src="./fixtures.js?v=s14-recommendation-preview-accordion-20260819"></script>
-  <script defer src="./app.js?v=s14-recommendation-preview-accordion-20260819"></script>
+  <link rel="stylesheet" href="./styles.css?v=s15-memory-visibility-20260819">
+  <script defer src="./dialogue_runtime.js?v=s15-memory-visibility-20260819"></script>
+  <script defer src="./image_asset_runtime.js?v=s15-memory-visibility-20260819"></script>
+  <script defer src="./recommendation_preview_runtime.js?v=s15-memory-visibility-20260819"></script>
+  <script defer src="./memory_runtime.js?v=s15-memory-visibility-20260819"></script>
+  <script defer src="./fixtures.js?v=s15-memory-visibility-20260819"></script>
+  <script defer src="./app.js?v=s15-memory-visibility-20260819"></script>
 </head>
 <body>
   <a class="skip-link" href="#studio">跳到 Stylist Studio</a>
@@ -412,6 +413,10 @@
         </article>
         <article class="work-card">
           <div class="work-card-heading"><div><p class="eyebrow">COMMITTED</p><h3>已提交记忆</h3></div></div>
+          <h4 class="memory-subheading">仅本次会话</h4>
+          <p class="form-help">Working context 使用 Session + TTL，只服务当前任务，不是长期记忆。</p>
+          <div id="memory-working-list" class="memory-list"><p class="empty-state compact">仅由当前 Session + TTL 在对话上下文中使用；不会作为长期记录从此列表返回。</p></div>
+          <h4 class="memory-subheading">长期已提交</h4>
           <div id="memory-committed-list" class="memory-list"><p class="empty-state compact">暂无已提交记忆。</p></div>
         </article>
       </div>

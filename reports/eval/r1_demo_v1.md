@@ -1,7 +1,7 @@
 # ProfAgent R1 Demo Evaluation
 
 - Status: **PASS**
-- Generated at: `2026-08-19T13:51:08+08:00`
+- Generated at: `2026-08-21T14:40:04+08:00`
 - Command: `conda run -n torch128 python -m profagent.eval`
 - Dataset: `fixtures_v1.0` / `eval_fixtures_v1.0_30`
 - Eval SHA-256: `a534e04346a60b837528248e38891d9e17a1024895f36aea9433e209409bff66`

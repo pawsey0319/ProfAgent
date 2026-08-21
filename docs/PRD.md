@@ -2,8 +2,8 @@
 
 > 产品：以人为本的私人团队 Agent
 > 首个核心成员：私人明星穿搭师（`persona_id=stylist`）
-> 文档版本：v1.15
-> 状态：R1 Demo 与 S6–S14 验收通过；连续衣橱套数推荐、推荐级静态 2D、折叠衣橱、文本 CPA 4.6、专用 CPA Image 与 SQL 持久记忆纵切已完成（合成数据）；Memory 下一阶段方案待用户确认
+> 文档版本：v1.16
+> 状态：R1 Demo 与 S6–S15 验收通过；Memory 路线 A 的事务真值、outbox、可重建软索引与确定性重排已完成（合成数据）；LangMem、Mem0、Graphiti 与学习型 reranker 未上线
 > 日期：2026-08-19
 > 产品代号：ProfAgent
 > 当前实现基线：`r1_demo_v1` + `fixtures_v1.0`
@@ -48,10 +48,10 @@
 | 对话、场景与推荐 | 统一 Dialogue Orchestrator；Enter 发送、Shift+Enter 换行且 IME 不误提交；每个新回合同步最多尝试一次 CPA。推荐回合先由服务端在权威 Scene 与 owner 衣橱上完成 HardFilter、Rule/BM25/Dense/RRF、Assembler 与最终 Validator，再把无内部 ID 的方向摘要交给 CPA 写当前增量回复；明确 1–3 套由服务端解析，否定/纠正可覆盖早先数字，歧义不猜。服务端/浏览器等待上限 120/125 秒；轻度情绪与明确任务同轮处理，只有显式暂停才锁存；高急购物双层门控保持。 |
 | 共创闭环 | Team Home、聊天优先的 Stylist Studio、合成衣橱浏览、用户上传单帧静态图的分析、六维 Scorecard、每轮最多两项 Adjustment、不可变 Look 版本、比较/回退、满意定稿 |
 | 实验性 Static2D | 图片链路已与文本 transport 解耦，通过 CPA `/images/generations` 固定请求 `grok-imagine-image-quality`；真实成功协议未回报 actual model 时，仅凭 exact request + 受控 CPA receipt + 全图 Validator 接受，并诚实保持 `model_verified=false/resolved_model=null`。50 件合成衣橱已有 owner-bound、内容寻址、schema 2 六键来源 PNG 目录图；衣橱按类别折叠。S14 可在文字方向出现后为 1–3 个权威 outfit 异步生成独立静态 2D 组合参考，单项失败不影响文本或其他图。真实两图约 `7.06s/6.85s`，批量约 `7.13s`；仍不等同真人试穿、身份复刻或精确尺码/面料/垂坠。 |
-| 反馈与记忆 | 推荐反馈、拒绝建议去重、受控 `propose → confirm → commit`、敏感默认不写、查看与删除均已实现；Memory 使用本地默认 SQLite、生产可选 PostgreSQL 的事务仓储，支持跨实例确认/恢复与 ACL。硬记忆 SQL 精确读取且不进 RRF；软记忆按 BM25、deterministic hashed Dense surrogate、Recency、Importance weighted RRF + 轻量重排 Top 5。真实语义 embedding/Cross-Encoder 仍未上线 |
+| 反馈与记忆 | 推荐反馈、拒绝建议去重、受控 `propose → confirm → commit`、敏感默认不写、查看与删除均已实现；Memory 使用本地默认 SQLite、生产可选 PostgreSQL 的事务仓储，支持跨实例确认/恢复、ACL、生命周期、粘性隔离和同事务最小 outbox。硬记忆 SQL 精确读取且不进 RRF；软记忆按 BM25、deterministic hashed Dense surrogate、Recency、Importance weighted RRF，再以 `structured_rerank_v1` 按 RRF/context/specificity/confirmation/lexical 的 `0.60/0.15/0.10/0.10/0.05` 权重确定性重排 Top 5。投影可从 SQL 真值重建，召回仍复验 owner/ACL/有效期。LangMem、Mem0、Graphiti、真实语义 embedding/Cross-Encoder 仍未上线 |
 | 可观测与降级 | 当前进程的 Trace 关联 Scene/Recommendation/Look/Scorecard/Adjustment/Final；LLM/Dense 失败回退规则推荐，Catalog 失败无商品，Vision 失败只给定性结果 |
 | 固定评测 | `conda run -n torch128 python -m profagent.eval` 一条命令运行 30 条固定样本及确定性对抗 assurance，输出版本化 JSON + Markdown |
-| 本地验收 | S14 独立门禁通过：pytest `278 passed`、S14 专项 `26 passed`、Dialogue/Preview/购物/Memory 相关 `241 passed`；Urgency `30/30`、高急 Shopping Gate `10/10`、Catalog `0/10`、ID 幻觉 `0/515`、硬约束违反 `0/423`、槽位完整 `74/74`；validate、Node 11 syntax + 5 runtime/static、随机非 8000 HTTP 与真实浏览器 DOM 全绿。截图链同 session 返回两套 owner 衣橱方案；折叠展开后目录 PNG `naturalWidth=1024`。真实 CPA 推荐两图均成功，actual model 未回报的证据语义保持。 |
+| 本地验收 | S15 独立门禁通过：pytest `300 passed`、S15 专项 `19 passed`、Memory 相关 `44 passed`；Urgency `30/30`、高急 Shopping Gate `10/10`、Catalog `0/10`、ID 幻觉 `0/515`、硬约束违反 `0/423`、槽位完整 `74/74`；validate、Node 14 syntax + 7 runtime/static、随机非 8000 HTTP、双实例/重启 SQLite 与真实浏览器 Memory DOM 全绿，CPA 调用为 0。S14 的连续两套 owner 衣橱推荐与真实 CPA 两图证据仍保持。 |
 
 运行限制与真实边界：Web 固定演示合成用户 `u01`；Demo 没有生产级身份认证、Scene/Look/Trace 主数据库、对象存储、Redis 或合规级持久审计。已确认 Memory 可通过 SQLite 跨进程恢复并可选 PostgreSQL，但反馈、Look、Trace 和其他 session 状态在重启后仍会丢失；对话 session 使用最长 30 分钟滑动 TTL。为保证并发同 request 严格 single-flight，R1 暂时串行所有 Dialogue 回合，不代表生产吞吐设计；衣橱界面以浏览/筛选为主而非完整编辑工作台；Final 的穿后状态仍为 `pending`。用户上传的当前穿搭图仅在当前进程内临时保存并支持删除；启用 Vision 时会按显式同意发送到配置的 CPA。Static2D 当前只生成中性无身份模特或平铺参考，任何身份参考图都不发送给生图 Provider。Catalog 仅使用合成 Mock 商品。CPA 对话 Provider 的逻辑模型为 `grok4.6`、transport 为 `grok-4.6-high`，应用只接受显式精确 allowlist `{grok-4.6-high, grok-4.6-build}`；图片 Provider 独立固定请求 `grok-imagine-image-quality`，真实协议未回报 actual model 时不会伪造 resolved 值。任务内量体信息只保留在当前 owner-bound session，不进入长期记忆或 Trace 原值；该门控不等同完整 DLP。
 
@@ -77,6 +77,7 @@
 | v1.13 | 2026-08-18 | 关闭 S12/S12R 本地实现与验收：真实 CPA Image 成功响应不回报顶层模型名，改为 request-bound receipt 验证且不伪造 actual/resolved；50 件目录资产迁移为 schema 2 六键来源、内容寻址 URL 与 prompt-hash 未保留声明；SQL Memory/RRF、246 项测试和单命令原子报告全绿 |
 | v1.14 | 2026-08-19 | 关闭 S13：文本 CPA 精确迁移为 `grok4.6 → grok-4.6-high → {grok-4.6-high,grok-4.6-build}`；修复衣橱目录图 hidden+lazy 加载死锁，真实浏览器 `naturalWidth=1024`；252 项全量、214 项定向、固定 eval 与真实 8000 CPA 冒烟全绿；Grok 4.6 外部审查建议由 Codex 逐项本地验证并以 0/0/0 关闭 |
 | v1.15 | 2026-08-19 | 关闭 S14：推荐回合先基于 owner 衣橱生成权威方向再由 CPA 表达，支持 1–3 套否定/纠正/歧义边界；增加推荐级并行静态 2D、Enter/Shift/IME 和类别折叠。278 项全量、26 项专项、241 项相关门禁、真实 Chrome 与真实 CPA 两图通过；Memory 仅完成四路线调研，待用户确认。 |
+| v1.16 | 2026-08-19 | 关闭 S15 Memory 路线 A：增加生命周期/来源闭集、粘性隔离、事务 outbox 与幂等 consumer、可重建 ID-only 软投影、PostgreSQL/SQLite 并发真值和 `structured_rerank_v1`；300 项全量、19 项专项、44 项相关、真实 Chrome 与双实例/重启门禁通过。B/C/D 与学习型 reranker 继续未上线。 |
 
 ---
 

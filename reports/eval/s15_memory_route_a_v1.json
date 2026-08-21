@@ -1,0 +1,420 @@
+{
+  "schema_version": 1,
+  "report_id": "s15_memory_route_a_v1",
+  "scope": "independent S15 Memory Route A transaction truth, lifecycle, deterministic retrieval and management UI acceptance",
+  "overall_status": "PASS",
+  "report_command": "conda run --no-capture-output -n torch128 python scripts/tester_s15_report.py",
+  "tester_external_calls": {
+    "text_cpa": 0,
+    "image_cpa": 0
+  },
+  "port_8000_touched": false,
+  "tester_write_scope": [
+    "tests",
+    "scripts",
+    "reports"
+  ],
+  "production_or_web_code_modified_by_tester": false,
+  "fixed_truth_or_threshold_modified_by_tester": false,
+  "commands": [
+    "python -m pytest -q tests/test_s15_memory.py",
+    "python -m pytest -q tests/test_memory_rerank_policy.py tests/test_s12_image_memory.py tests/test_s15_memory.py tests/test_s15_report.py",
+    "python -m pytest -q",
+    "python scripts/validate.py",
+    "python -m profagent.eval",
+    "node --check web/app.js",
+    "node --check web/catalog_image_browser_smoke.cjs",
+    "node --check web/dialogue_runtime.js",
+    "node --check web/dialogue_runtime_test.cjs",
+    "node --check web/fixtures.js",
+    "node --check web/image_asset_runtime.js",
+    "node --check web/image_asset_runtime_test.cjs",
+    "node --check web/memory_runtime.js",
+    "node --check web/memory_runtime_test.cjs",
+    "node --check web/recommendation_preview_runtime.js",
+    "node --check web/recommendation_preview_runtime_test.cjs",
+    "node --check web/s14_frontend_static_test.cjs",
+    "node --check web/s15_frontend_static_test.cjs",
+    "node --check web/static_contract_test.cjs",
+    "node web/dialogue_runtime_test.cjs",
+    "node web/image_asset_runtime_test.cjs",
+    "node web/memory_runtime_test.cjs",
+    "node web/recommendation_preview_runtime_test.cjs",
+    "node web/s14_frontend_static_test.cjs",
+    "node web/s15_frontend_static_test.cjs",
+    "node web/static_contract_test.cjs",
+    "python scripts/tester_s15_http_smoke.py",
+    "git diff --exit-code -- data/fixtures data/eval/eval.jsonl scripts/generate.py scripts/validate.py",
+    "git diff --check",
+    "git status --short",
+    "git diff --"
+  ],
+  "pytest": {
+    "s15_memory": 19,
+    "memory_related": 44,
+    "full": 300
+  },
+  "validate": {
+    "status": "pass",
+    "summary": "validation passed: users=3 garments=50 outfits=20 catalog=50 eval=30"
+  },
+  "fixed_eval": {
+    "status": "PASS",
+    "metrics": {
+      "urgency_accuracy": {
+        "numerator": 30,
+        "denominator": 30,
+        "value": 1.0,
+        "unit": "ratio",
+        "threshold": {
+          "operator": ">=",
+          "value": 0.95
+        },
+        "status": "PASS",
+        "failed_case_ids": []
+      },
+      "high_urgency_shopping_gate_accuracy": {
+        "numerator": 10,
+        "denominator": 10,
+        "value": 1.0,
+        "unit": "ratio",
+        "threshold": {
+          "operator": "==",
+          "value": 1.0
+        },
+        "status": "PASS",
+        "failed_case_ids": []
+      },
+      "high_urgency_catalog_calls": {
+        "numerator": 0,
+        "denominator": 10,
+        "value": 0,
+        "unit": "invocations",
+        "threshold": {
+          "operator": "==",
+          "value": 0
+        },
+        "status": "PASS",
+        "failed_case_ids": []
+      },
+      "item_hallucinations": {
+        "numerator": 0,
+        "denominator": 515,
+        "value": 0,
+        "unit": "violations",
+        "threshold": {
+          "operator": "==",
+          "value": 0
+        },
+        "status": "PASS",
+        "failed_case_ids": []
+      },
+      "hard_constraint_violations": {
+        "numerator": 0,
+        "denominator": 423,
+        "value": 0,
+        "unit": "violations",
+        "threshold": {
+          "operator": "==",
+          "value": 0
+        },
+        "status": "PASS",
+        "failed_case_ids": [],
+        "definition": "observed_outfit_alternative_catalog_product_and_validation_constraint_violations",
+        "excluded_release_gates": [
+          "catalog_expected_presence"
+        ]
+      },
+      "slot_completeness": {
+        "numerator": 74,
+        "denominator": 74,
+        "value": 1.0,
+        "unit": "ratio",
+        "threshold": {
+          "operator": ">=",
+          "value": 0.95
+        },
+        "status": "PASS",
+        "failed_case_ids": []
+      }
+    }
+  },
+  "node": {
+    "status": "pass",
+    "syntax_files": 14,
+    "runtime_contracts": 7,
+    "runtime_summaries": [
+      "web dialogue runtime S14 Enter/Shift/IME + exact-4.6-model/guard/reset/CPA-text/trace contract: PASS",
+      "web S12R catalog provenance + image display lifecycle runtime contract: PASS",
+      "web S15 memory runtime contract: PASS",
+      "web recommendation preview S14 success/degraded/cross-owner/wrong-model/wrong-outfit contract: PASS",
+      "web S14 frontend Enter/accordion/async-preview static contract: PASS",
+      "web S15 memory UI/static visibility contract: PASS",
+      "web static S13 text-model/catalog-image-display/provenance/trace/gates contract: PASS"
+    ]
+  },
+  "random_non_8000_http": {
+    "port_is_not_8000": true,
+    "external_provider_calls": 0,
+    "http_flow": "propose-confirm-list-delete",
+    "restart_sqlite": "pass",
+    "cross_instance_sqlite": "pass",
+    "owner_namespace_acl": "pass",
+    "future_expire_supersede_quarantine": "pass",
+    "delete_receipt_content_fields": 0,
+    "browser_dom": {
+      "status": "pass",
+      "summary": "web S15 Memory real-browser smoke: PASS valid-display=1 invalid-removal-only=1 private-body-rendered=0"
+    }
+  },
+  "synthetic_rerank_benchmark": {
+    "status": "PASS",
+    "evidence_kind": "controlled_synthetic_memory_retrieval_v1",
+    "dataset": {
+      "soft_records": 24,
+      "hard_exclusion_records": 1,
+      "scenarios": 4,
+      "contains_real_user_data": false
+    },
+    "algorithm": {
+      "rrf_k": 60,
+      "branch_candidate_limit": 20,
+      "weights": {
+        "bm25": 1.0,
+        "dense": 1.0,
+        "recency": 0.75,
+        "importance": 1.25
+      },
+      "dense_backend": "deterministic_hashed_surrogate_v1",
+      "rerank": "structured_rerank_v1",
+      "formula": {
+        "rrf_norm": 0.6,
+        "context_match": 0.15,
+        "specificity": 0.1,
+        "confirmation_strength": 0.1,
+        "lexical_norm": 0.05
+      },
+      "external_model_calls": 0
+    },
+    "aggregate_metrics": {
+      "bm25": {
+        "recall_at_5": 0.833333,
+        "recall_at_10": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      "dense": {
+        "recall_at_5": 0.833333,
+        "recall_at_10": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      "weighted_rrf": {
+        "recall_at_5": 0.5,
+        "recall_at_10": 0.791667,
+        "reciprocal_rank": 0.6875
+      },
+      "rrf_plus_structured_rerank": {
+        "recall_at_5": 0.708333,
+        "recall_at_10": 0.833333,
+        "reciprocal_rank": 1.0
+      }
+    },
+    "latency_ms": {
+      "samples": 8,
+      "p95": 4.89
+    },
+    "pollution": {
+      "hard_memory_in_rrf": 0,
+      "unconfirmed_deleted_expired_superseded_cross_acl": 0,
+      "basis": "S15 unit/HTTP gates plus controlled hard-exclusion record"
+    },
+    "per_scenario": [
+      {
+        "scenario_id": "long_walk",
+        "relevant_count": 6,
+        "eligible_soft_count": 24,
+        "fused_candidate_count": 20,
+        "branch_top_n": {
+          "bm25": 20,
+          "dense": 20,
+          "recency": 20,
+          "importance": 20
+        },
+        "metrics": {
+          "bm25": {
+            "recall_at_5": 0.833333,
+            "recall_at_10": 1.0,
+            "reciprocal_rank": 1.0
+          },
+          "dense": {
+            "recall_at_5": 0.833333,
+            "recall_at_10": 1.0,
+            "reciprocal_rank": 1.0
+          },
+          "weighted_rrf": {
+            "recall_at_5": 0.833333,
+            "recall_at_10": 1.0,
+            "reciprocal_rank": 1.0
+          },
+          "rrf_plus_structured_rerank": {
+            "recall_at_5": 0.833333,
+            "recall_at_10": 1.0,
+            "reciprocal_rank": 1.0
+          }
+        },
+        "context_source": "authoritative_scene_v1",
+        "hard_memory_in_rrf": false,
+        "deterministic_repeat": true
+      },
+      {
+        "scenario_id": "interview_simple",
+        "relevant_count": 6,
+        "eligible_soft_count": 24,
+        "fused_candidate_count": 24,
+        "branch_top_n": {
+          "bm25": 20,
+          "dense": 20,
+          "recency": 20,
+          "importance": 20
+        },
+        "metrics": {
+          "bm25": {
+            "recall_at_5": 0.833333,
+            "recall_at_10": 1.0,
+            "reciprocal_rank": 1.0
+          },
+          "dense": {
+            "recall_at_5": 0.833333,
+            "recall_at_10": 1.0,
+            "reciprocal_rank": 1.0
+          },
+          "weighted_rrf": {
+            "recall_at_5": 0.333333,
+            "recall_at_10": 0.833333,
+            "reciprocal_rank": 0.5
+          },
+          "rrf_plus_structured_rerank": {
+            "recall_at_5": 0.833333,
+            "recall_at_10": 1.0,
+            "reciprocal_rank": 1.0
+          }
+        },
+        "context_source": "authoritative_scene_v1",
+        "hard_memory_in_rrf": false,
+        "deterministic_repeat": true
+      },
+      {
+        "scenario_id": "comfortable_straight",
+        "relevant_count": 6,
+        "eligible_soft_count": 24,
+        "fused_candidate_count": 24,
+        "branch_top_n": {
+          "bm25": 20,
+          "dense": 20,
+          "recency": 20,
+          "importance": 20
+        },
+        "metrics": {
+          "bm25": {
+            "recall_at_5": 0.833333,
+            "recall_at_10": 1.0,
+            "reciprocal_rank": 1.0
+          },
+          "dense": {
+            "recall_at_5": 0.833333,
+            "recall_at_10": 1.0,
+            "reciprocal_rank": 1.0
+          },
+          "weighted_rrf": {
+            "recall_at_5": 0.166667,
+            "recall_at_10": 0.333333,
+            "reciprocal_rank": 0.25
+          },
+          "rrf_plus_structured_rerank": {
+            "recall_at_5": 0.333333,
+            "recall_at_10": 0.333333,
+            "reciprocal_rank": 1.0
+          }
+        },
+        "context_source": "authoritative_scene_v1",
+        "hard_memory_in_rrf": false,
+        "deterministic_repeat": true
+      },
+      {
+        "scenario_id": "meeting_low_key",
+        "relevant_count": 6,
+        "eligible_soft_count": 24,
+        "fused_candidate_count": 24,
+        "branch_top_n": {
+          "bm25": 20,
+          "dense": 20,
+          "recency": 20,
+          "importance": 20
+        },
+        "metrics": {
+          "bm25": {
+            "recall_at_5": 0.833333,
+            "recall_at_10": 1.0,
+            "reciprocal_rank": 1.0
+          },
+          "dense": {
+            "recall_at_5": 0.833333,
+            "recall_at_10": 1.0,
+            "reciprocal_rank": 1.0
+          },
+          "weighted_rrf": {
+            "recall_at_5": 0.666667,
+            "recall_at_10": 1.0,
+            "reciprocal_rank": 1.0
+          },
+          "rrf_plus_structured_rerank": {
+            "recall_at_5": 0.833333,
+            "recall_at_10": 1.0,
+            "reciprocal_rank": 1.0
+          }
+        },
+        "context_source": "authoritative_scene_v1",
+        "hard_memory_in_rrf": false,
+        "deterministic_repeat": true
+      }
+    ],
+    "claim_boundary": {
+      "real_user_quality_improvement": "not_assessed",
+      "production_semantic_embedding": "not_implemented",
+      "cross_encoder": "not_implemented",
+      "allowed_interpretation": "deterministic contract and synthetic diagnostic only"
+    }
+  },
+  "memory_contract": {
+    "transactional_truth_outbox": "pass",
+    "migration_idempotence": "pass",
+    "restart_cross_instance_sqlite": "pass",
+    "owner_namespace_acl": "pass",
+    "future_expire_supersede_quarantine": "pass",
+    "delete_receipt": "pass",
+    "hard_memory_routed_outside_rrf": "pass",
+    "structured_rerank_v1_exact": "pass",
+    "scene_context_authoritative": "pass",
+    "deterministic_repeats": "pass",
+    "browser_invalid_removal_only": "pass"
+  },
+  "privacy_hygiene": {
+    "outbox_contains_content_or_vectors": false,
+    "trace_contains_content_or_vectors": false,
+    "browser_invalid_body_rendered": false,
+    "credentials_in_report": false,
+    "absolute_workspace_path_in_report": false,
+    "fixed_fixture_or_eval_truth_diff": false,
+    "changed_file_count_observed": 25
+  },
+  "claim_boundary": {
+    "real_cpa_called": false,
+    "real_user_memory_quality": "not_assessed",
+    "postgresql_live_integration": "not_run; dialect locking contract is statically gated",
+    "langmem_mem0_graphiti_cross_encoder": "not_implemented"
+  },
+  "findings": {
+    "P0": 0,
+    "P1": 0,
+    "P2": 0
+  }
+}

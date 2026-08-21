@@ -8,11 +8,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from threading import RLock
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .models import API_VERSION, Style
+from .models import API_VERSION, SceneRequest, Style
 from .memory_repository import (
     MemoryRepository,
     MemoryRepositoryError,
@@ -31,6 +31,18 @@ MemoryType = Literal[
     "feedback",
     "session_emotion",
     "sensitive",
+]
+MemoryClass = Literal[
+    "profile_current",
+    "hard_constraint",
+    "preference_event",
+    "episodic_summary",
+]
+MemorySourceKind = Literal[
+    "user_confirmed",
+    "user_edited_confirmed",
+    "feedback_confirmed",
+    "legacy_migrated",
 ]
 
 
@@ -103,6 +115,101 @@ class MemoryRecord(BaseModel):
     source_proposal_id: str
     created_at: datetime
     expires_at: datetime | None
+    memory_class: MemoryClass = "preference_event"
+    valid_from: datetime = Field(default_factory=utc_now)
+    valid_to: datetime | None = None
+    supersedes_memory_id: str | None = None
+    source_kind: MemorySourceKind = "user_confirmed"
+    provenance_version: Literal[
+        "memory_provenance_v1", "memory_legacy_v0"
+    ] = "memory_provenance_v1"
+    consent_version: Literal[
+        "explicit_confirm_v1", "legacy_confirm_v0"
+    ] = "explicit_confirm_v1"
+    confirmation_count: int = Field(default=1, ge=1)
+    lifecycle_status: Literal[
+        "active", "superseded", "deleted", "expired"
+    ] = "active"
+
+    @model_validator(mode="before")
+    @classmethod
+    def fill_server_lifecycle_defaults(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        normalized.setdefault("valid_from", normalized.get("created_at"))
+        normalized.setdefault("valid_to", normalized.get("expires_at"))
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_lifecycle(self) -> "MemoryRecord":
+        if self.valid_to is not None and self.valid_to < self.valid_from:
+            raise ValueError("valid_to must not precede valid_from")
+        if self.type in {"session_emotion", "sensitive"}:
+            raise ValueError("working/sensitive memory cannot be a long-term record")
+        historical_redaction = (
+            self.lifecycle_status in {"deleted", "expired"}
+            and self.content in {"[deleted]", "[expired]"}
+        )
+        if not historical_redaction:
+            if not MemoryService.is_approved_content(self.type, self.content):
+                raise ValueError("memory content is outside the controlled closure")
+            expected_class = MemoryService._memory_class_for(self.type, self.content)
+            if self.memory_class != expected_class:
+                raise ValueError("memory_class does not match controlled type/content")
+        legacy = self.source_kind == "legacy_migrated"
+        if legacy != (
+            self.provenance_version == "memory_legacy_v0"
+            and self.consent_version == "legacy_confirm_v0"
+        ):
+            raise ValueError("legacy provenance fields must form an exact triplet")
+        if not legacy and (
+            self.provenance_version != "memory_provenance_v1"
+            or self.consent_version != "explicit_confirm_v1"
+        ):
+            raise ValueError("confirmed provenance fields must form an exact triplet")
+        if (
+            self.source_kind == "feedback_confirmed"
+            and self.type != "feedback"
+        ) or (
+            self.type == "feedback"
+            and self.source_kind
+            not in {
+                "feedback_confirmed",
+                "user_edited_confirmed",
+                "legacy_migrated",
+            }
+        ):
+            raise ValueError("source_kind does not match memory type")
+        if self.supersedes_memory_id is None:
+            if self.confirmation_count != 1:
+                raise ValueError("root memory confirmation_count must be one")
+        elif (
+            self.supersedes_memory_id == self.memory_id
+            or self.confirmation_count < 2
+        ):
+            raise ValueError("superseding memory requires a predecessor and count")
+        if self.ttl_days is None:
+            if self.expires_at is not None:
+                raise ValueError("expires_at requires ttl_days")
+        else:
+            if self.expires_at is None or abs(
+                (
+                    self.expires_at
+                    - (self.created_at + timedelta(days=self.ttl_days))
+                ).total_seconds()
+            ) >= 0.001:
+                raise ValueError("ttl_days and expires_at must match")
+        if (
+            self.lifecycle_status == "active"
+            and self.valid_to is not None
+            and self.expires_at is not None
+            and self.valid_to > self.expires_at
+        ):
+            raise ValueError("active valid_to cannot exceed expires_at")
+        if self.lifecycle_status != "active" and self.valid_to is None:
+            raise ValueError("historical memory requires valid_to")
+        return self
 
 
 class MemoryOperationResponse(BaseModel):
@@ -131,6 +238,9 @@ class MemoryDeleteResponse(BaseModel):
     api_version: str = API_VERSION
     deleted_id: str
     deleted_kind: Literal["proposal", "record"]
+    user_id: str
+    namespace: MemoryNamespace
+    truth_version: int = Field(ge=0)
     trace_id: str
 
 
@@ -299,6 +409,31 @@ class MemoryService:
             key = f"{key}:{context.target_item_id}"
         return key
 
+    @classmethod
+    def _memory_class_for(
+        cls, memory_type: MemoryType, content: str
+    ) -> MemoryClass:
+        normalized = re.sub(r"\s+", "", content)
+        if memory_type in {"constraint", "comfort_constraint"} or normalized in {
+            "不穿高跟鞋",
+            "不穿裙装",
+            "久走或长时间站立时需要舒适鞋履",
+        }:
+            return "hard_constraint"
+        if memory_type == "profile_stable":
+            return "profile_current"
+        return "preference_event"
+
+    @staticmethod
+    def _source_kind_for(
+        memory_type: MemoryType, decision: MemoryDecision
+    ) -> MemorySourceKind:
+        if decision == "edit":
+            return "user_edited_confirmed"
+        if memory_type == "feedback":
+            return "feedback_confirmed"
+        return "user_confirmed"
+
     def _refresh(self) -> None:
         with self._lock:
             now = utc_now()
@@ -312,6 +447,24 @@ class MemoryService:
             proposals, records, proposal_contexts, record_contexts = (
                 self.repository.load_state()
             )
+            parsed_records = [MemoryRecord.model_validate(raw) for raw in records]
+            durably_expired = [
+                item.memory_id
+                for item in parsed_records
+                if item.lifecycle_status == "active"
+                and (
+                    (item.expires_at is not None and item.expires_at <= now)
+                    or (item.valid_to is not None and item.valid_to <= now)
+                )
+            ]
+            if durably_expired:
+                self.repository.expire_ids(durably_expired, now.isoformat())
+                proposals, records, proposal_contexts, record_contexts = (
+                    self.repository.load_state()
+                )
+                parsed_records = [
+                    MemoryRecord.model_validate(raw) for raw in records
+                ]
             self._proposals = {
                 item.proposal_id: item
                 for raw in proposals
@@ -319,8 +472,11 @@ class MemoryService:
             }
             self._records = {
                 item.memory_id: item
-                for raw in records
-                for item in [MemoryRecord.model_validate(raw)]
+                for item in parsed_records
+                if item.lifecycle_status == "active"
+                and item.valid_from <= now
+                and (item.valid_to is None or item.valid_to > now)
+                and (item.expires_at is None or item.expires_at > now)
             }
             self._proposal_context = {
                 object_id: self._context_load(raw)
@@ -537,6 +693,19 @@ class MemoryService:
                             if proposal.ttl_days
                             else None
                         ),
+                        memory_class=self._memory_class_for(proposal.type, content),
+                        valid_from=now,
+                        valid_to=(
+                            now + timedelta(days=proposal.ttl_days)
+                            if proposal.ttl_days
+                            else None
+                        ),
+                        source_kind=self._source_kind_for(
+                            proposal.type, payload.decision
+                        ),
+                        provenance_version="memory_provenance_v1",
+                        consent_version="explicit_confirm_v1",
+                        confirmation_count=1,
                     )
                     proposal.status = "committed"
                     # The committed record is the only content-bearing object.
@@ -594,7 +763,7 @@ class MemoryService:
                     # winner. The response trace remains local to this process so
                     # it is always queryable from this instance's TraceStore.
                     proposal = proposal.model_copy(update={"trace_id": trace_id})
-            except MemoryRepositoryError as exc:
+            except Exception as exc:
                 self._refresh()
                 raise MemoryError("memory proposal decision conflict") from exc
         self._refresh()
@@ -723,11 +892,81 @@ class MemoryService:
         }
         return controlled.get(record.content, ())
 
+    @staticmethod
+    def _applicability_tags(record: MemoryRecord) -> frozenset[str]:
+        controlled = {
+            "偏爱直筒裤": frozenset({"goal:comfortable"}),
+            "偏爱简洁风格": frozenset(
+                {"goal:low_key", "goal:reliable", "occasion:interview", "occasion:meeting"}
+            ),
+            "偏爱低调配色": frozenset({"goal:low_key", "goal:reliable"}),
+            "长时间站立时优先选择适合久走的鞋。": frozenset(
+                {"comfort:long_walk"}
+            ),
+            "长时间站立时优先选择适合久走的鞋": frozenset(
+                {"comfort:long_walk"}
+            ),
+        }
+        return controlled.get(record.content, frozenset())
+
+    @staticmethod
+    def _scene_tags(scene: SceneRequest | None) -> frozenset[str]:
+        if scene is None:
+            return frozenset()
+        tags = {f"occasion:{scene.occasion}"}
+        tags.update(f"goal:{goal}" for goal in scene.goals)
+        tags.update(
+            f"comfort:{note}" for note in scene.constraints.comfort_notes
+        )
+        return frozenset(tags)
+
+    @classmethod
+    def _context_match(
+        cls, record: MemoryRecord, scene: SceneRequest | None, query: str
+    ) -> float:
+        applicability = cls._applicability_tags(record)
+        if not applicability:
+            return 0.0
+        if scene is not None:
+            return 1.0 if applicability & cls._scene_tags(scene) else 0.0
+        # Compatibility path for direct repository-level callers. Production
+        # recommendation always supplies the authoritative Scene. This fallback
+        # accepts only exact controlled lexical evidence and never model output.
+        controlled_markers = {
+            "偏爱直筒裤": ("直筒",),
+            "偏爱简洁风格": ("简洁", "简单"),
+            "偏爱低调配色": ("低调",),
+            "长时间站立时优先选择适合久走的鞋。": ("久走", "长时间站立"),
+            "长时间站立时优先选择适合久走的鞋": ("久走", "长时间站立"),
+        }
+        return (
+            1.0
+            if any(marker in query for marker in controlled_markers.get(record.content, ()))
+            else 0.0
+        )
+
+    @classmethod
+    def _specificity(cls, record: MemoryRecord) -> float:
+        tags = cls._applicability_tags(record)
+        if any(tag.startswith("comfort:") for tag in tags):
+            return 1.0
+        if any(tag.startswith("occasion:") for tag in tags):
+            return 0.75
+        if tags:
+            return 0.5
+        return 0.25 if record.memory_class == "profile_current" else 0.0
+
+    @staticmethod
+    def _confirmation_strength(record: MemoryRecord) -> float:
+        return min(1.0, 0.70 + 0.10 * (record.confirmation_count - 1))
+
     def retrieve_soft(
         self,
         user_id: str,
         query: str,
         namespaces: tuple[MemoryNamespace, ...] = ("shared", "stylist"),
+        *,
+        scene: SceneRequest | None = None,
     ) -> tuple[tuple[str, ...], dict[str, object]]:
         """Retrieve controlled soft preferences after SQL ACL/status filtering.
 
@@ -746,7 +985,10 @@ class MemoryService:
                 self._context_load(context_raw) if context_raw is not None else None
             )
             # Hard memory is consumed only by active_signals(), never by RRF.
-            if self._derive_signal(record, context) is not None:
+            if (
+                record.memory_class == "hard_constraint"
+                or self._derive_signal(record, context) is not None
+            ):
                 continue
             if self._soft_term(record):
                 candidates.append(record)
@@ -781,7 +1023,9 @@ class MemoryService:
         dense = {
             item.memory_id: sum(
                 left * right
-                for left, right in zip(query_vector, self._dense_vector(item.content))
+                for left, right in zip(
+                    query_vector, self._dense_vector(item.content)
+                )
             )
             for item in candidates
         }
@@ -826,19 +1070,41 @@ class MemoryService:
             weight = self.RRF_WEIGHTS[branch]
             for rank, memory_id in enumerate(ids, 1):
                 fused[memory_id] += weight / (self.RRF_K + rank)
-        # Deterministic lightweight rerank restores strong lexical relevance
-        # after rank-only fusion without introducing another model/provider.
+        # Exact S15 structured rerank. Every feature is derived here from SQL
+        # truth and the authoritative parsed Scene; no caller/provider score is
+        # accepted.
+        rrf_peak = max(fused.values(), default=0.0)
         bm25_peak = max(bm25.values(), default=0.0)
-        lexical_bonus = {
-            memory_id: (
-                0.03 * max(0.0, score) / bm25_peak if bm25_peak > 0 else 0.0
+        by_id = {item.memory_id: item for item in candidates}
+        features: dict[str, dict[str, float]] = {}
+        reranked: dict[str, float] = {}
+        for memory_id, rrf_score in fused.items():
+            record = by_id[memory_id]
+            rrf_norm = rrf_score / rrf_peak if rrf_peak > 0 else 0.0
+            lexical_norm = (
+                max(0.0, bm25.get(memory_id, 0.0)) / bm25_peak
+                if bm25_peak > 0
+                else 0.0
             )
-            for memory_id, score in bm25.items()
-        }
-        reranked = {
-            memory_id: score + lexical_bonus.get(memory_id, 0.0)
-            for memory_id, score in fused.items()
-        }
+            context_match = self._context_match(record, scene, query)
+            specificity = self._specificity(record)
+            confirmation_strength = self._confirmation_strength(record)
+            final = (
+                0.60 * rrf_norm
+                + 0.15 * context_match
+                + 0.10 * specificity
+                + 0.10 * confirmation_strength
+                + 0.05 * lexical_norm
+            )
+            features[memory_id] = {
+                "rrf_norm": round(rrf_norm, 6),
+                "context_match": round(context_match, 6),
+                "specificity": round(specificity, 6),
+                "confirmation_strength": round(confirmation_strength, 6),
+                "lexical_norm": round(lexical_norm, 6),
+                "final": round(final, 6),
+            }
+            reranked[memory_id] = final
         final_ids = [
             memory_id
             for memory_id, _score in sorted(
@@ -851,7 +1117,6 @@ class MemoryService:
                 ),
             )[: self.RRF_TOP_K]
         ]
-        by_id = {item.memory_id: item for item in candidates}
         terms: list[str] = []
         for memory_id in final_ids:
             for term in self._soft_term(by_id[memory_id]):
@@ -859,7 +1124,7 @@ class MemoryService:
                     terms.append(term)
         trace: dict[str, object] = {
             "component": "memory_soft_retrieval",
-            "version": "weighted_rrf_k60_v1",
+            "version": "weighted_rrf_k60_structured_rerank_v1",
             "prefilter": "user_confirmed_non_sensitive_active_acl_v1",
             "namespaces": list(namespaces),
             "candidate_limit": self.RRF_CANDIDATE_LIMIT,
@@ -868,7 +1133,21 @@ class MemoryService:
             "k": self.RRF_K,
             "weights": dict(self.RRF_WEIGHTS),
             "dense_backend": "deterministic_hashed_surrogate_v1",
-            "rerank": "deterministic_lexical_bonus_v1",
+            "rerank": "structured_rerank_v1",
+            "rerank_formula": {
+                "rrf_norm": 0.60,
+                "context_match": 0.15,
+                "specificity": 0.10,
+                "confirmation_strength": 0.10,
+                "lexical_norm": 0.05,
+            },
+            "feature_source": "server_sql_truth_and_authoritative_scene_v1",
+            "context_source": (
+                "authoritative_scene_v1"
+                if scene is not None
+                else "controlled_query_compat_v1"
+            ),
+            "controlled_scores": features,
             "top_k": self.RRF_TOP_K,
             "branches": ranked,
             "selected_memory_ids": final_ids,
@@ -878,6 +1157,74 @@ class MemoryService:
             "latency_ms": round((datetime.now().timestamp() - started) * 1000, 2),
         }
         return tuple(terms), trace
+
+    def rebuild_soft_index(
+        self,
+        user_id: str,
+        namespaces: tuple[MemoryNamespace, ...] = ("shared", "stylist"),
+    ) -> tuple[str, ...]:
+        """Deterministically rebuild the disposable ID-only projection.
+
+        SQL active truth is the sole source. Hard memories are deliberately
+        excluded; the projection is never trusted to restore eligibility.
+        """
+        now = utc_now()
+        eligible = self._eligible_soft_ids(user_id, namespaces, now)
+        rebuild = getattr(self.repository, "rebuild_soft_index", None)
+        if rebuild is None:
+            return eligible
+        return rebuild(
+            user_id,
+            tuple(namespaces),
+            eligible,
+            index_version="memory_soft_projection_v1",
+            rebuilt_at=now.isoformat(),
+        )
+
+    def _eligible_soft_ids(
+        self,
+        user_id: str,
+        namespaces: tuple[MemoryNamespace, ...],
+        now: datetime,
+    ) -> tuple[str, ...]:
+        rows = self.repository.active_records(
+            user_id, tuple(namespaces), now.isoformat()
+        )
+        eligible: list[str] = []
+        for raw, context_raw in rows:
+            record = MemoryRecord.model_validate(raw)
+            context = (
+                self._context_load(context_raw) if context_raw is not None else None
+            )
+            if (
+                record.memory_class == "hard_constraint"
+                or self._derive_signal(record, context) is not None
+            ):
+                continue
+            if self._soft_term(record):
+                eligible.append(record.memory_id)
+        return tuple(sorted(eligible))
+
+    def consume_soft_index_outbox(
+        self,
+        user_id: str,
+        namespaces: tuple[MemoryNamespace, ...] = ("shared", "stylist"),
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Idempotently apply lifecycle outbox facts to the derived projection."""
+        self._refresh()
+        now = utc_now()
+        eligible = self._eligible_soft_ids(user_id, namespaces, now)
+        consume = getattr(self.repository, "consume_soft_index_outbox", None)
+        if consume is None:
+            return eligible, ()
+        return consume(
+            user_id,
+            tuple(namespaces),
+            eligible,
+            consumer_name="memory_soft_projection_v1",
+            index_version="memory_soft_projection_v1",
+            consumed_at=now.isoformat(),
+        )
 
     def close(self) -> None:
         self.repository.close()
@@ -892,6 +1239,7 @@ class MemoryService:
                 item.model_copy(deep=True)
                 for item in self._proposals.values()
                 if item.user_id == user_id
+                and item.status == "proposed"
                 and (namespace is None or item.namespace == namespace)
             ]
             records = [
@@ -913,16 +1261,12 @@ class MemoryService:
         with self._lock:
             proposal = self._proposals.get(memory_id)
             if proposal is not None and proposal.user_id == user_id:
-                del self._proposals[memory_id]
-                self._proposal_context.pop(memory_id, None)
                 if proposal.record_id:
-                    linked = self._records.pop(proposal.record_id, None)
-                    self._record_context.pop(proposal.record_id, None)
-                    if linked is not None:
-                        self._index.get(
-                            (linked.user_id, linked.namespace), set()
-                        ).discard(linked.memory_id)
-                deleted_kind: Literal["proposal", "record"] = "proposal"
+                    deleted_kind: Literal["proposal", "record"] = "record"
+                    authoritative_deleted_id = proposal.record_id
+                else:
+                    deleted_kind = "proposal"
+                    authoritative_deleted_id = proposal.proposal_id
                 memory_type = proposal.type
                 namespace = proposal.namespace
                 session_id = proposal.styling_session_id
@@ -930,35 +1274,44 @@ class MemoryService:
                 record = self._records.get(memory_id)
                 if record is None or record.user_id != user_id:
                     raise MemoryNotFound(memory_id)
-                del self._records[memory_id]
-                self._record_context.pop(memory_id, None)
-                self._index.get((record.user_id, record.namespace), set()).discard(memory_id)
-                # The proposal is metadata-only after commit, but remove it as
-                # well so a deleted record leaves no stale committed handle.
-                self._proposals.pop(record.source_proposal_id, None)
-                self._proposal_context.pop(record.source_proposal_id, None)
                 deleted_kind = "record"
+                authoritative_deleted_id = record.memory_id
                 memory_type = record.type
                 namespace = record.namespace
                 session_id = None
-            tombstoned = self.repository.tombstone(
-                user_id=user_id,
-                object_id=memory_id,
-                deleted_at=utc_now().isoformat(),
-            )
+            try:
+                tombstoned = self.repository.tombstone(
+                    user_id=user_id,
+                    object_id=memory_id,
+                    deleted_at=utc_now().isoformat(),
+                )
+            except Exception as exc:
+                self._refresh()
+                raise MemoryError("memory deletion transaction failed") from exc
             if tombstoned is None:
                 raise MemoryNotFound(memory_id)
+            if (
+                tombstoned.deleted_kind != deleted_kind
+                or tombstoned.user_id != user_id
+                or tombstoned.namespace != namespace
+            ):
+                self._refresh()
+                raise MemoryError("memory deletion receipt mismatch")
+        self._refresh()
         trace_id = self._trace(
             operation="delete",
             user_id=user_id,
             session_id=session_id,
-            object_id=memory_id,
+            object_id=authoritative_deleted_id,
             memory_type=memory_type,
             namespace=namespace,
             outcome="deleted",
         )
         return MemoryDeleteResponse(
-            deleted_id=memory_id,
+            deleted_id=authoritative_deleted_id,
             deleted_kind=deleted_kind,
+            user_id=user_id,
+            namespace=namespace,
+            truth_version=tombstoned.truth_version,
             trace_id=trace_id,
         )

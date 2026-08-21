@@ -1,7 +1,7 @@
 # ProfAgent Demo — API 与协作合同
 
-> 状态：S6–S14 已实现并通过本地验收（2026-08-19）
-> 需求权威：`docs/PRD.md` v1.14，尤其第 6、9、10、11、12、15、16、23 节；S12 static 2D 是用户明确追加的实验性 R2 纵切，不改变 R1 DoD。
+> 状态：S6–S15 已实现并通过本地验收；S15 Memory 路线 A 已关闭（2026-08-19）
+> 需求权威：`docs/PRD.md` v1.16，尤其第 6、9、10、11、12、15、16、23 节；S12 static 2D 是用户明确追加的实验性 R2 纵切，不改变 R1 DoD。
 > 若本合同与 PRD 冲突，以 PRD 为准，并由 supervisor 统一更新合同后通知前后端。
 
 ## 1. 运行与目录合同
@@ -189,6 +189,9 @@ PRD 12.1 字段全部保留；允许新增以下字段：
 - S12 持久化仓储按 `user_id + confirmed + 未删除 + 未过期 + sensitivity ACL + namespace/member/team 可见性` 先做事务级预过滤；`shared` 只对已授权团队范围可见，`stylist` 只对 `personal_team:stylist` 可见。禁忌、敏感授权、不穿项、拒绝且不得重复、删除/过期/superseded 等硬记忆直接读取，禁止经 RRF 排名。
 - 软记忆才进入 weighted RRF：`rrf_k=60`、每路候选 `20`、BM25 `1.0`、Dense `1.0`、Recency `0.75`、Importance `1.25`，先对 SQL 预过滤后的全体记忆分别取每路 Top 20，再对各路并集融合，确定性轻量重排后最多返回 Top 5。Demo 的 Dense 分支明确标记为 `deterministic_hashed_surrogate_v1`，不宣称等同生产语义 embedding 或 Cross-Encoder。响应/Trace只暴露受控 memory ID、分支名次、权重、版本与耗时，不输出正文、向量或原始敏感值。
 - 删除必须同步主存储与检索索引，并保留不含内容的审计事件。
+- S15 路线 A 增量字段为：`memory_class=profile_current|hard_constraint|preference_event|episodic_summary|working_context`、`valid_from/valid_to`、`supersedes_memory_id`、`source_kind`、`provenance_version`、`consent_version`、`confirmation_count`。长期记录的 `source_kind=user_confirmed|user_edited_confirmed|feedback_confirmed|legacy_migrated`，`provenance_version=memory_provenance_v1|memory_legacy_v0`，`consent_version=explicit_confirm_v1|legacy_confirm_v0`；全部由服务端闭集产生，客户端不得伪造来源、确认次数、supersedes、适用期或排序特征。`working_context` 仅属于 session+TTL，不得 commit、进入长期 `GET /memory` 或 RRF；`episodic_summary` 只允许受控、已确认摘要，不保存原始对话或模型思维链。旧记录幂等迁移为 `legacy_migrated/memory_legacy_v0/legacy_confirm_v0`，不冒充新协议证据。
+- commit/supersede/delete/expire 与内容最小化 `memory_outbox` 事件必须同事务提交；outbox 只含事件 ID、user/namespace/memory ID、操作、真值版本、状态与时间，不含正文、向量、用户原话、私有衣物 ID或敏感值。派生索引可从 SQL 真值确定性重建；任何索引延迟/失败都不得恢复 SQL 已失效记录。
+- S15 `structured_rerank_v1` 固定为：`final=0.60*rrf_norm+0.15*context_match+0.10*specificity+0.10*confirmation_strength+0.05*lexical_norm`。`rrf_norm=rrf/max_rrf`；`lexical_norm=max(BM25,0)/max_bm25`；`context_match∈{0,1}`，仅表示服务端受控 applicability tag 与权威 Scene tag 是否相交（推荐路径必须传 Scene；兼容层无 Scene 时只允许受控 exact lexical compat）；`specificity` 按 `comfort=1.00`、含 `occasion=0.75`、受控 `goal=0.50`、无 tag 的 `profile_current=0.25`、其余 `0`；`confirmation_strength=min(1,0.70+0.10*(confirmation_count-1))`。受控 tag 闭集为 `comfort:long_walk`、`goal:comfortable|low_key|reliable`、`occasion:interview|meeting`。排序并列依次使用 BM25、Importance、稳定 memory ID。该阶段不得调用 CPA、Cross-Encoder、LangMem、Mem0 或 Graphiti；硬记忆不进入此公式。
 
 ### 4.7 Trace
 
@@ -345,11 +348,11 @@ S14 对 `action=recommend` 增加顺序约束：服务端必须先用权威 Scen
 
 ### GET `/memory?user_id=...&namespace=...`
 
-返回已提交和待确认记录，清楚区分 shared 与 stylist namespace。
+返回待确认提议和当前有效记录，清楚区分 shared 与 stylist namespace。`records` 仅允许 `status=committed` 且 `lifecycle_status=active`；expired、superseded、deleted 不返回。`working_context` 不属于长期记录，也不得经该端点返回。
 
 ### DELETE `/memory/{memory_id}`
 
-删除已提交记录并同步索引；响应不回显敏感内容。
+删除已提交记录并同步索引；响应不回显敏感内容。权威回执固定为 `api_version + deleted_id + deleted_kind + user_id + namespace + truth_version + trace_id`；`truth_version` 是删除后的真值版本，proposal-only 删除固定为 `0`。已 committed 的 proposal ID 不得伪装成 proposal-only 删除并级联删除 record；必须按 record 删除语义返回其权威版本。
 
 ### GET `/trace/{trace_id}`
 

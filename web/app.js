@@ -5,14 +5,16 @@
   const dialogueRuntime = window.PROFAGENT_DIALOGUE_RUNTIME;
   const imageAssetRuntime = window.PROFAGENT_IMAGE_ASSET_RUNTIME;
   const recommendationPreviewRuntime = window.PROFAGENT_RECOMMENDATION_PREVIEW_RUNTIME;
+  const memoryRuntime = window.PROFAGENT_MEMORY_RUNTIME;
   if (!dialogueRuntime) throw new Error("Dialogue runtime 未加载");
   if (!imageAssetRuntime) throw new Error("Image asset runtime 未加载");
   if (!recommendationPreviewRuntime) throw new Error("Recommendation preview runtime 未加载");
+  if (!memoryRuntime) throw new Error("Memory runtime 未加载");
   const dialogueGuard = dialogueRuntime.createInFlightGuard();
   const dialogueTraceGuard = dialogueRuntime.createInFlightGuard();
   const recommendationPreviewGuard = dialogueRuntime.createInFlightGuard();
   const userId = "u01";
-  const UI_BUILD_VERSION = "s14-recommendation-preview-accordion-20260819";
+  const UI_BUILD_VERSION = "s15-memory-visibility-20260819";
   const DEFAULT_REQUEST_TIMEOUT_MS = 12000;
   const DIALOGUE_TURN_TIMEOUT_MS = 125000;
   const PREVIEW_2D_TIMEOUT_MS = 50000;
@@ -103,9 +105,25 @@
   const approvedMemoryTemplates = Object.freeze({
     constraint: Object.freeze(["不穿高跟鞋", "不穿裙装", "久走或长时间站立时需要舒适鞋履"]),
     comfort_constraint: Object.freeze(["久走或长时间站立时需要舒适鞋履"]),
-    preference: Object.freeze(["偏爱直筒裤", "偏爱简洁风格", "偏爱低调配色", "长时间站立时优先选择适合久走的鞋"]),
+    preference: Object.freeze(["偏爱直筒裤", "偏爱简洁风格", "偏爱低调配色", "长时间站立时优先选择适合久走的鞋", "长时间站立时优先选择适合久走的鞋。"]),
     profile_stable: Object.freeze(["不穿高跟鞋", "不穿裙装", "偏爱直筒裤"]),
     feedback: Object.freeze(["偏好久走与长时间站立时选择舒适鞋履"])
+  });
+  const memoryClassLabels = Object.freeze({
+    profile_current: "当前档案",
+    hard_constraint: "硬约束",
+    preference_event: "偏好事件",
+    episodic_summary: "已确认经历摘要"
+  });
+  const memorySourceLabels = Object.freeze({
+    user_confirmed: "用户确认",
+    user_edited_confirmed: "用户编辑后确认",
+    feedback_confirmed: "反馈经用户确认",
+    legacy_migrated: "旧版记录迁移"
+  });
+  const memoryConsentLabels = Object.freeze({
+    explicit_confirm_v1: "显式确认 v1",
+    legacy_confirm_v0: "旧版确认 v0"
   });
   const fixedDimensionEvidence = Object.freeze({
     occasion_fit: "仅核对衣物元数据与场合要求。",
@@ -805,8 +823,11 @@
           memory_scope: memoryScope
         })
       });
-      const receipt = response.feedback || response.record || response;
-      const acknowledged = typeof receipt.feedback_id === "string" && receipt.feedback_id.length > 0;
+      if (response?.api_version !== "r1_demo_v1" || !memoryRuntime.validId(response.trace_id)) {
+        throw new Error("反馈回执版本或 Trace 未通过复核");
+      }
+      const receipt = response.feedback;
+      const acknowledged = memoryRuntime.validId(receipt?.feedback_id) && memoryRuntime.validIso(receipt?.created_at);
       if (!acknowledged
         || receipt.decision !== decision
         || receipt.reason_code !== (reasonCode || null)
@@ -818,23 +839,32 @@
         throw new Error("反馈回执未通过方向、用户与会话复核");
       }
 
-      const rawProposal = response.memory_proposal || (response.proposal?.proposal_id ? response.proposal : null);
-      const committedMemory = response.memory_record || (response.record?.memory_id ? response.record : null);
+      const rawProposal = response.memory_proposal;
+      const committedMemory = response.record;
       let proposal = null;
       if (memoryScope === "propose") {
         proposal = normalizeMemoryProposal(rawProposal);
-        if (!proposal || proposal.status !== "proposed" || committedMemory) {
+        if (!proposal
+          || proposal.metadata_valid !== true
+          || proposal.status !== "proposed"
+          || proposal.styling_session_id !== state.stylingSessionId
+          || proposal.namespace !== "stylist"
+          || proposal.type !== "feedback"
+          || proposal.content !== "偏好久走与长时间站立时选择舒适鞋履"
+          || proposal.sensitivity !== "non_sensitive"
+          || proposal.ttl_days !== null
+          || committedMemory !== null) {
           throw new Error("长期反馈必须只返回待确认 MemoryProposal");
         }
         state.memoryProposals = [...state.memoryProposals.filter((item) => item.proposal_id !== proposal.proposal_id), proposal];
         renderMemory();
-      } else if (rawProposal || committedMemory) {
+      } else if (rawProposal !== null || committedMemory !== null) {
         throw new Error("仅本次反馈不得创建记忆对象");
       }
 
       state.directionFeedback.set(outfit.outfit_id, { decision, reasonCode, reasonLabel, memoryScope });
       renderRecommendations();
-      await fetchTrace(response.trace_id || receipt.trace_id || proposal?.trace_id);
+      await fetchTrace(response.trace_id);
     } catch (error) {
       status.textContent = `提交未完成：${error.message}`;
       controls.forEach((control) => { control.disabled = false; });
@@ -2613,6 +2643,14 @@
     return memoryTemplatesFor(memoryType).includes(content);
   }
 
+  function expectedMemoryClass(memoryType, content) {
+    const normalized = String(content || "").replace(/\s+/g, "");
+    if (["constraint", "comfort_constraint"].includes(memoryType)
+      || ["不穿高跟鞋", "不穿裙装", "久走或长时间站立时需要舒适鞋履"].includes(normalized)) return "hard_constraint";
+    if (memoryType === "profile_stable") return "profile_current";
+    return "preference_event";
+  }
+
   function renderMemoryTemplateOptions(selectedContent) {
     const type = byId("memory-type").value;
     const select = byId("memory-content");
@@ -2639,27 +2677,32 @@
   }
 
   function normalizeMemoryProposal(proposal) {
-    if (!proposal?.proposal_id || proposal.user_id !== userId || !["shared", "stylist"].includes(proposal.namespace)) return null;
-    const content = String(proposal.content || "");
-    const blocked = proposal.sensitivity === "sensitive"
-      || proposal.commit_blocked === true
-      || !isApprovedMemoryTemplate(proposal.type, content);
-    return { ...proposal, content: blocked ? null : content, sensitivity: blocked ? "sensitive" : proposal.sensitivity, commit_blocked: blocked };
+    return memoryRuntime.normalizeProposal(proposal, memoryRuntimeConfig());
   }
 
   function normalizeMemoryRecord(record) {
-    if (!record?.memory_id || record.user_id !== userId || !["shared", "stylist"].includes(record.namespace)) return null;
-    const sensitive = record.sensitivity === "sensitive";
-    const content = String(record.content || "");
-    if (sensitive || !isApprovedMemoryTemplate(record.type, content)) return null;
-    return { ...record, content, sensitivity: record.sensitivity };
+    return memoryRuntime.normalizeRecord(record, memoryRuntimeConfig());
+  }
+
+  function memoryRuntimeConfig() {
+    return {
+      userId,
+      allowedTypes: new Set(Object.keys(approvedMemoryTemplates)),
+      allowedSourceKinds: new Set(Object.keys(memorySourceLabels)),
+      allowedProvenanceVersions: new Set(["memory_provenance_v1", "memory_legacy_v0"]),
+      allowedConsentVersions: new Set(Object.keys(memoryConsentLabels)),
+      nowMs: Date.now(),
+      isApprovedTemplate: isApprovedMemoryTemplate,
+      expectedMemoryClass
+    };
   }
 
   async function loadMemory() {
     try {
       const response = await api(`/memory?user_id=${encodeURIComponent(userId)}`);
-      state.memoryProposals = (response.proposals || []).map(normalizeMemoryProposal).filter(Boolean);
-      state.memoryRecords = (response.records || []).map(normalizeMemoryRecord).filter(Boolean);
+      const normalized = memoryRuntime.normalizeList(response, memoryRuntimeConfig());
+      state.memoryProposals = normalized.proposals;
+      state.memoryRecords = normalized.records;
       setMemoryAvailability(true);
       renderMemory();
     } catch (error) {
@@ -2671,20 +2714,82 @@
 
   function memoryMeta(item) {
     const meta = make("div", "memory-meta");
-    meta.append(make("span", "", item.namespace === "shared" ? "团队共享" : "仅 Stylist"), make("span", "", item.type || "偏好"), make("span", "", item.status || "待确认"));
+    if (item.metadata_valid !== true) {
+      meta.append(make("span", "", "安全元数据"), make("span", "", "不可用于个性化"));
+      return meta;
+    }
+    meta.append(
+      make("span", "", item.namespace === "shared" ? "团队共享" : "仅 Stylist"),
+      make("span", "", item.memory_class ? memoryClassLabels[item.memory_class] : "待确认后分类"),
+      make("span", "", item.type || "受控类型"),
+      make("span", "", item.status === "committed" ? "已提交" : "待确认")
+    );
     return meta;
+  }
+
+  function memoryDateLabel(value) {
+    if (!value) return "未设置";
+    return new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Shanghai" }).format(new Date(value));
+  }
+
+  function memoryLifecycle(item) {
+    const note = make("div", `memory-lifecycle${item.status === "committed" ? "" : " is-inactive"}`);
+    if (item.metadata_valid !== true) {
+      note.textContent = "服务端元数据未通过当前版本的闭集复核；内容、来源和生命周期已隐藏，也不会由浏览器判断为有效。";
+      return note;
+    }
+    if (item.kind === "proposal") {
+      note.textContent = "这仍是待确认提议；确认后才由服务端确定记忆分层、来源、适用期与提交状态。";
+      return note;
+    }
+    const source = memorySourceLabels[item.source_kind];
+    const consent = memoryConsentLabels[item.consent_version];
+    const validity = item.valid_to
+      ? `适用期：${memoryDateLabel(item.valid_from)} 至 ${memoryDateLabel(item.valid_to)}`
+      : `自 ${memoryDateLabel(item.valid_from)} 起持续有效`;
+    const confirmation = `已明确确认 ${item.confirmation_count} 次`;
+    const replacement = item.supersedes_memory_id
+      ? "；本条已替代一条较早记录，旧记录不会继续参与个性化"
+      : "";
+    note.textContent = `${validity} · 来源：${source} · 确认协议：${consent} · ${confirmation}${replacement}。过期、被替代或删除的记录由服务端移出有效集合，浏览器不会按缓存恢复。`;
+    return note;
+  }
+
+  function renderCommittedMemoryCard(record) {
+    const card = make("article", "memory-item");
+    card.dataset.state = record.metadata_valid === true ? record.status : "blocked";
+    const title = record.metadata_valid !== true
+      ? "记忆元数据未通过验证"
+      : "已提交长期记忆";
+    card.append(make("h4", "", title), memoryMeta(record), memoryLifecycle(record));
+    card.append(make("p", "", record.metadata_valid === true ? record.content : "内容与私有来源已脱敏；请刷新或升级客户端后再管理。"));
+    if (record.deletable === true) {
+      const remove = make("button", "button button-danger button-small", record.metadata_valid === true ? "删除记忆" : "从服务端删除此记录");
+      remove.type = "button";
+      remove.addEventListener("click", () => deleteMemory(record, remove));
+      card.append(remove);
+    }
+    return card;
   }
 
   function renderMemory() {
     const pending = byId("memory-pending-list");
     const committed = byId("memory-committed-list");
-    const proposals = state.memoryProposals.filter((item) => ["proposed", "pending"].includes(item.status));
+    const working = byId("memory-working-list");
+    const proposals = state.memoryProposals.filter((item) => item.status === "proposed" || item.status === "blocked");
     if (!proposals.length) pending.replaceChildren(make("p", "empty-state compact", "暂无待确认提议。"));
     else pending.replaceChildren(...proposals.map((proposal) => {
       const card = make("article", "memory-item");
-      card.append(make("h4", "", proposal.sensitivity === "sensitive" ? "敏感提议 · 未写入" : "待确认记忆"), memoryMeta(proposal));
-      if (proposal.sensitivity === "sensitive") {
-        card.append(make("p", "", "内容已被敏感门控拦截，不在界面或 Debug 回显。"));
+      card.dataset.state = proposal.metadata_valid === true ? proposal.status : "blocked";
+      card.append(make("h4", "", proposal.metadata_valid !== true ? "提议元数据未通过验证" : (proposal.sensitivity === "sensitive" || proposal.commit_blocked) ? "已拦截提议 · 未写入" : "待确认记忆"), memoryMeta(proposal), memoryLifecycle(proposal));
+      if (proposal.metadata_valid !== true) {
+        card.append(make("p", "", "内容与来源均已脱敏；该项不可确认，也不会进入长期记忆。"));
+        const remove = make("button", "button button-danger button-small", "从服务端删除此提议");
+        remove.type = "button";
+        remove.addEventListener("click", () => deleteMemory(proposal, remove));
+        card.append(remove);
+      } else if (proposal.sensitivity === "sensitive" || proposal.commit_blocked) {
+        card.append(make("p", "", "内容已被敏感或受控语义门控拦截，不在界面或 Debug 回显，也不能通过编辑绕过。"));
         const reject = make("button", "button button-danger button-small", "关闭这条提议"); reject.type = "button"; reject.addEventListener("click", () => decideMemory(proposal, "reject", null, reject)); card.append(reject);
       } else {
         const templates = memoryTemplatesFor(proposal.type);
@@ -2705,14 +2810,8 @@
       }
       return card;
     }));
-    if (!state.memoryRecords.length) committed.replaceChildren(make("p", "empty-state compact", "暂无已提交记忆。"));
-    else committed.replaceChildren(...state.memoryRecords.map((record) => {
-      const card = make("article", "memory-item");
-      card.append(make("h4", "", "已提交记忆"), memoryMeta(record));
-      card.append(make("p", "", record.sensitivity === "sensitive" ? "敏感内容不在此界面回显。" : record.content));
-      const remove = make("button", "button button-danger button-small", "删除记忆"); remove.type = "button"; remove.addEventListener("click", () => deleteMemory(record, remove)); card.append(remove);
-      return card;
-    }));
+    working.replaceChildren(make("p", "empty-state compact", "仅由当前 Session + TTL 在对话上下文中使用；不会作为长期记录从此列表返回。"));
+    committed.replaceChildren(...(state.memoryRecords.length ? state.memoryRecords.map(renderCommittedMemoryCard) : [make("p", "empty-state compact", "暂无已提交长期记忆。")]));
   }
 
   async function handleMemoryPropose(event) {
@@ -2739,22 +2838,30 @@
       return;
     }
     try {
+      const proposePayload = {
+        user_id: userId,
+        styling_session_id: state.stylingSessionId || null,
+        namespace: byId("memory-namespace").value,
+        type: memoryType,
+        content,
+        ttl_days: null
+      };
       const response = await api("/memory/propose", {
         method: "POST",
-        body: JSON.stringify({
-          user_id: userId,
-          styling_session_id: state.stylingSessionId || undefined,
-          namespace: byId("memory-namespace").value,
-          type: memoryType,
-          content
-        })
+        body: JSON.stringify(proposePayload)
       });
-      const proposal = normalizeMemoryProposal(response.proposal || response);
-      if (!proposal || response.record) throw new Error("提议阶段不得直接提交长期记忆");
+      const receipt = memoryRuntime.normalizeMutationReceipt(response, {
+        operation: "propose",
+        request: { ...proposePayload, sensitivity: "non_sensitive" }
+      }, memoryRuntimeConfig());
+      const proposal = receipt.proposal;
       renderMemoryTemplateOptions();
       byId("memory-sensitive").checked = false;
       status.hidden = false;
-      if (proposal.sensitivity === "sensitive" || proposal.commit_blocked) {
+      if (proposal.metadata_valid !== true) {
+        state.memoryProposals = [...state.memoryProposals.filter((item) => item.proposal_id !== proposal.proposal_id), proposal];
+        status.textContent = "提议元数据未通过闭集复核；内容与来源已隐藏，且不可确认。";
+      } else if (proposal.sensitivity === "sensitive" || proposal.commit_blocked) {
         state.memoryProposals = [...state.memoryProposals.filter((item) => item.proposal_id !== proposal.proposal_id), proposal];
         status.textContent = "敏感内容未写入；待处理列表仅保留脱敏状态，不回显原文。";
       } else {
@@ -2762,7 +2869,7 @@
         status.textContent = "仅创建了待确认提议，尚未写入长期记忆。";
       }
       renderMemory();
-      await fetchTrace(response.trace_id || proposal.trace_id);
+      await fetchTrace(receipt.trace_id);
     } catch (error) {
       renderMemoryTemplateOptions();
       status.hidden = false;
@@ -2773,7 +2880,7 @@
   }
 
   async function decideMemory(proposal, decision, editedContent, button) {
-    if (!state.memoryAvailable || (proposal.sensitivity === "sensitive" && decision !== "reject")) return;
+    if (!state.memoryAvailable || ((proposal.sensitivity === "sensitive" || proposal.commit_blocked) && decision !== "reject")) return;
     if (decision === "edit" && !isApprovedMemoryTemplate(proposal.type, editedContent)) {
       showToast("编辑内容必须来自同类型受控模板");
       return;
@@ -2792,42 +2899,31 @@
           edited_content: decision === "edit" ? editedContent : undefined
         })
       });
-      const returnedProposal = normalizeMemoryProposal(response.proposal);
-      if (!returnedProposal) throw new Error("记忆决定响应未通过用户与命名空间复核");
-      const sensitiveBlocked = returnedProposal.status === "rejected"
-        && returnedProposal.commit_blocked === true
-        && returnedProposal.sensitivity === "sensitive"
-        && response.record == null;
-      if (decision !== "reject" && sensitiveBlocked) {
-        state.memoryProposals = state.memoryProposals.filter((item) => item.proposal_id !== proposal.proposal_id);
-        renderMemory();
-        const status = byId("memory-write-status");
-        status.hidden = false;
-        status.textContent = "编辑后的内容触发敏感门控，已安全拒绝且未写入；原文不再显示。";
-        showToast("敏感记忆已拦截，未写入");
-        await fetchTrace(response.trace_id || returnedProposal.trace_id);
-        return;
-      }
-      let record = null;
-      if (decision !== "reject") {
-        record = normalizeMemoryRecord(response.record);
-        if (returnedProposal.status !== "committed" || !record) throw new Error("确认后未返回有效 committed 记录");
-      }
+      const receipt = memoryRuntime.normalizeMutationReceipt(response, {
+        operation: decision,
+        proposalId: proposal.proposal_id,
+        proposal,
+        content: decision === "edit" ? editedContent : proposal.content
+      }, memoryRuntimeConfig());
+      const record = receipt.record;
       state.memoryProposals = state.memoryProposals.filter((item) => item.proposal_id !== proposal.proposal_id);
       if (record) state.memoryRecords = [...state.memoryRecords.filter((item) => item.memory_id !== record.memory_id), record];
       renderMemory();
-      await fetchTrace(response.trace_id || response.proposal?.trace_id);
+      await fetchTrace(receipt.trace_id);
     } catch (error) {
       showToast(`记忆决定未完成：${error.message}`);
       button.disabled = false;
     }
   }
 
-  async function deleteMemory(record, button) {
+  async function deleteMemory(item, button) {
     button.disabled = true;
     try {
-      await api(`/memory/${encodeURIComponent(record.memory_id)}?user_id=${encodeURIComponent(userId)}`, { method: "DELETE" });
-      state.memoryRecords = state.memoryRecords.filter((item) => item.memory_id !== record.memory_id);
+      const objectId = item.kind === "proposal" ? item.proposal_id : item.memory_id;
+      const response = await api(`/memory/${encodeURIComponent(objectId)}?user_id=${encodeURIComponent(userId)}`, { method: "DELETE" });
+      const receipt = memoryRuntime.normalizeMutationReceipt(response, { operation: "delete", item }, memoryRuntimeConfig());
+      if (receipt.deleted_kind === "proposal") state.memoryProposals = state.memoryProposals.filter((proposal) => proposal.proposal_id !== objectId);
+      else state.memoryRecords = state.memoryRecords.filter((record) => record.memory_id !== objectId);
       renderMemory();
     } catch (error) {
       showToast(`记忆删除未完成：${error.message}`);
@@ -2836,7 +2932,8 @@
   }
 
   function sanitizeDebugValue(value, key = "") {
-    if (/(secret|token|api.?key|base64|raw|query_text|conversation|content|file|image)/i.test(key)) return "[已清洗]";
+    if (/(rrf|rerank|outbox)/i.test(key)) return "[服务端排序或同步细节未在前端显示]";
+    if (/(secret|token|api.?key|base64|raw|query_text|conversation|transcript|message|reply|prompt|content|file|image)/i.test(key)) return "[已清洗]";
     if (Array.isArray(value)) return value.map((item) => sanitizeDebugValue(item));
     if (value && typeof value === "object") {
       return Object.fromEntries(Object.entries(value).map(([childKey, childValue]) => [childKey, sanitizeDebugValue(childValue, childKey)]));

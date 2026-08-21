@@ -2160,6 +2160,30 @@ h1 {
   gap: 9px;
 }
 
+.memory-subheading {
+  margin: 14px 0 5px;
+  color: var(--forest);
+  font-size: 0.78rem;
+}
+
+.memory-lifecycle {
+  margin: 7px 0;
+  padding: 8px 9px;
+  border-left: 3px solid #94aa9f;
+  color: var(--ink-soft);
+  background: #f1f5f1;
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+
+.memory-lifecycle.is-inactive,
+.memory-item[data-state="expired"],
+.memory-item[data-state="superseded"],
+.memory-item[data-state="blocked"] {
+  border-color: #cdb98f;
+  background: #fffaf0;
+}
+
 .memory-item {
   padding: 13px;
   border: 1px solid var(--line);

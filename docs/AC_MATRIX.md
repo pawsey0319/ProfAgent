@@ -1,6 +1,6 @@
 # ProfAgent R1 Demo — AC 双向追踪矩阵
 
-> 冻结日期：2026-08-04；S10 最终核验日期：2026-08-10；S12R 最终核验日期：2026-08-18；S13/S14 本地最终核验日期：2026-08-19。需求权威为 `docs/PRD.md`；本表用于委托、实现、审查和测试追踪。
+> 冻结日期：2026-08-04；S10 最终核验日期：2026-08-10；S12R 最终核验日期：2026-08-18；S13–S15 本地最终核验日期：2026-08-19。需求权威为 `docs/PRD.md`；本表用于委托、实现、审查和测试追踪。
 
 | AC / DoD | 后端证据 | 前端证据 | 自动化验收 | 阶段 |
 |---|---|---|---|---|
@@ -24,9 +24,9 @@
 | SAFE-RAIN 防雨证据 | rain 的必需 outer 仅接受结构化 `waterproof=true`；无证据时召回前过滤，Mock Catalog 对任意 gap 均 fail-closed | 只显示安全 gap，不凭名称猜测防雨，也不显示商品 | 独立检查过滤码、各召回层、最终方案和 top/bag/outer/empty 四类 Catalog forced-call | S3/M3 |
 | SAFE-CPA 对话隐私与输出安全 | 每个新回合最多尝试一次 CPA；普通输入仅发送固定 Stylist 人格、必要画像 allowlist、最多 6 条截断历史、权威状态及脱敏当前文本；推荐回合只额外发送无内部 ID 的已验证方向摘要；合法量体值只作为当前 session 的 `garment_fit_only` 上下文，原句/原值不进历史、长期记忆或 Trace；模型不是动作、套数、工具、购物、ID、记忆或安全权威 | 严格 CPA 成功显示“CPA 生成”，一般 fallback 显示“本地回复”，真正 `safety_response` 显示“安全回应”；反问用户重列衣橱、套数冲突、高复读、任何 ID/购物/人物/医疗/3D-video 越界均拒绝 | 全量 `278 passed` + S14 套数/反问/复读矩阵；文本 exact 4.6、单 fence、advisory、extra/action-control、购物/ID/person/medical/3D-video/fit echo、超时/熔断与 Trace 隐私门禁保持 | S3/M3/S5/S6/S7/S8/S9/S10/S12R/S13/S14 |
 | PREV-04/05/06/08/10/12/13/14/15 Static2D 与目录图 | `/preview/static-2d` 继续绑定不可变 Look；S14 `/recommend/previews/static-2d` 只接收 owner/session/request/outfit IDs，服务端从已保存 Recommendation 派生和复验 garment IDs，单批1–3且每项 Provider 证据独立；图片模型 exact、身份不发送、3D/360°/视频0、失败单项降级 | 目录按类别折叠，展开才加载完整 owner/provenance 目录图；文字推荐先出现，再显示每图 generating/succeeded/degraded；不宣称真人试穿/精确尺码/面料/垂坠 | S14 full `278`、Preview相关门禁全绿；Chrome初始0卡/展开naturalWidth1024；随机HTTP mock明确标注；真实CPA两图约7.06/6.85s、不同hash、actual未回报；跨owner/错outfit/错模型/幂等/单项失败全绿 | S12/S12R/S14（实验性 R2，不计入 R1 DoD） |
-| MEM-10/11/12 持久与检索记忆 | SQL 事务仓储持久 propose/confirm/commit/delete/TTL/superseded/ACL，本地 SQLite 可跨实例恢复，生产可选 PostgreSQL；硬记忆按 user/team/member/namespace/status/sensitivity 精确读取且不进 RRF；软记忆在全体预过滤集上分别取 BM25/hashed-Dense/Recency/Importance Top20 并集，`k=60`、权重 `1/1/.75/1.25`、确定性重排 Top5；并发 confirm 以 CAS 只创建一条权威 record | 记忆页仍保持用户确认、查看和删除语义；不展示未确认/敏感/越权内容 | 跨实例、legacy migration、ACL tamper、CAS、删除/过期/superseded/敏感、>20 late-ID 候选和 Trace 无正文/向量对抗；受控 synthetic 消融报告明确 hashed surrogate，不宣称生产语义提升 | S12 |
+| MEM-10/11/12 持久与检索记忆 | SQL 事务仓储持久 propose/confirm/commit/delete/TTL/superseded/ACL；真值变更与最小 outbox 同事务，幂等 consumer 重建 ID-only 投影；本地 SQLite 可跨实例恢复，生产可选 PostgreSQL。硬记忆精确读取且不进 RRF；软记忆四路 Top20 weighted RRF 后按 `structured_rerank_v1` 的 `.60/.15/.10/.10/.05` 权重确定性重排 Top5；任何投影结果仍回 SQL 复验 | 仅显示 owner-bound、`committed+active`、闭集来源的长期记录；working context 只属 Session+TTL；未知元数据脱敏但保留严格删除入口；mutation 回执绑定完整不可变元组 | S15专项19、Memory相关44、full300；跨实例/重启、sticky quarantine、payload owner/ns交换、PG CAS/head、consumer rollback、future/TTL/delete/supersede/ACL、Trace无正文全绿；synthetic 报告明确不宣称真实用户提升 | S12/S15 |
 | OBS-05 降级 | LLM/Dense/Catalog/Vision 独立故障注入：规则推荐继续、Catalog 无商品、Vision 定性无伪分；Health/Scene/Vision 硬预算 `1.5s/8s/10s` 且只能收紧 | 明确降级状态且任务可继续；单次超时不把已连接 API 误切离线，错误为中文且可安全重试 | 四腿 fault matrix 参与 overall；另以慢协程确定性验证取消、规则/定性降级、外层取消传播与 0 方向/0 购物失败态 | S1/S2/S3/S4 |
-| R1/S6–S14 文档一致性 | 文本 4.6、120/125s、连续套数推荐、图片独立 exact/request-bound、Memory SQL/RRF 与“记忆新方案仅调研未实施”均和版本化报告一致 | Enter/Shift/IME、类别折叠、owner/provenance、推荐卡后两图与2D-only一致；未上线能力无入口 | README/PRD/API/BUILD/AC 与 UI 一致；full `278`、S14 `26`、相关 `241`、eval/validate、Node11+5、随机HTTP、真实Chrome与真实CPA两图全绿；报告区分 mock 与真实Provider | S4/M3/S6/S7/S8/S9/S10/S12/S12R/S13/S14 |
+| R1/S6–S15 文档一致性 | 文本 4.6、120/125s、连续套数推荐、图片独立 exact/request-bound、Memory 路线 A 的 SQL/outbox/projection/RRF+rerank 与版本化报告一致；B/C/D 明确未上线 | Enter/Shift/IME、类别折叠、owner/provenance、推荐卡后两图、2D-only 与 Memory 生命周期/删除语义一致；未上线能力无入口 | README/PRD/API/BUILD/AC 与 UI 一致；full `300`、S15 `19`、Memory相关 `44`、eval/validate、Node14+7、随机HTTP、双实例/重启、真实Chrome全绿；S14真实Provider证据仍独立保留 | S4/M3/S6/S7/S8/S9/S10/S12/S12R/S13/S14/S15 |
 
 ## 固定指标映射
 
