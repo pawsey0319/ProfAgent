@@ -4,6 +4,7 @@ import asyncio
 import json
 import sqlite3
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
 import httpx
@@ -277,7 +278,6 @@ def test_http_extract_is_multicard_opaque_idempotent_and_raw_free(
             assert "canonical" not in json.dumps(card, ensure_ascii=False)
             assert card["allowed_actions"] == [
                 "remember",
-                "session_only",
                 "reject",
                 "rephrase",
             ]
@@ -560,6 +560,249 @@ def test_http_candidate_receipt_survives_restart_and_legacy_confirm_cannot_bypas
         assert [record["content"] for record in listed["records"]] == [
             "偏爱简洁风格"
         ]
+
+
+def test_http_candidate_batch_fault_rolls_back_proposals_receipt_and_legacy_surface(
+    tmp_path, offline_settings
+) -> None:
+    path = tmp_path / "candidate_batch_atomic_fault.sqlite3"
+    app = create_app(
+        replace(
+            offline_settings,
+            database_url=f"sqlite:///{path.as_posix()}",
+        )
+    )
+    _install_candidate_batch(
+        app,
+        ("color_preference", "navy", "high"),
+        ("style_preference", "simple", "medium"),
+    )
+    fault_points: list[str] = []
+
+    def fail_inside_candidate_transaction(point: str) -> None:
+        fault_points.append(point)
+        if point == "after_candidate_proposals":
+            raise RuntimeError("injected candidate batch transaction fault")
+
+    app.state.services.memory.repository._candidate_fault_injector = (
+        fail_inside_candidate_transaction
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/memory/candidates/extract",
+            json=_candidate_extract_payload(request_id="memory_batch_fault_01"),
+        )
+        assert response.status_code == 409
+        assert fault_points == ["after_candidate_proposals"]
+        listed = client.get("/memory", params={"user_id": "u01"}).json()
+        assert listed["proposals"] == []
+        assert listed["records"] == []
+        assert app.state.services.traces._records == {}
+
+    connection = sqlite3.connect(path)
+    assert connection.execute(
+        "SELECT COUNT(*) FROM memory_proposals"
+    ).fetchone()[0] == 0
+    assert connection.execute(
+        "SELECT COUNT(*) FROM memory_candidate_requests"
+    ).fetchone()[0] == 0
+    assert connection.execute(
+        "SELECT COUNT(*) FROM memory_candidates"
+    ).fetchone()[0] == 0
+    connection.close()
+
+    restarted = create_app(
+        replace(
+            offline_settings,
+            database_url=f"sqlite:///{path.as_posix()}",
+        )
+    )
+    with TestClient(restarted) as client:
+        listed = client.get("/memory", params={"user_id": "u01"}).json()
+        assert listed["proposals"] == []
+        assert listed["records"] == []
+        guessed = client.post(
+            "/memory/mprop_fault_guess/confirm",
+            json={"user_id": "u01", "decision": "confirm"},
+        )
+        assert guessed.status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("decision", "expected_status", "expected_records", "expected_outbox", "expected_working"),
+    (
+        ("remember", "committed", 1, 1, 0),
+        ("session_only", "session_only", 0, 0, 1),
+        ("reject", "rejected", 0, 0, 0),
+        ("rephrase", "rejected", 0, 0, 0),
+    ),
+)
+def test_http_candidate_decision_fault_rolls_back_truth_receipt_and_context_then_retries(
+    decision,
+    expected_status,
+    expected_records,
+    expected_outbox,
+    expected_working,
+    tmp_path,
+    offline_settings,
+) -> None:
+    path = tmp_path / f"candidate_decision_atomic_fault_{decision}.sqlite3"
+    settings = replace(
+        offline_settings,
+        database_url=f"sqlite:///{path.as_posix()}",
+    )
+    app = create_app(settings)
+    _install_candidate_batch(app, ("style_preference", "simple", "high"))
+    fault_points: list[str] = []
+
+    with TestClient(app) as client:
+        _open_styling_session(
+            client, f"session_atomic_{decision}", f"scene_atomic_{decision}"
+        )
+        extracted = client.post(
+            "/memory/candidates/extract",
+            json=_candidate_extract_payload(
+                request_id=f"memory_atomic_{decision}",
+                styling_session_id=f"session_atomic_{decision}",
+            ),
+        )
+        assert extracted.status_code == 200, extracted.text
+        candidate_id = extracted.json()["candidates"][0]["candidate_id"]
+        connection = sqlite3.connect(path)
+        proposal_id = connection.execute(
+            "SELECT proposal_id FROM memory_candidates WHERE candidate_id=?",
+            (candidate_id,),
+        ).fetchone()[0]
+        connection.close()
+
+        def fail_inside_decision_transaction(point: str) -> None:
+            fault_points.append(point)
+            if point == "after_candidate_truth":
+                raise RuntimeError("injected candidate decision transaction fault")
+
+        app.state.services.memory.repository._candidate_fault_injector = (
+            fail_inside_decision_transaction
+        )
+        trace_ids_before_fault = set(app.state.services.traces._records)
+        payload = {
+            "user_id": "u01",
+            "styling_session_id": f"session_atomic_{decision}",
+            "decision": decision,
+            "idempotency_key": f"candidate_atomic_key_{decision}",
+        }
+        failed = client.post(
+            f"/memory/candidates/{candidate_id}/decide", json=payload
+        )
+        assert failed.status_code == 409
+        assert "after_candidate_truth" in fault_points
+        assert set(app.state.services.traces._records) == trace_ids_before_fault
+        bypass = client.post(
+            f"/memory/{proposal_id}/confirm",
+            json={"user_id": "u01", "decision": "confirm"},
+        )
+        assert bypass.status_code == 404
+
+    connection = sqlite3.connect(path)
+    assert connection.execute(
+        "SELECT status FROM memory_proposals WHERE proposal_id=?", (proposal_id,)
+    ).fetchone()[0] == "proposed"
+    assert connection.execute(
+        "SELECT status FROM memory_candidates WHERE candidate_id=?", (candidate_id,)
+    ).fetchone()[0] == "active"
+    assert connection.execute(
+        "SELECT COUNT(*) FROM memory_candidate_decisions"
+    ).fetchone()[0] == 0
+    assert connection.execute(
+        "SELECT COUNT(*) FROM memory_candidate_working_context"
+    ).fetchone()[0] == 0
+    assert connection.execute("SELECT COUNT(*) FROM memory_records").fetchone()[0] == 0
+    assert connection.execute("SELECT COUNT(*) FROM memory_outbox").fetchone()[0] == 0
+    connection.close()
+
+    restarted = create_app(settings)
+    with TestClient(restarted) as client:
+        _open_styling_session(
+            client,
+            f"session_atomic_{decision}",
+            f"scene_atomic_restart_{decision}",
+        )
+        first = client.post(
+            f"/memory/candidates/{candidate_id}/decide", json=payload
+        )
+        assert first.status_code == 200, first.text
+        assert first.json()["status"] == expected_status
+        replay = client.post(
+            f"/memory/candidates/{candidate_id}/decide", json=payload
+        )
+        assert replay.status_code == 200
+        assert replay.json() == first.json()
+        if decision == "session_only":
+            active = restarted.state.services.memory_candidates.session_preferences.active(
+                "u01", f"session_atomic_{decision}", now=time.time()
+            )
+            assert len(active) == 1
+            assert active[0].canonical_kind == "style_preference"
+
+    connection = sqlite3.connect(path)
+    assert connection.execute("SELECT COUNT(*) FROM memory_records").fetchone()[0] == expected_records
+    assert connection.execute("SELECT COUNT(*) FROM memory_outbox").fetchone()[0] == expected_outbox
+    assert connection.execute(
+        "SELECT COUNT(*) FROM memory_candidate_decisions"
+    ).fetchone()[0] == 1
+    assert connection.execute(
+        "SELECT COUNT(*) FROM memory_candidate_working_context"
+    ).fetchone()[0] == expected_working
+    connection.close()
+
+
+def test_http_candidate_same_idempotency_concurrency_commits_truth_once(
+    tmp_path, offline_settings
+) -> None:
+    path = tmp_path / "candidate_decision_concurrency.sqlite3"
+    settings = replace(
+        offline_settings,
+        database_url=f"sqlite:///{path.as_posix()}",
+    )
+    app = create_app(settings)
+    _install_candidate_batch(app, ("style_preference", "simple", "high"))
+
+    with TestClient(app) as first_client:
+        extracted = first_client.post(
+            "/memory/candidates/extract",
+            json=_candidate_extract_payload(request_id="memory_concurrency_01"),
+        )
+        assert extracted.status_code == 200, extracted.text
+        candidate_id = extracted.json()["candidates"][0]["candidate_id"]
+        payload = {
+            "user_id": "u01",
+            "decision": "remember",
+            "idempotency_key": "candidate_concurrency_key_01",
+        }
+        competing_app = create_app(settings)
+
+        with TestClient(competing_app) as second_client:
+            clients = (first_client, second_client)
+
+            def decide_once(index: int):
+                return clients[index].post(
+                    f"/memory/candidates/{candidate_id}/decide", json=payload
+                )
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                responses = list(pool.map(decide_once, range(2)))
+
+        assert [response.status_code for response in responses] == [200, 200], [
+            response.text for response in responses
+        ]
+        assert responses[0].json() == responses[1].json()
+
+    connection = sqlite3.connect(path)
+    assert connection.execute("SELECT COUNT(*) FROM memory_records").fetchone()[0] == 1
+    assert connection.execute("SELECT COUNT(*) FROM memory_outbox").fetchone()[0] == 1
+    assert connection.execute(
+        "SELECT COUNT(*) FROM memory_candidate_decisions"
+    ).fetchone()[0] == 1
+    connection.close()
 
 
 def test_http_session_only_requires_active_owner_session_and_never_commits(

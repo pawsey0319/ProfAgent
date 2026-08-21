@@ -574,7 +574,7 @@ class MemoryService:
         )
         return trace_id
 
-    def propose(
+    def _prepare_proposal(
         self,
         payload: MemoryProposeInput,
         *,
@@ -625,19 +625,41 @@ class MemoryService:
             updated_at=now,
             trace_id=trace_id,
         )
+        return MemoryOperationResponse(proposal=proposal, trace_id=trace_id)
+
+    def prepare_candidate_proposal(
+        self, payload: MemoryProposeInput
+    ) -> MemoryOperationResponse:
+        """Build a canonical proposal for an enclosing repository transaction."""
+
+        return self._prepare_proposal(payload)
+
+    def refresh_state(self) -> None:
+        self._refresh()
+
+    def propose(
+        self,
+        payload: MemoryProposeInput,
+        *,
+        private_context: MemoryTargetContext | None = None,
+    ) -> MemoryOperationResponse:
+        operation = self._prepare_proposal(
+            payload, private_context=private_context
+        )
+        proposal = operation.proposal
         with self._lock:
-            self._proposals[proposal_id] = proposal
-            if private_context is not None and not blocked:
-                self._proposal_context[proposal_id] = private_context
+            self._proposals[proposal.proposal_id] = proposal
+            if private_context is not None and not proposal.commit_blocked:
+                self._proposal_context[proposal.proposal_id] = private_context
             self.repository.put_proposal(
                 proposal.model_dump(mode="json"),
                 (
                     self._context_dump(private_context)
-                    if private_context is not None and not blocked
+                    if private_context is not None and not proposal.commit_blocked
                     else None
                 ),
             )
-        return MemoryOperationResponse(proposal=proposal, trace_id=trace_id)
+        return operation
 
     def confirm(
         self,
@@ -645,6 +667,7 @@ class MemoryService:
         payload: MemoryConfirmInput,
         *,
         candidate_authorized: bool = False,
+        candidate_decision: dict[str, Any] | None = None,
     ) -> MemoryOperationResponse:
         self._refresh()
         with self._lock:
@@ -780,10 +803,33 @@ class MemoryService:
             )
             proposal.trace_id = trace_id
             self._proposals[proposal_id] = proposal
+            candidate_atomic = None
+            if candidate_decision is not None:
+                decision_status = (
+                    "committed"
+                    if candidate_decision["decision"] == "remember"
+                    else (
+                        "session_only"
+                        if candidate_decision["decision"] == "session_only"
+                        else "rejected"
+                    )
+                )
+                candidate_atomic = {
+                    **candidate_decision,
+                    "status": candidate_decision["candidate_status"],
+                    "response": {
+                        "candidate_id": candidate_decision["candidate_id"],
+                        "decision": candidate_decision["decision"],
+                        "status": decision_status,
+                        "record_id": record.memory_id if record is not None else None,
+                        "trace_id": trace_id,
+                    },
+                }
             try:
                 if record is None:
                     authoritative_proposal = self.repository.put_rejected_proposal(
-                        proposal.model_dump(mode="json")
+                        proposal.model_dump(mode="json"),
+                        candidate_decision=candidate_atomic,
                     )
                     proposal = MemoryProposal.model_validate(
                         authoritative_proposal
@@ -800,6 +846,7 @@ class MemoryService:
                             if record_context is not None
                             else None
                         ),
+                        candidate_decision=candidate_atomic,
                     )
                     proposal = MemoryProposal.model_validate(authoritative_proposal)
                     record = MemoryRecord.model_validate(authoritative_record)
@@ -808,6 +855,7 @@ class MemoryService:
                     # it is always queryable from this instance's TraceStore.
                     proposal = proposal.model_copy(update={"trace_id": trace_id})
             except Exception as exc:
+                self.traces.discard(trace_id)
                 self._refresh()
                 raise MemoryError("memory proposal decision conflict") from exc
         self._refresh()

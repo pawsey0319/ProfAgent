@@ -28,8 +28,8 @@ class MemoryTombstoneResult:
 class MemoryRepository(Protocol):
     def load_state(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, dict[str, Any]], dict[str, dict[str, Any]]]: ...
     def put_proposal(self, payload: dict[str, Any], context: dict[str, Any] | None = None) -> None: ...
-    def commit(self, proposal: dict[str, Any], record: dict[str, Any], *, semantic_key: str, proposal_context: dict[str, Any] | None, record_context: dict[str, Any] | None) -> tuple[dict[str, Any], dict[str, Any], bool]: ...
-    def put_rejected_proposal(self, payload: dict[str, Any]) -> dict[str, Any]: ...
+    def commit(self, proposal: dict[str, Any], record: dict[str, Any], *, semantic_key: str, proposal_context: dict[str, Any] | None, record_context: dict[str, Any] | None, candidate_decision: dict[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, Any], bool]: ...
+    def put_rejected_proposal(self, payload: dict[str, Any], *, candidate_decision: dict[str, Any] | None = None) -> dict[str, Any]: ...
     def tombstone(self, *, user_id: str, object_id: str, deleted_at: str) -> MemoryTombstoneResult | None: ...
     def expire_ids(self, ids: list[str], expired_at: str) -> None: ...
     def active_records(self, user_id: str, namespaces: tuple[str, ...], now: str) -> list[tuple[dict[str, Any], dict[str, Any] | None]]: ...
@@ -37,13 +37,13 @@ class MemoryRepository(Protocol):
     def consume_soft_index_outbox(self, user_id: str, namespaces: tuple[str, ...], memory_ids: tuple[str, ...], *, consumer_name: str, index_version: str, consumed_at: str) -> tuple[tuple[str, ...], tuple[str, ...]]: ...
     def soft_index_ids(self, user_id: str, namespaces: tuple[str, ...]) -> tuple[str, ...]: ...
     def outbox_events(self, user_id: str | None = None) -> list[dict[str, Any]]: ...
-    def put_candidate_batch(self, request: dict[str, Any], candidates: list[dict[str, Any]]) -> None: ...
+    def put_candidate_batch(self, request: dict[str, Any], candidates: list[dict[str, Any]], proposals: list[dict[str, Any]]) -> None: ...
     def candidate_request(self, request_id: str) -> dict[str, Any] | None: ...
     def candidate_state(self, candidate_id: str) -> dict[str, Any] | None: ...
     def candidate_decision(self, candidate_id: str, idempotency_key: str) -> dict[str, Any] | None: ...
-    def record_candidate_decision(self, candidate_id: str, idempotency_key: str, fingerprint: str, status: str, response: dict[str, Any]) -> dict[str, Any]: ...
     def candidate_proposal_managed(self, proposal_id: str) -> bool: ...
     def candidate_rejected(self, *, user_id: str, styling_session_id: str, namespace: str, canonical_kind: str, canonical_value: str) -> bool: ...
+    def candidate_working_preferences(self, user_id: str, styling_session_id: str, now: float) -> list[dict[str, Any]]: ...
     def close(self) -> None: ...
 
 
@@ -63,6 +63,7 @@ class SqlMemoryRepository:
         self.database_url = database_url or "sqlite:///:memory:"
         self.root_dir = root_dir.resolve()
         self._lock = RLock()
+        self._candidate_fault_injector: Any = None
         self._dialect = "sqlite"
         self._connection: Any
         if self.database_url.startswith(("postgresql://", "postgres://")):
@@ -261,6 +262,17 @@ class SqlMemoryRepository:
                 fingerprint TEXT NOT NULL,
                 payload_json TEXT NOT NULL,
                 PRIMARY KEY (candidate_id, idempotency_key),
+                FOREIGN KEY(candidate_id) REFERENCES memory_candidates(candidate_id)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS memory_candidate_working_context (
+                candidate_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                styling_session_id TEXT NOT NULL,
+                canonical_kind TEXT NOT NULL,
+                canonical_value TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
                 FOREIGN KEY(candidate_id) REFERENCES memory_candidates(candidate_id)
             )
             """,
@@ -1080,8 +1092,123 @@ class SqlMemoryRepository:
             if context is not None:
                 self._put_context("proposal", payload["proposal_id"], context)
 
-    def put_rejected_proposal(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def _candidate_decision_preflight(
+        self, candidate_decision: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        if candidate_decision is None:
+            return None
+        lock_clause = " FOR UPDATE" if self._dialect == "postgresql" else ""
+        existing = self._fetchall(
+            "SELECT fingerprint,payload_json FROM memory_candidate_decisions "
+            "WHERE candidate_id=? AND idempotency_key=?" + lock_clause,
+            (
+                candidate_decision["candidate_id"],
+                candidate_decision["idempotency_key"],
+            ),
+        )
+        if existing:
+            if existing[0]["fingerprint"] != candidate_decision["fingerprint"]:
+                raise MemoryRepositoryError(
+                    "memory candidate idempotency key conflicts"
+                )
+            return json.loads(existing[0]["payload_json"])
+        rows = self._fetchall(
+            "SELECT proposal_id,user_id,styling_session_id,namespace,status,expires_at "
+            "FROM memory_candidates WHERE candidate_id=?" + lock_clause,
+            (candidate_decision["candidate_id"],),
+        )
+        if not rows:
+            raise MemoryRepositoryError("memory candidate is unavailable")
+        row = rows[0]
+        if (
+            (
+                row["proposal_id"],
+                row["user_id"],
+                row["styling_session_id"],
+                row["namespace"],
+            )
+            != (
+                candidate_decision["proposal_id"],
+                candidate_decision["user_id"],
+                candidate_decision.get("styling_session_id"),
+                candidate_decision["namespace"],
+            )
+            or row["status"] != "active"
+            or float(row["expires_at"]) <= float(candidate_decision["now"])
+        ):
+            raise MemoryRepositoryError("memory candidate is not active")
+        return None
+
+    def _finalize_candidate_decision(
+        self, candidate_decision: dict[str, Any] | None
+    ) -> None:
+        if candidate_decision is None:
+            return
+        working = candidate_decision.get("working_context")
+        if working is not None:
+            self._execute(
+                """
+                INSERT INTO memory_candidate_working_context (
+                    candidate_id,user_id,styling_session_id,canonical_kind,
+                    canonical_value,expires_at
+                ) VALUES (?,?,?,?,?,?)
+                ON CONFLICT(candidate_id) DO UPDATE SET
+                    user_id=excluded.user_id,
+                    styling_session_id=excluded.styling_session_id,
+                    canonical_kind=excluded.canonical_kind,
+                    canonical_value=excluded.canonical_value,
+                    expires_at=excluded.expires_at
+                """,
+                (
+                    candidate_decision["candidate_id"],
+                    working["user_id"],
+                    working["styling_session_id"],
+                    working["canonical_kind"],
+                    working["canonical_value"],
+                    str(working["expires_at"]),
+                ),
+            )
+        self._candidate_fault("after_candidate_truth")
+        state_rows = self._fetchall(
+            "SELECT payload_json FROM memory_candidates WHERE candidate_id=?",
+            (candidate_decision["candidate_id"],),
+        )
+        if not state_rows:
+            raise MemoryRepositoryError("memory candidate is unavailable")
+        state = json.loads(state_rows[0]["payload_json"])
+        state["status"] = candidate_decision["status"]
+        self._execute(
+            "UPDATE memory_candidates SET status=?,payload_json=? WHERE candidate_id=?",
+            (
+                candidate_decision["status"],
+                _canonical(state),
+                candidate_decision["candidate_id"],
+            ),
+        )
+        self._execute(
+            """
+            INSERT INTO memory_candidate_decisions (
+                candidate_id,idempotency_key,fingerprint,payload_json
+            ) VALUES (?,?,?,?)
+            """,
+            (
+                candidate_decision["candidate_id"],
+                candidate_decision["idempotency_key"],
+                candidate_decision["fingerprint"],
+                _canonical(candidate_decision["response"]),
+            ),
+        )
+
+    def put_rejected_proposal(
+        self,
+        payload: dict[str, Any],
+        *,
+        candidate_decision: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         with self._transaction():
+            existing_decision = self._candidate_decision_preflight(
+                candidate_decision
+            )
             lock_clause = " FOR UPDATE" if self._dialect == "postgresql" else ""
             current_rows = self._fetchall(
                 "SELECT payload_json,status FROM memory_proposals "
@@ -1096,6 +1223,10 @@ class SqlMemoryRepository:
                 raise MemoryRepositoryError("memory proposal is unavailable")
             current = current_rows[0]
             if current["status"] == "rejected":
+                if existing_decision is None and candidate_decision is not None:
+                    raise MemoryRepositoryError(
+                        "memory candidate proposal decision conflicts"
+                    )
                 return json.loads(current["payload_json"])
             if current["status"] != "proposed":
                 raise MemoryRepositoryError("memory proposal decision conflicts")
@@ -1104,6 +1235,7 @@ class SqlMemoryRepository:
                 "DELETE FROM memory_contexts WHERE object_kind='proposal' AND object_id=?",
                 (payload["proposal_id"],),
             )
+            self._finalize_candidate_decision(candidate_decision)
             return payload
 
     def commit(
@@ -1114,9 +1246,13 @@ class SqlMemoryRepository:
         semantic_key: str,
         proposal_context: dict[str, Any] | None,
         record_context: dict[str, Any] | None,
+        candidate_decision: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any], bool]:
         now = record["created_at"]
         with self._transaction():
+            existing_decision = self._candidate_decision_preflight(
+                candidate_decision
+            )
             lock_clause = " FOR UPDATE" if self._dialect == "postgresql" else ""
             current_rows = self._fetchall(
                 "SELECT payload_json,status,record_id FROM memory_proposals "
@@ -1131,6 +1267,10 @@ class SqlMemoryRepository:
                 raise MemoryRepositoryError("memory proposal is unavailable")
             current = current_rows[0]
             if current["status"] == "committed" and current["record_id"]:
+                if existing_decision is None and candidate_decision is not None:
+                    raise MemoryRepositoryError(
+                        "memory candidate proposal decision conflicts"
+                    )
                 authoritative_rows = self._fetchall(
                     "SELECT payload_json FROM memory_records WHERE memory_id=? AND user_id=? AND deleted_at IS NULL",
                     (current["record_id"], proposal["user_id"]),
@@ -1294,15 +1434,33 @@ class SqlMemoryRepository:
                     semantic_key,
                 ),
             )
+            self._finalize_candidate_decision(candidate_decision)
             return proposal, record, True
 
     def put_candidate_batch(
         self,
         request: dict[str, Any],
         candidates: list[dict[str, Any]],
+        proposals: list[dict[str, Any]],
     ) -> None:
-        """Persist only server-canonical candidate state, never source text."""
+        """Atomically persist canonical proposals and their opaque candidate batch."""
 
+        proposal_by_id = {
+            str(proposal["proposal_id"]): proposal for proposal in proposals
+        }
+        if len(proposal_by_id) != len(proposals) or set(proposal_by_id) != {
+            str(candidate["proposal_id"]) for candidate in candidates
+        }:
+            raise MemoryRepositoryError("memory candidate proposal batch mismatch")
+        for candidate in candidates:
+            proposal = proposal_by_id[str(candidate["proposal_id"])]
+            if (
+                proposal["user_id"] != candidate["user_id"]
+                or proposal["namespace"] != candidate["namespace"]
+                or proposal["status"] != "proposed"
+                or bool(proposal["commit_blocked"])
+            ):
+                raise MemoryRepositoryError("memory candidate proposal rejected")
         with self._transaction():
             existing = self._fetchall(
                 "SELECT user_id,fingerprint,payload_json FROM memory_candidate_requests WHERE request_id=?",
@@ -1317,6 +1475,9 @@ class SqlMemoryRepository:
                 ):
                     return
                 raise MemoryRepositoryError("memory candidate request conflicts")
+            for proposal in proposals:
+                self._upsert_proposal(proposal)
+            self._candidate_fault("after_candidate_proposals")
             self._execute(
                 """
                 INSERT INTO memory_candidate_requests (
@@ -1354,6 +1515,11 @@ class SqlMemoryRepository:
                         _canonical(candidate),
                     ),
                 )
+
+    def _candidate_fault(self, point: str) -> None:
+        injector = self._candidate_fault_injector
+        if injector is not None:
+            injector(point)
 
     def candidate_request(self, request_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -1398,52 +1564,6 @@ class SqlMemoryRepository:
             "response": json.loads(rows[0]["payload_json"]),
         }
 
-    def record_candidate_decision(
-        self,
-        candidate_id: str,
-        idempotency_key: str,
-        fingerprint: str,
-        status: str,
-        response: dict[str, Any],
-    ) -> dict[str, Any]:
-        with self._transaction():
-            existing = self._fetchall(
-                "SELECT fingerprint,payload_json FROM memory_candidate_decisions WHERE candidate_id=? AND idempotency_key=?",
-                (candidate_id, idempotency_key),
-            )
-            if existing:
-                if existing[0]["fingerprint"] != fingerprint:
-                    raise MemoryRepositoryError(
-                        "memory candidate idempotency key conflicts"
-                    )
-                return json.loads(existing[0]["payload_json"])
-            rows = self._fetchall(
-                "SELECT status,payload_json FROM memory_candidates WHERE candidate_id=?",
-                (candidate_id,),
-            )
-            if not rows or rows[0]["status"] != "active":
-                raise MemoryRepositoryError("memory candidate is not active")
-            state = json.loads(rows[0]["payload_json"])
-            state["status"] = status
-            self._execute(
-                "UPDATE memory_candidates SET status=?,payload_json=? WHERE candidate_id=?",
-                (status, _canonical(state), candidate_id),
-            )
-            self._execute(
-                """
-                INSERT INTO memory_candidate_decisions (
-                    candidate_id,idempotency_key,fingerprint,payload_json
-                ) VALUES (?,?,?,?)
-                """,
-                (
-                    candidate_id,
-                    idempotency_key,
-                    fingerprint,
-                    _canonical(response),
-                ),
-            )
-            return response
-
     def candidate_proposal_managed(self, proposal_id: str) -> bool:
         with self._lock:
             return bool(
@@ -1480,6 +1600,31 @@ class SqlMemoryRepository:
                     ),
                 )
             )
+
+    def candidate_working_preferences(
+        self, user_id: str, styling_session_id: str, now: float
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._fetchall(
+                """
+                SELECT user_id,styling_session_id,canonical_kind,
+                       canonical_value,expires_at
+                FROM memory_candidate_working_context
+                WHERE user_id=? AND styling_session_id=? AND expires_at>?
+                ORDER BY candidate_id
+                """,
+                (user_id, styling_session_id, str(now)),
+            )
+        return [
+            {
+                "user_id": row["user_id"],
+                "styling_session_id": row["styling_session_id"],
+                "canonical_kind": row["canonical_kind"],
+                "canonical_value": row["canonical_value"],
+                "expires_at": float(row["expires_at"]),
+            }
+            for row in rows
+        ]
 
     def load_state(
         self,

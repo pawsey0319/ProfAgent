@@ -18,9 +18,6 @@ from .memory_service import (
     MemoryService,
     MemoryType,
 )
-from .memory_repository import MemoryRepositoryError
-
-
 CanonicalMemoryKind = Literal[
     "color_preference",
     "color_avoidance",
@@ -235,7 +232,14 @@ class MemoryCandidateService:
         self.memory = memory
         self.provider = provider
         self.prefilter = MemoryCandidatePrefilter()
-        self.session_preferences = SessionPreferenceStore(ttl_seconds)
+        self.session_preferences = SessionPreferenceStore(
+            ttl_seconds,
+            loader=lambda user_id, session_id, now: (
+                self.memory.repository.candidate_working_preferences(
+                    user_id, session_id, now
+                )
+            ),
+        )
         self._session_is_active = session_is_active or (lambda _user, _session: False)
         self._ttl_seconds = ttl_seconds
         self._candidates: dict[str, _ServerMemoryCandidate] = {}
@@ -553,11 +557,13 @@ class MemoryCandidateService:
 
         cards: list[MemoryCandidateCard] = []
         states: list[_ServerMemoryCandidate] = []
+        proposals: list[dict[str, object]] = []
+        proposal_trace_ids: list[str] = []
         now = time.time()
         for candidate in transient.candidates:
             if self._is_suppressed(payload, candidate):
                 continue
-            proposal = self.memory.propose(
+            proposal_operation = self.memory.prepare_candidate_proposal(
                 MemoryProposeInput(
                     user_id=payload.user_id,
                     styling_session_id=payload.styling_session_id,
@@ -565,9 +571,12 @@ class MemoryCandidateService:
                     type=candidate.memory_type,
                     content=candidate.content,
                 )
-            ).proposal
+            )
+            proposal = proposal_operation.proposal
             if proposal.commit_blocked:
                 raise MemoryCandidateError("server canonical proposal rejected")
+            proposals.append(proposal.model_dump(mode="json"))
+            proposal_trace_ids.append(proposal_operation.trace_id)
             candidate_id = f"mcand_{uuid.uuid4().hex}"
             state = _ServerMemoryCandidate(
                 candidate_id=candidate_id,
@@ -582,7 +591,11 @@ class MemoryCandidateService:
             )
             actions: tuple[
                 Literal["remember", "session_only", "reject", "rephrase"], ...
-            ] = ("remember", "session_only", "reject", "rephrase")
+            ] = ("remember", "reject", "rephrase")
+            if payload.styling_session_id is not None and self._session_is_active(
+                payload.user_id, payload.styling_session_id
+            ):
+                actions = ("remember", "session_only", "reject", "rephrase")
             conflict_copy = (
                 "已有同类已确认记忆；确认后将由服务端建立新版本。"
                 if self._has_conflict(
@@ -630,16 +643,17 @@ class MemoryCandidateService:
                     "response": response.model_dump(mode="json"),
                 },
                 [self._state_dump(state) for state in states],
+                proposals,
             )
-        except MemoryRepositoryError as exc:
-            for state in states:
-                self.memory.confirm(
-                    state.proposal_id,
-                    MemoryConfirmInput(user_id=state.user_id, decision="reject"),
-                )
+        except Exception as exc:
+            self.memory.traces.discard(trace_id)
+            for proposal_trace_id in proposal_trace_ids:
+                self.memory.traces.discard(proposal_trace_id)
+            self.memory.refresh_state()
             raise MemoryCandidateConflict(
                 "memory candidate request conflicts"
             ) from exc
+        self.memory.refresh_state()
         with self._lock:
             for state in states:
                 self._candidates[state.candidate_id] = state
@@ -704,81 +718,104 @@ class MemoryCandidateService:
                     "session_only requires an active styling session"
                 )
 
-            if payload.decision == "remember":
-                operation = self.memory.confirm(
-                    state.proposal_id,
-                    MemoryConfirmInput(
-                        user_id=payload.user_id,
-                        decision="confirm",
-                    ),
-                    candidate_authorized=True,
+            candidate_status = (
+                "committed"
+                if payload.decision == "remember"
+                else (
+                    "rejected"
+                    if payload.decision == "reject"
+                    else payload.decision
                 )
-                if operation.record is None:
-                    raise MemoryCandidateDecisionError("candidate commit failed")
-                status: Literal["committed", "session_only", "rejected"] = (
-                    "committed"
-                )
-                record_id = operation.record.memory_id
-                state.status = "committed"
-            else:
-                operation = self.memory.confirm(
-                    state.proposal_id,
-                    MemoryConfirmInput(
-                        user_id=payload.user_id,
-                        decision="reject",
-                    ),
-                    candidate_authorized=True,
-                )
-                record_id = None
-                if payload.decision == "session_only":
-                    assert payload.styling_session_id is not None
-                    self.session_preferences.put(
-                        SessionPreference(
-                            user_id=payload.user_id,
-                            styling_session_id=payload.styling_session_id,
-                            canonical_kind=state.canonical_kind,
-                            canonical_value=state.canonical_value,
-                            expires_at=time.time() + self._ttl_seconds,
-                        )
-                    )
-                    status = "session_only"
-                    state.status = "session_only"
-                else:
-                    status = "rejected"
-                    state.status = payload.decision
-                    if (
-                        payload.decision == "reject"
-                        and payload.styling_session_id is not None
-                    ):
-                        self._rejected.add(
-                            (
-                                payload.user_id,
-                                payload.styling_session_id,
-                                state.namespace,
-                                state.canonical_kind,
-                                state.canonical_value,
-                            )
-                        )
-            response = MemoryCandidateDecisionResponse(
-                candidate_id=candidate_id,
-                decision=payload.decision,
-                status=status,
-                record_id=record_id,
-                trace_id=operation.trace_id,
             )
+            decision_now = time.time()
+            working_context = None
+            if payload.decision == "session_only":
+                assert payload.styling_session_id is not None
+                working_context = {
+                    "user_id": payload.user_id,
+                    "styling_session_id": payload.styling_session_id,
+                    "canonical_kind": state.canonical_kind,
+                    "canonical_value": state.canonical_value,
+                    "expires_at": decision_now + self._ttl_seconds,
+                }
+            candidate_decision = {
+                "candidate_id": candidate_id,
+                "proposal_id": state.proposal_id,
+                "user_id": payload.user_id,
+                "styling_session_id": payload.styling_session_id,
+                "namespace": state.namespace,
+                "decision": payload.decision,
+                "candidate_status": candidate_status,
+                "idempotency_key": payload.idempotency_key,
+                "fingerprint": fingerprint,
+                "now": decision_now,
+                "working_context": working_context,
+            }
             try:
-                authoritative = self.memory.repository.record_candidate_decision(
-                    candidate_id,
-                    payload.idempotency_key,
-                    fingerprint,
-                    state.status,
-                    response.model_dump(mode="json"),
+                operation = self.memory.confirm(
+                    state.proposal_id,
+                    MemoryConfirmInput(
+                        user_id=payload.user_id,
+                        decision=(
+                            "confirm"
+                            if payload.decision == "remember"
+                            else "reject"
+                        ),
+                    ),
+                    candidate_authorized=True,
+                    candidate_decision=candidate_decision,
                 )
-            except MemoryRepositoryError as exc:
+            except Exception as exc:
+                concurrent_receipt = self.memory.repository.candidate_decision(
+                    candidate_id, payload.idempotency_key
+                )
+                if (
+                    concurrent_receipt is not None
+                    and concurrent_receipt["fingerprint"] == fingerprint
+                ):
+                    response = MemoryCandidateDecisionResponse.model_validate(
+                        concurrent_receipt["response"]
+                    )
+                    self._decision_receipts[
+                        (candidate_id, payload.idempotency_key)
+                    ] = _DecisionReceipt(
+                        fingerprint=fingerprint,
+                        response=response,
+                    )
+                    return response
                 raise MemoryCandidateConflict(
                     "memory candidate decision conflicts"
                 ) from exc
-            response = MemoryCandidateDecisionResponse.model_validate(authoritative)
+            if payload.decision == "remember" and operation.record is None:
+                raise MemoryCandidateDecisionError("candidate commit failed")
+            durable = self.memory.repository.candidate_decision(
+                candidate_id, payload.idempotency_key
+            )
+            if durable is None:
+                raise MemoryCandidateDecisionError(
+                    "candidate decision receipt missing"
+                )
+            response = MemoryCandidateDecisionResponse.model_validate(
+                durable["response"]
+            )
+            state.status = candidate_status
+            if working_context is not None:
+                self.session_preferences.put(
+                    SessionPreference(**working_context)
+                )
+            if (
+                payload.decision == "reject"
+                and payload.styling_session_id is not None
+            ):
+                self._rejected.add(
+                    (
+                        payload.user_id,
+                        payload.styling_session_id,
+                        state.namespace,
+                        state.canonical_kind,
+                        state.canonical_value,
+                    )
+                )
             self._decision_receipts[(candidate_id, payload.idempotency_key)] = (
                 _DecisionReceipt(
                     fingerprint=fingerprint,
@@ -798,10 +835,15 @@ class SessionPreference:
 
 
 class SessionPreferenceStore:
-    def __init__(self, ttl_seconds: float) -> None:
+    def __init__(
+        self,
+        ttl_seconds: float,
+        loader: Callable[[str, str, float], list[dict[str, object]]] | None = None,
+    ) -> None:
         if ttl_seconds <= 0:
             raise ValueError("ttl_seconds must be positive")
         self._ttl_seconds = ttl_seconds
+        self._loader = loader
         self._items: dict[tuple[str, str, str], SessionPreference] = {}
         self._lock = RLock()
 
@@ -818,7 +860,26 @@ class SessionPreferenceStore:
     def active(
         self, user_id: str, styling_session_id: str, now: float
     ) -> tuple[SessionPreference, ...]:
+        durable = (
+            self._loader(user_id, styling_session_id, now)
+            if self._loader is not None
+            else []
+        )
         with self._lock:
+            for raw in durable:
+                canonical = canonicalize_candidate(
+                    str(raw["canonical_kind"]), str(raw["canonical_value"])
+                )
+                item = SessionPreference(
+                    user_id=str(raw["user_id"]),
+                    styling_session_id=str(raw["styling_session_id"]),
+                    canonical_kind=canonical.canonical_kind,
+                    canonical_value=canonical.canonical_value,
+                    expires_at=float(raw["expires_at"]),
+                )
+                self._items[
+                    (item.user_id, item.styling_session_id, item.canonical_kind)
+                ] = item
             return tuple(
                 item
                 for item in self._items.values()
