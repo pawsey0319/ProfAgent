@@ -217,7 +217,9 @@ Stylist Studio 的统一对话入口。`/scene/parse`、`/recommend` 及 Look/�
 - `user_id`：当前 owner；
 - `message`：仅当前轮新输入，不拼接历史原文；
 - `styling_session_id`：首轮可空，后续连续回合必须携带；只有用户明确新建任务才省略；
-- 可选 `request_id`：仅用于同一回合幂等重试，不得跨消息复用。
+- 可选 `request_id`：仅用于同一回合幂等重试，不得跨消息复用；
+- 可选 `preference_question_id`：仅回答服务端当前会话已签发且仍有效的偏好问题；
+- 可选 `preference_option_id`：仅引用上述问题的服务端闭集选项，浏览器不得提交画像值或排名权重。
 
 响应最低字段：
 
@@ -229,7 +231,11 @@ Stylist Studio 的统一对话入口。`/scene/parse`、`/recommend` 及 Look/�
 - `pending_question_status`：`none | active | suspended | resolved | cancelled`；
 - `turn_index/history_version`，用于服务端会话连续性证明；浏览器不自行拼接完整历史；
 - `provider`：`status=ok|fallback`、`generation_source=cpa|local_fallback`、`attempted`、`requested_model`、`transport_model`、`resolved_model`、`model_verified`、`degraded` 和可选受控 `reason_code`；
-- 当前权威 `scene` 可空：没有穿搭任务的纯聊天不得伪造 `daily/unknown/high` Scene；仅当 `action=recommend` 时允许出现非空 `recommendation`。
+- 当前权威 `scene` 可空：没有穿搭任务的纯聊天不得伪造 `daily/unknown/high` Scene；仅当 `action=recommend` 时允许出现非空 `recommendation`；
+- 可选 `preference_clarification`：仅由服务端在权威候选完成 HardFilter、Assembler 与 Validator 后签发；它是非阻断 advisory，同一响应仍保持 `action=recommend`、合法 `recommendation` 与 `recommendation_paused=false`；
+- 可选 `memory_candidates`：服务端签发的候选记忆确认卡集合；浏览器或 CPA 都不能直接提交长期记忆。
+
+排名、候选差异、是否追问、问题预算、问题/选项 ID 的签发与有效性均由服务端拥有。浏览器只回传服务端签发的可选 ID；CPA 只能提供不可信语言 advisory，不能决定排序、问题数量、购物门控或记忆写入。
 
 服务端回合优先级固定为：安全风险 → 当前轮明确暂停/纠正/终止 → 明确穿搭任务与任务内情绪承接 → 纯交流意图 → 已挂起澄清 → 推荐和工具调用。轻度“紧张/怕冷场”与明确场合、穿衣问题、造型目标或任务内测量信息同轮出现时，不得仅因情绪进入 `support_pause`；Stylist 先简短承接，再继续澄清或推荐。只有用户明确要求“先暂停/先不推荐/先聊聊”才暂停。`stylist_chat`、`support_pause`、`safety_response` 与 `task_closed` 必须跳过 HardFilter 之后的推荐链路与 Catalog，返回 0 方向、0 商品、`shopping_cta=false`；已有 Scene 快照继续 owner-bound 保存，恢复时不要求用户复述。
 
@@ -345,6 +351,29 @@ S14 对 `action=recommend` 增加顺序约束：服务端必须先用权威 Scen
 ### POST `/memory/{proposal_id}/confirm`
 
 确认/编辑/拒绝；只有确认且通过敏感度门控才 commit。
+
+### POST `/memory/candidates/extract`
+
+S16A 自由文本候选提取入口；当前合同已冻结但尚未实现。请求只能包含：
+
+- `user_id`；
+- 可选 `styling_session_id`；
+- `namespace`；
+- `text`；
+- `request_id`。
+
+不接受客户端提交 canonical 类型、值、适用标签、敏感度、来源、确认次数、排序特征或作用域。响应使用 `memory_candidates` 返回服务端签发的候选卡；每项 `candidate_id` 只能用于下面的决定端点。自由文本不能直接 commit，长期保存仍须执行受控 `propose→confirm→commit`。
+
+### POST `/memory/candidates/{candidate_id}/decide`
+
+S16A 单候选决定入口；当前合同已冻结但尚未实现。请求只能包含：
+
+- `user_id`；
+- 可选 `styling_session_id`；
+- `decision=remember|session_only|reject|rephrase`；
+- `idempotency_key`。
+
+`remember` 仍受敏感门控并进入 S15 `propose→confirm→commit`；`session_only` 只写入 session-bound TTL working context，不进入长期 `GET /memory`、outbox 或 RRF；`reject` 在本会话不得换说法重复；`rephrase` 只回到重新提取流程，不允许直接编辑数据库字段。candidate、owner、namespace、session 和幂等 receipt 的绑定全部由服务端复验。
 
 ### GET `/memory?user_id=...&namespace=...`
 

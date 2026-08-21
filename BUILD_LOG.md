@@ -1,7 +1,7 @@
 # ProfAgent R1 Demo BUILD LOG
 
 > 唯一需求权威：`docs/PRD.md`（v1.16）。
-> 当前状态：**R1 DoD Demo 子集及 S6–S15 实现与验收已关闭。S15 Memory 路线 A 已完成事务真值、生命周期/ACL、最小 outbox、可重建软投影与确定性结构化重排；全量 300 项、S15 专项 19 项、Memory 相关 44 项、固定评测、双实例/重启与真实浏览器均通过。LangMem、Mem0、Graphiti 与学习型 reranker 未上线。**
+> 当前状态：**R1 DoD Demo 子集及 S6–S15 实现与验收已关闭。S15 Memory 路线 A 已完成事务真值、生命周期/ACL、最小 outbox、可重建软投影与确定性结构化重排；全量 300 项、S15 专项 19 项、Memory 相关 44 项、固定评测、双实例/重启与真实浏览器均通过。S16 已获批准并进入 S16-0 合同冻结，S16A/B/C/R 均未完成；LangMem、Mem0、Graphiti 与学习型 reranker 移至 S17+ 且未上线。**
 > 目标：交付可运行的 R1 Stylist MVP Demo，并通过 PRD 23.1 的 Demo 子集验收。
 
 ## 0. 基线与执行约束
@@ -583,9 +583,45 @@ CPA Grok 生图限定为独立可选 `static_2d` Provider Adapter：
 - **tester 最终门禁**：`conda run --no-capture-output -n torch128 python scripts/tester_s15_report.py` exit 0 并原子生成 `reports/eval/s15_memory_route_a_v1.{json,md}`；S15 `19 passed`、Memory 相关 `44 passed`、full `300 passed`。固定 eval Urgency `30/30`、高急 Gate `10/10`、Catalog `0/10`、幻觉 `0/515`、硬约束 `0/423`、Slots `74/74`；Node 14 syntax + 7 runtime/static、随机非 8000 HTTP、双实例/重启 SQLite、ACL/生命周期/删除回执与真实 Chrome 全绿，CPA 调用 0。
 - **合成检索边界**：受控 benchmark 中 RRF+rerank 的 Recall@5/Recall@10/MRR 为 `.708333/.833333/1`；该数字仅验证确定性合同与排序方向，不代表真实用户质量或生产语义提升。
 
-#### S16+ — 已同步的未来规划（本阶段不实施）
+### S16 — 私人 Stylist：自由文本记忆、女装资产与图上换装（2026-08-21，已批准、实施中；各阶段均未完成）
 
-1. **S16 候选：A + LangMem 后台提取（路线 B）**：仅在积累真实对话与误提取标注后启用；回复完成后异步产生结构化候选，仍经本项目敏感过滤、用户确认和 SQL 提交，不允许自动改写人格/安全 prompt。
+S16 复用 S15 Memory 路线 A、R1 owner/ID/HardFilter/购物门控、不可变 Look 和独立 CPA Text/Image/Vision Provider。界面身份始终为“私人 Stylist”；女装仅表示 V1 资产池范围，不推断用户性别。本阶段不接入 LangMem、Mem0、Graphiti、Cross-Encoder 或学习型 reranker，也不实现通用网页爬虫、3D、360°或视频。
+
+#### S16-0 — 合同与迁移冻结（`supervisor`，未完成）
+
+- **目标**：冻结 Memory 候选端点、Dialogue 可选字段、owner/session/幂等边界和 S16A/B/C/R 的依赖顺序；只做兼容性文档与迁移设计，不修改生产实现。
+- **输入/输出**：消费已批准 S16 设计和 S15 API；产出后续 backend/frontend/tester 共用的唯一字段名与状态语义。
+- **硬规则**：任何合同都不得把浏览器或 CPA 变成排名、追问预算、衣物 ID、购物、记忆写入或 Look truth 的权威；S16 当前不得宣称已上线。
+- **验收口径**：合同文档互相一致，旧 S15/R1 门槛原文保留，文档检查与 `git diff --check` 为绿。
+
+#### S16A — 自由文本记忆与偏好不确定性（`backend` + `frontend` → `reviewer` → `tester`，未完成）
+
+- **目标**：实现自由文本拆分候选、逐条 `remember|session_only|reject|rephrase`、冲突确认和 session-bound working context；多套合法候选接近且缺少关键偏好时最多提出一个非阻断问题。
+- **对应 AC / 硬规则**：AC-01/03/04/05/06/07/10/11/14/16，MEM-01–12，SAFE-04/08，OBS-05；敏感默认不写，长期记忆仍走 `propose→confirm→commit`，硬记忆永远不进 RRF，高急切度 `shopping_allowed=false` 且 Catalog 调用为 0，ID 幻觉/硬约束违反/人物评分均为 0。
+- **输入/输出依赖**：消费 S16-0 冻结合同及 S15 SQL/outbox/RRF；产出候选确认卡、working context 和由服务端拥有的排序/问题预算证据。
+- **验收口径**：原始自由文本、敏感值和模型正文不进入长期记录、outbox、RRF 或 Trace；高急最多问一次且不阻塞合法推荐；拒绝后不换说法重复。
+
+#### S16B — 女装 V1 资产与授权来源（`backend` + `frontend` → `reviewer` → `tester`，未完成）
+
+- **目标**：在保留 `fixtures_v1.0` 50 件稳定 ID 的前提下扩充至总计 120 件（`u01=72/u02=24/u03=24`），提供 owner-bound、来源明确的 ready 2D 资产和按类别折叠展示。
+- **范围边界**：只允许用户自有/明确授权、机器可读许可 API、正式合作 API 或明确标记的 AI 生成参考；不开放通用爬虫，不用许可不明图片凑数。
+- **验收口径**：120/120 资产可展示、来源和受众闭集可审计，旧 ID 不重编号，Overlay 启用后 R1 固定评测不退化。
+
+#### S16C — 图上长按替换、Look vN 与异步图片（`backend` + `frontend` → `reviewer` → `tester`，未完成）
+
+- **目标**：用户选定 Active Look 后，通过约 450ms 长按、鼠标或键盘 Enter 选择槽位；服务端返回 owner-bound 合法候选，单槽 CAS 创建不可变 Look vN，再异步生成版本绑定的 Static2D。
+- **硬规则**：客户端不能提交整套 Look truth；替换必须重验 owner/ID/receipt/状态/季节/禁忌/完整性/购物门控；图片与槽位定位失败不得回滚或伪造 Look。
+- **验收口径**：低置信定位回退槽位选择器；高急换装仍 Catalog 0；2D 只标记为视觉参考，无 3D/360°/视频入口。
+
+#### S16R — 文档、评测与联合终审（`reviewer` → `tester` → `supervisor`，未完成）
+
+- **目标**：运行 S16 专项、S15/R1 全量回归、固定 eval、真实浏览器和单命令 JSON+MD 报告；关闭全部 `[P0]/[P1]/[P2]` 后再同步 README、PRD 0.3、API、AC 与 BUILD_LOG 的完成状态。
+- **终审边界**：先由 Codex 核查本地事实和门禁；实际调用 Grok 前必须让用户确认当次模型 ID，Grok 只提供咨询证据，最终由 Codex 收拢。
+- **退出条件**：UrgencyAcc≥95%、高急 ShoppingGateAcc=100%、Catalog 0、Item Hallucination=0、Hard Constraint Violation=0、Slot Completeness≥95%，其余 R1 P0 门槛不退化；在此之前 S16 不得宣布完成。
+
+#### S17+ — 已同步的未来规划（S16 不实施）
+
+1. **A + LangMem 后台提取（路线 B）**：仅在积累真实对话与误提取标注后启用；回复完成后异步产生结构化候选，仍经本项目敏感过滤、用户确认和 SQL 提交，不允许自动改写人格/安全 prompt。
 2. **替代评估：A + Mem0 侧车（路线 C）**：仅当“自研检索维护成本”超过接入与双写治理成本时立项；Mem0 只能作为 soft RRF 的可重建通道，结果必须回 SQL 校验，和 B 不同时起步。
 3. **远期：A + Graphiti 时序图（路线 D）**：只有出现跨场景偏好演化、多实体关系、双时间追溯与图解释的真实需求后再建；图仍是 SQL outbox 派生投影，不成为授权、删除或硬约束真值。
 4. **学习型 reranker**：只有受控 deterministic V1 在真实反馈集上出现明确质量瓶颈，且隐私/延迟预算通过后，才评估小型本地 Cross-Encoder；其输出仍不能越过 SQL/HardFilter。

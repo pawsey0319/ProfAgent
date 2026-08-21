@@ -4,6 +4,8 @@
 
 **状态**：用户已批准，进入分阶段实施规划
 
+**实施状态**：S16-0 合同冻结中；S16A、S16B、S16C、S16R 均未完成，不得对外宣称已上线
+
 **基线**：S15 Memory 路线 A；R1 Stylist Demo；CPA-first 文本与独立 CPA Image/Vision Provider
 
 ## 1. 背景与目标
@@ -221,7 +223,9 @@ Static2D 完成后，CPA Vision 接收生成图和服务端闭集槽位列表，
 - `LookReplacementService`：候选生成、HardFilter、CAS、不可变 Look vN 和图片 job。
 - `ImageJobService`：CPA Image 调用、幂等、状态、receipt 和诚实失败。
 
-建议 API 形态由实施计划对照现有合同细化，但必须遵守：自由文本不能直接 commit；替换请求不能提交整套客户端 truth；图片 job 不阻塞 Look 创建；所有写操作都要 owner-bound、幂等且可审计。
+S16-0 冻结候选端点为 `POST /memory/candidates/extract` 和 `POST /memory/candidates/{candidate_id}/decide`；其精确请求字段、Dialogue 可选输入 `preference_question_id/preference_option_id` 和可选响应 `preference_clarification/memory_candidates` 以 `docs/API_CONTRACT.md` 为准。排名和问题预算归服务端拥有，浏览器与 CPA 均不得成为权威。
+
+其余 API 形态由后续实施任务对照现有合同细化，但必须遵守：自由文本不能直接 commit；替换请求不能提交整套客户端 truth；图片 job 不阻塞 Look 创建；所有写操作都要 owner-bound、幂等且可审计。
 
 ## 9. 错误处理与降级
 
