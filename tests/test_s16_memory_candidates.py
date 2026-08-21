@@ -5,6 +5,7 @@ import json
 import sqlite3
 from dataclasses import replace
 
+import httpx
 import pytest
 from pydantic import ValidationError
 
@@ -27,6 +28,29 @@ from profagent.memory_repository import SqlMemoryRepository
 from profagent.models import SceneParseInput
 from profagent.providers import ProviderUnavailable
 from profagent.tracing import TraceStore
+
+
+_PROVIDER_SUCCESS_CONTENT = (
+    '{"candidates":[{"canonical_kind":"color_preference",'
+    '"canonical_value":"navy","applicability_tags":[],'
+    '"confidence_band":"high"}]}'
+)
+
+
+def _provider_response(
+    url: str,
+    *,
+    content: str = _PROVIDER_SUCCESS_CONTENT,
+    model: str = "grok-4.6-build",
+) -> httpx.Response:
+    return httpx.Response(
+        200,
+        request=httpx.Request("POST", url),
+        json={
+            "model": model,
+            "choices": [{"message": {"content": content}}],
+        },
+    )
 
 
 def test_color_candidates_map_to_closed_content_without_raw_text() -> None:
@@ -203,6 +227,339 @@ def test_safe_application_ingress_uses_actual_provider_and_fails_closed_offline(
     assert raw not in json.dumps(
         services.traces._records, ensure_ascii=False, default=str
     )
+    services.memory.close()
+
+
+def test_provider_success_maps_to_server_canonical_candidate_and_verified_evidence(
+    monkeypatch, tmp_path, offline_settings
+) -> None:
+    raw = "我偏爱藏青色"
+    path = tmp_path / "provider_success.sqlite3"
+    settings = replace(
+        offline_settings,
+        cpa_text_enabled=True,
+        database_url=f"sqlite:///{path.as_posix()}",
+    )
+    captured: dict[str, object] = {}
+
+    async def success_post(_self, url, **kwargs):
+        captured["request"] = kwargs["json"]
+        return _provider_response(url)
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", success_post)
+    app = create_app(settings)
+    services = app.state.services
+
+    result = asyncio.run(services.memory_candidates.extract(raw))
+
+    assert result.allowed is True
+    assert result.code == "MEMORY_TEXT_READY"
+    assert len(result.candidates) == 1
+    candidate = result.candidates[0]
+    assert candidate.canonical_kind == "color_preference"
+    assert candidate.canonical_value == "navy"
+    assert candidate.content == "偏爱藏青色"
+    assert candidate.confirmation_copy == "要长期记住“偏爱藏青色”吗？"
+    assert candidate.confidence_band == "high"
+    assert candidate.applicability_tags == ()
+    assert candidate.soft_term == "color:navy"
+    assert result.provider_evidence == {
+        "attempted": True,
+        "status": "ok",
+        "requested_model": "grok4.6",
+        "transport_model": "grok-4.6-high",
+        "resolved_model": "grok-4.6-build",
+        "model_verified": True,
+        "latency_ms": result.provider_evidence["latency_ms"],
+    }
+    assert isinstance(result.provider_evidence["latency_ms"], float)
+    request = captured["request"]
+    assert isinstance(request, dict)
+    assert request["model"] == "grok-4.6-high"
+    assert request["messages"][1] == {"role": "user", "content": raw}
+    prompt_dump = json.dumps(request, ensure_ascii=False)
+    for forbidden in (
+        "u01",
+        "user_id",
+        "garment_id",
+        "memory_id",
+        "trace_id",
+        "hidden_profile",
+        "reasoning",
+    ):
+        assert forbidden not in prompt_dump
+    assert _repository_write_counts(path) == {
+        "memory_proposals": 0,
+        "memory_records": 0,
+        "memory_outbox": 0,
+    }
+    assert services.traces._records == {}
+    services.memory.close()
+
+
+@pytest.mark.parametrize(
+    ("case", "content"),
+    (
+        ("malformed", "not-json"),
+        (
+            "duplicate_json_key",
+            '{"candidates":[{"canonical_kind":"color_preference",'
+            '"canonical_kind":"color_avoidance","canonical_value":"navy",'
+            '"applicability_tags":[],"confidence_band":"high"}]}',
+        ),
+        (
+            "duplicate_candidate",
+            json.dumps(
+                {
+                    "candidates": [
+                        {
+                            "canonical_kind": "color_preference",
+                            "canonical_value": "navy",
+                            "applicability_tags": [],
+                            "confidence_band": "high",
+                        },
+                        {
+                            "canonical_kind": "color_preference",
+                            "canonical_value": "navy",
+                            "applicability_tags": [],
+                            "confidence_band": "medium",
+                        },
+                    ]
+                }
+            ),
+        ),
+        (
+            "additional_field",
+            json.dumps(
+                {
+                    "candidates": [
+                        {
+                            "canonical_kind": "color_preference",
+                            "canonical_value": "navy",
+                            "applicability_tags": [],
+                            "confidence_band": "high",
+                            "reasoning": "private model body",
+                        }
+                    ]
+                }
+            ),
+        ),
+        (
+            "unknown_enum",
+            json.dumps(
+                {
+                    "candidates": [
+                        {
+                            "canonical_kind": "color_preference",
+                            "canonical_value": "ultraviolet",
+                            "applicability_tags": [],
+                            "confidence_band": "high",
+                        }
+                    ]
+                }
+            ),
+        ),
+        (
+            "more_than_five",
+            json.dumps(
+                {
+                    "candidates": [
+                        {
+                            "canonical_kind": "color_preference",
+                            "canonical_value": value,
+                            "applicability_tags": [],
+                            "confidence_band": "low",
+                        }
+                        for value in COLOR_VALUES[:6]
+                    ]
+                }
+            ),
+        ),
+    ),
+)
+def test_provider_rejects_entire_invalid_candidate_payload_before_any_write(
+    case, content, monkeypatch, tmp_path, offline_settings
+) -> None:
+    path = tmp_path / f"provider_invalid_{case}.sqlite3"
+    settings = replace(
+        offline_settings,
+        cpa_text_enabled=True,
+        database_url=f"sqlite:///{path.as_posix()}",
+    )
+
+    async def invalid_post(_self, url, **_kwargs):
+        return _provider_response(url, content=content)
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", invalid_post)
+    app = create_app(settings)
+    services = app.state.services
+
+    with pytest.raises(ProviderUnavailable) as captured:
+        asyncio.run(services.memory_candidates.extract("我喜欢藏青色"))
+
+    assert captured.value.reason_code == "CPA_MEMORY_CANDIDATE_INVALID_RESPONSE"
+    assert _repository_write_counts(path) == {
+        "memory_proposals": 0,
+        "memory_records": 0,
+        "memory_outbox": 0,
+    }
+    assert services.traces._records == {}
+    assert "private model body" not in str(captured.value)
+    services.memory.close()
+
+
+def test_provider_rejects_wrong_model_before_any_write(
+    monkeypatch, tmp_path, offline_settings
+) -> None:
+    path = tmp_path / "provider_wrong_model.sqlite3"
+    settings = replace(
+        offline_settings,
+        cpa_text_enabled=True,
+        database_url=f"sqlite:///{path.as_posix()}",
+    )
+
+    async def wrong_model_post(_self, url, **_kwargs):
+        return _provider_response(url, model="grok-4.5")
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", wrong_model_post)
+    app = create_app(settings)
+    services = app.state.services
+
+    with pytest.raises(ProviderUnavailable) as captured:
+        asyncio.run(services.memory_candidates.extract("我喜欢藏青色"))
+
+    assert captured.value.reason_code == "CPA_MODEL_VERIFICATION_FAILED"
+    assert services.llm.resolved_model is None
+    assert _repository_write_counts(path) == {
+        "memory_proposals": 0,
+        "memory_records": 0,
+        "memory_outbox": 0,
+    }
+    assert services.traces._records == {}
+    services.memory.close()
+
+
+def test_provider_timeout_is_fail_closed_and_creates_no_state(
+    monkeypatch, tmp_path, offline_settings
+) -> None:
+    path = tmp_path / "provider_timeout.sqlite3"
+    settings = replace(
+        offline_settings,
+        cpa_text_enabled=True,
+        database_url=f"sqlite:///{path.as_posix()}",
+    )
+
+    async def timeout_post(_self, url, **_kwargs):
+        raise httpx.ReadTimeout(
+            "upstream body must not escape",
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", timeout_post)
+    app = create_app(settings)
+    services = app.state.services
+
+    with pytest.raises(ProviderUnavailable) as captured:
+        asyncio.run(services.memory_candidates.extract("我喜欢藏青色"))
+
+    assert captured.value.reason_code == "CPA_PROVIDER_TIMEOUT"
+    assert "upstream body must not escape" not in str(captured.value)
+    assert _repository_write_counts(path) == {
+        "memory_proposals": 0,
+        "memory_records": 0,
+        "memory_outbox": 0,
+    }
+    assert services.traces._records == {}
+    services.memory.close()
+
+
+def test_provider_direct_identifier_prefilter_never_calls_transport_or_writes(
+    monkeypatch, tmp_path, offline_settings
+) -> None:
+    raw = "我的手机号是13812345678，请记住我喜欢藏青色"
+    path = tmp_path / "provider_direct_identifier.sqlite3"
+    settings = replace(
+        offline_settings,
+        cpa_text_enabled=True,
+        database_url=f"sqlite:///{path.as_posix()}",
+    )
+    transport_calls = 0
+
+    async def forbidden_post(_self, url, **_kwargs):
+        nonlocal transport_calls
+        transport_calls += 1
+        return _provider_response(url)
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", forbidden_post)
+    app = create_app(settings)
+    services = app.state.services
+
+    result = asyncio.run(services.memory_candidates.extract(raw))
+
+    assert result.allowed is False
+    assert result.code == "SENSITIVE_MEMORY_DEFAULT_NO_WRITE"
+    assert transport_calls == 0
+    assert services.llm.memory_candidate_operation_count == 0
+    assert _repository_write_counts(path) == {
+        "memory_proposals": 0,
+        "memory_records": 0,
+        "memory_outbox": 0,
+    }
+    assert services.traces._records == {}
+    assert raw not in result.model_dump_json()
+    services.memory.close()
+
+
+def test_provider_batch_is_rejected_whole_when_canonical_mapper_rejects(
+    tmp_path, offline_settings
+) -> None:
+    path = tmp_path / "provider_mapper_rejection.sqlite3"
+    settings = replace(
+        offline_settings,
+        database_url=f"sqlite:///{path.as_posix()}",
+    )
+    app = create_app(settings)
+    services = app.state.services
+
+    async def untrusted_batch(_text, *, allowed_kinds, allowed_values):
+        assert "color_preference" in allowed_kinds
+        assert "navy" in allowed_values["color_preference"]
+        return (
+            (
+                {
+                    "canonical_kind": "color_preference",
+                    "canonical_value": "navy",
+                    "applicability_tags": [],
+                    "confidence_band": "high",
+                },
+                {
+                    "canonical_kind": "color_preference",
+                    "canonical_value": "provider_invented",
+                    "applicability_tags": [],
+                    "confidence_band": "low",
+                },
+            ),
+            {
+                "attempted": True,
+                "status": "ok",
+                "requested_model": "grok4.6",
+                "transport_model": "grok-4.6-high",
+                "resolved_model": "grok-4.6-build",
+                "model_verified": True,
+                "latency_ms": 1.0,
+            },
+        )
+
+    services.llm.extract_memory_candidates = untrusted_batch
+    with pytest.raises(MemoryCandidateError, match="batch rejected"):
+        asyncio.run(services.memory_candidates.extract("我喜欢藏青色"))
+
+    assert _repository_write_counts(path) == {
+        "memory_proposals": 0,
+        "memory_records": 0,
+        "memory_outbox": 0,
+    }
+    assert services.traces._records == {}
     services.memory.close()
 
 

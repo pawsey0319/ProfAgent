@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from threading import RLock
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from .memory_service import MemoryClass, MemoryService, MemoryType
 
@@ -44,6 +44,37 @@ class MemoryCandidatePrefilterResult(BaseModel):
 
     allowed: bool
     code: Literal["MEMORY_TEXT_READY", "SENSITIVE_MEMORY_DEFAULT_NO_WRITE"]
+
+
+class ExtractedMemoryCandidate(CanonicalMemoryCandidate):
+    """Server-canonical candidate plus the bounded provider confidence label."""
+
+    confidence_band: Literal["high", "medium", "low"]
+
+
+class MemoryCandidateProviderEvidence(BaseModel):
+    """Closed, content-free proof for one verified CPA extraction."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    attempted: Literal[True]
+    status: Literal["ok"]
+    requested_model: Literal["grok4.6"]
+    transport_model: Literal["grok-4.6-high"]
+    resolved_model: Literal["grok-4.6-high", "grok-4.6-build"]
+    model_verified: Literal[True]
+    latency_ms: float = Field(ge=0, allow_inf_nan=False)
+
+
+class MemoryCandidateExtractionResult(BaseModel):
+    """Transient extraction result; it contains no input or provider prose."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    allowed: bool
+    code: Literal["MEMORY_TEXT_READY", "SENSITIVE_MEMORY_DEFAULT_NO_WRITE"]
+    candidates: tuple[ExtractedMemoryCandidate, ...] = ()
+    provider_evidence: dict[str, object] | None = None
 
 
 class MemoryCandidatePrefilter:
@@ -90,21 +121,76 @@ class MemoryCandidateService:
         self.provider = provider
         self.prefilter = MemoryCandidatePrefilter()
 
-    async def extract(self, text: str) -> MemoryCandidatePrefilterResult:
+    async def extract(self, text: str) -> MemoryCandidateExtractionResult:
         result = self.prefilter.prefilter(text)
         if not result.allowed:
-            return result
+            return MemoryCandidateExtractionResult(
+                allowed=False,
+                code=result.code,
+            )
         allowed_values: dict[str, list[str]] = {}
         for kind, value in CANONICAL_MEMORY_MAP:
             allowed_values.setdefault(kind, []).append(value)
-        await self.provider.extract_memory_candidates(
-            text,
-            allowed_kinds=tuple(allowed_values),
-            allowed_values={
-                kind: tuple(values) for kind, values in allowed_values.items()
-            },
+        provider_candidates, provider_evidence = (
+            await self.provider.extract_memory_candidates(
+                text,
+                allowed_kinds=tuple(allowed_values),
+                allowed_values={
+                    kind: tuple(values) for kind, values in allowed_values.items()
+                },
+            )
         )
-        return result
+        try:
+            if len(provider_candidates) > 5:
+                raise MemoryCandidateError("provider returned too many candidates")
+            evidence = MemoryCandidateProviderEvidence.model_validate(
+                provider_evidence
+            )
+            mapped: list[ExtractedMemoryCandidate] = []
+            seen: set[tuple[str, str]] = set()
+            for provider_candidate in provider_candidates:
+                if set(provider_candidate) != {
+                    "canonical_kind",
+                    "canonical_value",
+                    "applicability_tags",
+                    "confidence_band",
+                }:
+                    raise MemoryCandidateError("provider candidate fields rejected")
+                if provider_candidate["applicability_tags"] != []:
+                    raise MemoryCandidateError("provider applicability rejected")
+                kind = provider_candidate["canonical_kind"]
+                value = provider_candidate["canonical_value"]
+                confidence_band = provider_candidate["confidence_band"]
+                if (
+                    not isinstance(kind, str)
+                    or not isinstance(value, str)
+                    or confidence_band not in {"high", "medium", "low"}
+                    or (kind, value) in seen
+                ):
+                    raise MemoryCandidateError("provider candidate value rejected")
+                canonical = canonicalize_candidate(
+                    kind,
+                    value,
+                )
+                seen.add((kind, value))
+                mapped.append(
+                    ExtractedMemoryCandidate.model_validate(
+                        {
+                            **canonical.model_dump(),
+                            "confidence_band": confidence_band,
+                        }
+                    )
+                )
+        except Exception:
+            # Reject the entire untrusted payload without retaining or exposing
+            # provider content, even if an earlier member mapped successfully.
+            raise MemoryCandidateError("provider candidate batch rejected") from None
+        return MemoryCandidateExtractionResult(
+            allowed=True,
+            code=result.code,
+            candidates=tuple(mapped),
+            provider_evidence=evidence.model_dump(),
+        )
 
 
 @dataclass(frozen=True)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 import time
 from dataclasses import replace
 from datetime import datetime
@@ -99,6 +100,61 @@ def test_scene_outer_budget_cancels_slow_cpa_and_returns_rule_fallback(
         assert provider["interaction_budget_seconds"] == 0.02
         assert "query_text" not in provider
         assert "error" not in provider
+
+
+def test_memory_candidate_provider_external_cancellation_propagates_with_zero_writes(
+    monkeypatch, tmp_path, offline_settings
+) -> None:
+    path = tmp_path / "cancelled_memory_candidate.sqlite3"
+    settings = replace(
+        offline_settings,
+        cpa_text_enabled=True,
+        database_url=f"sqlite:///{path.as_posix()}",
+    )
+    app = create_app(settings)
+    services = app.state.services
+    state = {"attempted": 0, "cancelled": False}
+
+    async def slow_post(_self, _url, **_kwargs):
+        state["attempted"] += 1
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            state["cancelled"] = True
+            raise
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", slow_post)
+
+    async def exercise() -> None:
+        task = asyncio.create_task(
+            services.memory_candidates.extract("我偏爱藏青色")
+        )
+        while state["attempted"] == 0:
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(exercise())
+
+    connection = sqlite3.connect(path)
+    counts = {
+        table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        for table in (
+            "memory_proposals",
+            "memory_records",
+            "memory_outbox",
+        )
+    }
+    connection.close()
+    assert state == {"attempted": 1, "cancelled": True}
+    assert counts == {
+        "memory_proposals": 0,
+        "memory_records": 0,
+        "memory_outbox": 0,
+    }
+    assert services.traces._records == {}
+    services.memory.close()
 
 
 def test_provider_timeout_degrades_with_controlled_trace_reason(
