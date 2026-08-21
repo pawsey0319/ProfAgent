@@ -67,6 +67,11 @@ def test_screenshot_chain_inherits_scene_and_returns_exactly_two_owned_outfits(
     assert len(second["recommendation"]["outfits"]) == 2
     assert second["turn_index"] == 2
     assert second["history_version"] == 2
+    if second["preference_clarification"] is not None:
+        assert second["action"] == "recommend"
+        assert second["recommendation_paused"] is False
+        assert second["recommendation"] is not None
+    assert len(second["memory_candidates"]) <= 1
     assert "读完你的衣橱" in second["assistant_message"]
     assert "手头有哪些" not in second["assistant_message"]
     owned = app.state.services.repository.garment_ids("u01")

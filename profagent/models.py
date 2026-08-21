@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 API_VERSION = "r1_demo_v1"
@@ -246,6 +246,9 @@ class RecommendedOutfit(ApiModel):
     is_primary: bool
     trust_statement: str
     validation: OutfitValidation
+    # Server-only assembler evidence. It is retained across model copies for
+    # deterministic uncertainty evaluation but excluded from every API dump.
+    server_ranking_score: float | None = Field(default=None, ge=0, exclude=True)
 
 
 class ShoppingSuggestion(ApiModel):
@@ -275,6 +278,45 @@ class DialogueTurnInput(ApiModel):
     message: str = Field(min_length=1, max_length=1000)
     styling_session_id: str | None = None
     request_id: str | None = None
+    preference_question_id: str | None = None
+    preference_option_id: str | None = None
+
+    @model_validator(mode="after")
+    def preference_answer_fields_are_paired(self) -> "DialogueTurnInput":
+        if (self.preference_question_id is None) != (
+            self.preference_option_id is None
+        ):
+            raise ValueError("preference question and option must be supplied together")
+        return self
+
+
+class PreferenceOption(ApiModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    option_id: str
+    label: str
+
+
+class PreferenceClarification(ApiModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    question_id: str
+    gap_code: str
+    status: Literal["open"] = "open"
+    options: tuple[PreferenceOption, ...]
+    urgency_budget: Literal["normal", "last"]
+
+
+class PreferenceMemoryCandidateCard(ApiModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    candidate_id: str
+    confirmation_copy: str
+    confidence_band: Literal["high", "medium", "low"]
+    conflict_copy: str | None = None
+    allowed_actions: tuple[
+        Literal["remember", "session_only", "reject", "rephrase"], ...
+    ]
 
 
 class DialogueProviderStatus(ApiModel):
@@ -306,6 +348,10 @@ class DialogueTurnResponse(ApiModel):
     provider: DialogueProviderStatus
     scene: SceneRequest | None = None
     recommendation: InitialRecommendation | None = None
+    preference_clarification: PreferenceClarification | None = None
+    memory_candidates: list[PreferenceMemoryCandidateCard] = Field(
+        default_factory=list, max_length=1
+    )
 
 
 class TraceRecord(ApiModel):

@@ -11,7 +11,15 @@ from dataclasses import dataclass
 from threading import RLock
 from typing import Any, Callable
 
-from .memory_service import MemoryService
+from .memory_candidates import (
+    MemoryCandidateCard,
+    MemoryCandidateExtractResponse,
+    MemoryCandidateService,
+    SessionPreference,
+    canonicalize_candidate,
+)
+from .memory_repository import MemoryRepositoryError
+from .memory_service import MemoryProposeInput, MemoryService
 from .models import (
     ConversationMode,
     DialogueAction,
@@ -19,10 +27,13 @@ from .models import (
     DialogueTurnInput,
     DialogueTurnResponse,
     PendingQuestionStatus,
+    PreferenceClarification,
+    PreferenceMemoryCandidateCard,
     SceneParseInput,
     SceneRequest,
     UICapabilities,
 )
+from .preference_uncertainty import PreferenceUncertaintyPolicy
 from .providers import GrokLLMProvider, ProviderUnavailable
 from .scene import SceneParser
 from .service import RecommendationService
@@ -96,6 +107,9 @@ class DialogueEnvelope:
     last_support_strategy: str | None
     explicit_pause_latched: bool
     fit_context: SessionFitContext | None
+    asked_preference_gap_codes: frozenset[str]
+    pending_preference_question_id: str | None
+    pending_preference_gap_code: str | None
     history: tuple[dict[str, str], ...]
     turn_index: int
     expires_at: float
@@ -113,6 +127,11 @@ class DialogueEnvelope:
             last_support_strategy=self.last_support_strategy,
             explicit_pause_latched=self.explicit_pause_latched,
             fit_context=self.fit_context,
+            asked_preference_gap_codes=frozenset(
+                self.asked_preference_gap_codes
+            ),
+            pending_preference_question_id=self.pending_preference_question_id,
+            pending_preference_gap_code=self.pending_preference_gap_code,
             history=tuple(dict(item) for item in self.history),
             turn_index=self.turn_index,
             expires_at=self.expires_at,
@@ -161,6 +180,8 @@ class DialogueStateStore:
                 "user_id": payload.user_id,
                 "message": payload.message,
                 "styling_session_id": payload.styling_session_id,
+                "preference_question_id": payload.preference_question_id,
+                "preference_option_id": payload.preference_option_id,
             },
             ensure_ascii=True,
             sort_keys=True,
@@ -346,11 +367,16 @@ class DialogueService:
         recommendations: RecommendationService,
         provider: GrokLLMProvider,
         traces: TraceStore,
+        memory_candidates: MemoryCandidateService,
     ) -> None:
         self.scene_parser = scene_parser
         self.recommendations = recommendations
         self.provider = provider
         self.traces = traces
+        self.memory_candidates = memory_candidates
+        self.preference_policy = PreferenceUncertaintyPolicy(
+            scene_parser.repository
+        )
         self.state = DialogueStateStore(
             scene_parser.settings.effective_dialogue_ttl_seconds,
             scene_parser.state.discard_session,
@@ -999,6 +1025,131 @@ class DialogueService:
             return "active"
         return "resolved" if prior in {"active", "suspended"} else "none"
 
+    @staticmethod
+    def _controlled_candidate_fingerprint(*parts: str | None) -> str:
+        canonical = "\x1f".join("" if part is None else part for part in parts)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def _create_controlled_memory_candidate(
+        self,
+        *,
+        user_id: str,
+        styling_session_id: str,
+        dialogue_request_id: str,
+        trace_id: str,
+        canonical_value: str,
+    ) -> PreferenceMemoryCandidateCard:
+        request_id = f"prefcand_{dialogue_request_id}"
+        fingerprint = self._controlled_candidate_fingerprint(
+            user_id,
+            styling_session_id,
+            "stylist",
+            "color_preference",
+            canonical_value,
+        )
+        existing = self.memory_candidates.memory.repository.candidate_request(
+            request_id
+        )
+        if existing is not None:
+            if (
+                existing["user_id"] != user_id
+                or existing["fingerprint"] != fingerprint
+            ):
+                raise DialogueConflict("controlled preference candidate conflicts")
+            stored = MemoryCandidateExtractResponse.model_validate(
+                existing["response"]
+            )
+            if len(stored.candidates) != 1:
+                raise DialogueConflict("controlled preference candidate is invalid")
+            return PreferenceMemoryCandidateCard.model_validate(
+                stored.candidates[0].model_dump(mode="json")
+            )
+
+        canonical = canonicalize_candidate(
+            "color_preference", canonical_value
+        )
+        proposal_operation = (
+            self.memory_candidates.memory.prepare_candidate_proposal(
+                MemoryProposeInput(
+                    user_id=user_id,
+                    styling_session_id=styling_session_id,
+                    namespace="stylist",
+                    type=canonical.memory_type,
+                    content=canonical.content,
+                )
+            )
+        )
+        proposal = proposal_operation.proposal
+        if proposal.commit_blocked:
+            self.traces.discard(proposal_operation.trace_id)
+            raise DialogueConflict("controlled preference candidate was rejected")
+        candidate_id = f"mcand_{uuid.uuid4().hex}"
+        expires_at = (
+            time.time()
+            + self.scene_parser.settings.effective_dialogue_ttl_seconds
+        )
+        card = MemoryCandidateCard(
+            candidate_id=candidate_id,
+            confirmation_copy=canonical.confirmation_copy,
+            confidence_band="high",
+            conflict_copy=None,
+            allowed_actions=("remember", "session_only", "reject", "rephrase"),
+        )
+        response = MemoryCandidateExtractResponse(
+            request_id=request_id,
+            status="ready",
+            candidates=(card,),
+            trace_id=trace_id,
+        )
+        state = {
+            "candidate_id": candidate_id,
+            "user_id": user_id,
+            "styling_session_id": styling_session_id,
+            "namespace": "stylist",
+            "proposal_id": proposal.proposal_id,
+            "canonical_kind": canonical.canonical_kind,
+            "canonical_value": canonical.canonical_value,
+            "confidence_band": "high",
+            "expires_at": expires_at,
+            "status": "active",
+        }
+        try:
+            self.memory_candidates.memory.repository.put_candidate_batch(
+                {
+                    "request_id": request_id,
+                    "user_id": user_id,
+                    "fingerprint": fingerprint,
+                    "expires_at": expires_at,
+                    "response": response.model_dump(mode="json"),
+                },
+                [state],
+                [proposal.model_dump(mode="json")],
+            )
+        except MemoryRepositoryError as exc:
+            self.traces.discard(proposal_operation.trace_id)
+            self.memory_candidates.memory.refresh_state()
+            durable = self.memory_candidates.memory.repository.candidate_request(
+                request_id
+            )
+            if (
+                durable is None
+                or durable["user_id"] != user_id
+                or durable["fingerprint"] != fingerprint
+            ):
+                raise DialogueConflict(
+                    "controlled preference candidate conflicts"
+                ) from exc
+            stored = MemoryCandidateExtractResponse.model_validate(
+                durable["response"]
+            )
+            return PreferenceMemoryCandidateCard.model_validate(
+                stored.candidates[0].model_dump(mode="json")
+            )
+        self.memory_candidates.memory.refresh_state()
+        return PreferenceMemoryCandidateCard.model_validate(
+            card.model_dump(mode="json")
+        )
+
     async def turn(self, payload: DialogueTurnInput) -> DialogueTurnResponse:
         async with self._turn_lock:
             return await self._execute_turn(payload)
@@ -1016,6 +1167,31 @@ class DialogueService:
             if payload.styling_session_id
             else None
         )
+        preference_answer_supplied = payload.preference_question_id is not None
+        if preference_answer_supplied and (
+            previous is None
+            or previous.pending_preference_question_id
+            != payload.preference_question_id
+            or previous.pending_preference_gap_code is None
+        ):
+            raise DialogueConflict(
+                "preference question is not active for this dialogue session"
+            )
+        asked_preference_gap_codes = set(
+            previous.asked_preference_gap_codes if previous else ()
+        )
+        pending_preference_question_id = (
+            previous.pending_preference_question_id if previous else None
+        )
+        pending_preference_gap_code = (
+            previous.pending_preference_gap_code if previous else None
+        )
+        preference_clarification: PreferenceClarification | None = None
+        memory_candidate_cards: list[PreferenceMemoryCandidateCard] = []
+        preference_trace: dict[str, object] = {
+            "reason_code": "NOT_EVALUATED",
+            "question_status": "none",
+        }
         previous_mode = previous.conversation_mode if previous else None
         text = payload.message.strip()
         fit_candidate, fit_sanitized_text = self._fit_candidate(text)
@@ -1123,7 +1299,60 @@ class DialogueService:
             for term in sorted(self._RESUME_TERMS, key=len, reverse=True):
                 horizon_evidence_text = horizon_evidence_text.replace(term, "")
         scene: SceneRequest | None
-        if task_evidence:
+        preference_source_recommendation = None
+        selected_preference_value: str | None = None
+        preference_answer_neutral = False
+        if preference_answer_supplied:
+            assert previous is not None and previous.scene is not None
+            assert pending_preference_question_id is not None
+            assert pending_preference_gap_code is not None
+            active_question = self.preference_policy.pending_clarification(
+                gap_code=pending_preference_gap_code,
+                question_id=pending_preference_question_id,
+                urgency=previous.scene.urgency,
+            )
+            try:
+                selected_preference_value = self.preference_policy.resolve_option(
+                    active_question, str(payload.preference_option_id)
+                )
+            except ValueError as exc:
+                raise DialogueConflict(
+                    "preference option is not active for this question"
+                ) from exc
+            _prior_scene, preference_source_recommendation = (
+                self.recommendations.get_saved_recommendation(
+                    payload.user_id,
+                    previous.styling_session_id,
+                    previous.scene.request_id,
+                )
+            )
+            session_id = previous.styling_session_id
+            trace_id = self._new_id("trace")
+            self.traces.start(
+                trace_id=trace_id,
+                request_id=request_id,
+                styling_session_id=session_id,
+                query_text=text,
+                user_id=payload.user_id,
+            )
+            scene = previous.scene.model_copy(
+                update={"request_id": request_id, "trace_id": trace_id},
+                deep=True,
+            )
+            self.scene_parser.state.save(scene)
+            preference_answer_neutral = selected_preference_value is None
+            pending_preference_question_id = None
+            pending_preference_gap_code = None
+            preference_trace = {
+                "gap_code": active_question.gap_code,
+                "reason_code": (
+                    "NEUTRAL_SESSION_DECISION"
+                    if preference_answer_neutral
+                    else "CONTROLLED_OPTION_SELECTED"
+                ),
+                "question_status": "resolved",
+            }
+        elif task_evidence:
             scene = await self.scene_parser.parse(
                 SceneParseInput(
                     user_id=payload.user_id,
@@ -1287,14 +1516,107 @@ class DialogueService:
         )
         recommendation_summary: dict[str, object] | None = None
         grounded_recommendation_message: str | None = None
+        if (
+            not preference_answer_supplied
+            and pending_preference_question_id is not None
+            and pending_preference_gap_code is not None
+        ):
+            preference_trace = {
+                "gap_code": pending_preference_gap_code,
+                "reason_code": "UNANSWERED_NEUTRAL_CONTINUE",
+                "question_status": "resolved",
+            }
+            pending_preference_question_id = None
+            pending_preference_gap_code = None
         if action == "recommend":
             if scene is None:
                 raise DialogueConflict("recommendation requires an authoritative scene")
-            requested_outfit_count = self._requested_outfit_count(text)
-            recommendation = self.recommendations.recommend(scene)
-            recommendation = self.recommendations.apply_requested_outfit_count(
-                scene, recommendation, requested_outfit_count
-            )
+            if preference_answer_supplied:
+                if preference_source_recommendation is None:
+                    raise DialogueConflict(
+                        "preference answer has no grounded recommendation"
+                    )
+                ordered_ids = self.preference_policy.reorder_ids(
+                    preference_source_recommendation,
+                    selected_preference_value,
+                )
+                recommendation = self.recommendations.reorder_validated_outfits(
+                    recommendation=preference_source_recommendation,
+                    ordered_outfit_ids=ordered_ids,
+                    request_id=request_id,
+                    trace_id=trace_id,
+                )
+                if not preference_answer_neutral:
+                    assert selected_preference_value is not None
+                    memory_candidate_cards = [
+                        self._create_controlled_memory_candidate(
+                            user_id=payload.user_id,
+                            styling_session_id=session_id,
+                            dialogue_request_id=request_id,
+                            trace_id=trace_id,
+                            canonical_value=selected_preference_value,
+                        )
+                    ]
+                    self.memory_candidates.session_preferences.put(
+                        SessionPreference(
+                            user_id=payload.user_id,
+                            styling_session_id=session_id,
+                            canonical_kind="color_preference",
+                            canonical_value=selected_preference_value,
+                            expires_at=(
+                                time.time()
+                                + self.scene_parser.settings.effective_dialogue_ttl_seconds
+                            ),
+                        )
+                    )
+            else:
+                requested_outfit_count = self._requested_outfit_count(text)
+                recommendation = self.recommendations.recommend(scene)
+                recommendation = self.recommendations.apply_requested_outfit_count(
+                    scene, recommendation, requested_outfit_count
+                )
+                policy_asked_codes = set(asked_preference_gap_codes)
+                if scene.urgency == "high" and clarification_asked:
+                    policy_asked_codes.add("high:question_budget_spent")
+                confirmed_signals = (
+                    self.recommendations.memory.active_signals(payload.user_id)
+                    if self.recommendations.memory is not None
+                    else ()
+                )
+                session_preferences = (
+                    self.memory_candidates.session_preferences.active(
+                        payload.user_id, session_id, now=time.time()
+                    )
+                )
+                preference_decision = self.preference_policy.evaluate(
+                    scene=scene,
+                    recommendation=recommendation,
+                    confirmed_signals=confirmed_signals,
+                    session_preferences=session_preferences,
+                    asked_gap_codes=frozenset(policy_asked_codes),
+                )
+                preference_clarification = preference_decision.clarification
+                preference_trace = {
+                    "reason_code": preference_decision.reason_code,
+                    "question_status": (
+                        "open"
+                        if preference_clarification is not None
+                        else "none"
+                    ),
+                }
+                if preference_clarification is not None:
+                    preference_trace["gap_code"] = (
+                        preference_clarification.gap_code
+                    )
+                    asked_preference_gap_codes.add(
+                        preference_clarification.gap_code
+                    )
+                    pending_preference_question_id = (
+                        preference_clarification.question_id
+                    )
+                    pending_preference_gap_code = (
+                        preference_clarification.gap_code
+                    )
             recommendation_summary = self._recommendation_summary(recommendation)
             grounded_recommendation_message = self._grounded_local_recommendation(
                 recommendation
@@ -1442,6 +1764,17 @@ class DialogueService:
             provider_suggestions
             or self._default_suggestions(mode, action)
         )
+        if preference_clarification is not None:
+            assistant_message = (
+                assistant_message.rstrip()
+                + " "
+                + self.preference_policy.question_copy(
+                    preference_clarification
+                )
+            )[:600]
+            suggested_replies = [
+                option.label for option in preference_clarification.options
+            ][:3]
 
         current_mode = mode
         dialogue_trace: dict[str, object] = {
@@ -1452,6 +1785,7 @@ class DialogueService:
             "recommendation_paused": paused,
             "provider_status": provider_status.status,
             "provider_generation_source": provider_status.generation_source,
+            "preference_uncertainty": preference_trace,
         }
         self.traces.update(trace_id, dialogue=dialogue_trace)
 
@@ -1496,6 +1830,8 @@ class DialogueService:
             provider=provider_status,
             scene=scene,
             recommendation=recommendation,
+            preference_clarification=preference_clarification,
+            memory_candidates=memory_candidate_cards,
         )
         envelope = DialogueEnvelope(
             user_id=payload.user_id,
@@ -1528,6 +1864,11 @@ class DialogueService:
                 )
             ),
             fit_context=active_fit_context,
+            asked_preference_gap_codes=frozenset(
+                asked_preference_gap_codes
+            ),
+            pending_preference_question_id=pending_preference_question_id,
+            pending_preference_gap_code=pending_preference_gap_code,
             history=history,
             turn_index=turn_index,
             expires_at=0.0,

@@ -134,6 +134,45 @@ class RecommendationService:
         self._save_recommendation(result)
         return result.model_copy(deep=True)
 
+    def reorder_validated_outfits(
+        self,
+        *,
+        recommendation: InitialRecommendation,
+        ordered_outfit_ids: tuple[str, ...],
+        request_id: str,
+        trace_id: str,
+    ) -> InitialRecommendation:
+        """Reorder only an existing validated outfit set; never rerun tools."""
+
+        by_id = {outfit.outfit_id: outfit for outfit in recommendation.outfits}
+        if (
+            len(by_id) != len(recommendation.outfits)
+            or len(ordered_outfit_ids) != len(recommendation.outfits)
+            or set(ordered_outfit_ids) != set(by_id)
+            or any(
+                not (
+                    outfit.validation.all_ids_grounded
+                    and outfit.validation.hard_constraints_passed
+                    and outfit.validation.required_slots_complete
+                )
+                for outfit in recommendation.outfits
+            )
+        ):
+            raise RecommendationPayloadMismatch(
+                "preference reorder must preserve the validated outfit set"
+            )
+        result = recommendation.model_copy(deep=True)
+        result.request_id = request_id
+        result.trace_id = trace_id
+        result.outfits = [
+            by_id[outfit_id].model_copy(deep=True)
+            for outfit_id in ordered_outfit_ids
+        ]
+        for index, outfit in enumerate(result.outfits):
+            outfit.is_primary = index == 0
+        self._save_recommendation(result)
+        return result.model_copy(deep=True)
+
     @staticmethod
     def _server_urgency(horizon: str) -> str:
         return {

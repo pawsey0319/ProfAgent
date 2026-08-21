@@ -1,0 +1,513 @@
+from __future__ import annotations
+
+import sqlite3
+from types import SimpleNamespace
+
+from fastapi.testclient import TestClient
+
+from profagent.app import create_app
+
+
+def _install_dialogue_provider(app) -> list[dict[str, object]]:
+    calls: list[dict[str, object]] = []
+
+    async def reply(context):
+        calls.append(context)
+        return (
+            {
+                "reply": "我已按当前场景整理好可直接试的衣橱方向。",
+                "action": context["policy"]["required_action"],
+                "control": context["policy"]["required_control"],
+                "scene_advisory": None,
+                "suggested_replies": [],
+            },
+            {
+                "resolved_model": "grok-4.6-high",
+                "model_verified": True,
+            },
+        )
+
+    app.state.services.llm.stylist_dialogue = reply
+    return calls
+
+
+def _turn(
+    client: TestClient,
+    *,
+    message: str,
+    request_id: str,
+    session_id: str | None = None,
+    question_id: str | None = None,
+    option_id: str | None = None,
+):
+    payload = {
+        "user_id": "u01",
+        "message": message,
+        "request_id": request_id,
+    }
+    if session_id is not None:
+        payload["styling_session_id"] = session_id
+    if question_id is not None:
+        payload["preference_question_id"] = question_id
+    if option_id is not None:
+        payload["preference_option_id"] = option_id
+    return client.post("/dialogue/turn", json=payload)
+
+
+def _outfit_item_sets(body: dict) -> set[frozenset[str]]:
+    return {
+        frozenset(outfit["items"])
+        for outfit in body["recommendation"]["outfits"]
+    }
+
+
+def test_asks_once_when_two_legal_outfits_differ_on_unremembered_color() -> None:
+    from profagent.preference_uncertainty import (
+        PreferenceUncertaintyEvidence,
+        PreferenceUncertaintyPolicy,
+    )
+
+    evidence = PreferenceUncertaintyEvidence(
+        gap_code="color:navy_vs_beige",
+        neutral_margin=0.03,
+        counterfactual_winners=("outfit_navy", "outfit_beige"),
+        urgency="low",
+        confirmed=False,
+        already_asked=False,
+    )
+    assert PreferenceUncertaintyPolicy().should_ask(evidence) is True
+
+
+def test_does_not_ask_when_confirmed_color_preference_exists() -> None:
+    from profagent.preference_uncertainty import (
+        PreferenceUncertaintyEvidence,
+        PreferenceUncertaintyPolicy,
+    )
+
+    evidence = PreferenceUncertaintyEvidence(
+        gap_code="color:navy_vs_beige",
+        neutral_margin=0.03,
+        counterfactual_winners=("outfit_navy", "outfit_beige"),
+        urgency="low",
+        confirmed=True,
+        already_asked=False,
+    )
+    assert PreferenceUncertaintyPolicy().should_ask(evidence) is False
+
+
+def test_high_urgency_second_question_is_blocked() -> None:
+    from profagent.preference_uncertainty import (
+        PreferenceUncertaintyEvidence,
+        PreferenceUncertaintyPolicy,
+    )
+
+    evidence = PreferenceUncertaintyEvidence(
+        gap_code="color:navy_vs_beige",
+        neutral_margin=0.03,
+        counterfactual_winners=("outfit_navy", "outfit_beige"),
+        urgency="high",
+        confirmed=False,
+        already_asked=True,
+    )
+    assert PreferenceUncertaintyPolicy().should_ask(evidence) is False
+
+
+def test_policy_excludes_invalid_outfit_before_margin_and_counterfactuals() -> None:
+    from profagent.models import OutfitValidation, RecommendedOutfit
+    from profagent.preference_uncertainty import PreferenceUncertaintyPolicy
+
+    def outfit(
+        outfit_id: str, item_id: str, score: float | None, valid: bool
+    ):
+        return RecommendedOutfit(
+            outfit_id=outfit_id,
+            strategy_label=outfit_id,
+            items=[item_id],
+            reasons=[],
+            risks=[],
+            alternatives={},
+            is_primary=False,
+            trust_statement="grounded",
+            validation=OutfitValidation(
+                all_ids_grounded=valid,
+                hard_constraints_passed=valid,
+                required_slots_complete=valid,
+            ),
+            server_ranking_score=score,
+        )
+
+    garments = {
+        "invalid": SimpleNamespace(color="red"),
+        "navy": SimpleNamespace(color="navy"),
+        "beige": SimpleNamespace(color="beige"),
+    }
+    policy = PreferenceUncertaintyPolicy(
+        SimpleNamespace(get_garment=garments.get)
+    )
+    evidence = policy.build_evidence(
+        scene=SimpleNamespace(urgency="low"),
+        recommendation=SimpleNamespace(
+            outfits=[
+                outfit("invalid_winner", "invalid", 99.0, False),
+                outfit("outfit_navy", "navy", 1.0, True),
+                outfit("outfit_beige", "beige", 0.97, True),
+            ]
+        ),
+        confirmed_signals=(),
+        session_preferences=(),
+        asked_gap_codes=frozenset(),
+    )
+    assert evidence is not None
+    assert evidence.counterfactual_winners == (
+        "outfit_navy",
+        "outfit_beige",
+    )
+    assert "invalid_winner" not in evidence.counterfactual_winners
+    assert (
+        policy.build_evidence(
+            scene=SimpleNamespace(urgency="low"),
+            recommendation=SimpleNamespace(
+                outfits=[
+                    outfit("outfit_navy", "navy", None, True),
+                    outfit("outfit_beige", "beige", 0.97, True),
+                ]
+            ),
+            confirmed_signals=(),
+            session_preferences=(),
+            asked_gap_codes=frozenset(),
+        )
+        is None
+    )
+
+
+def test_nonmaterial_margin_and_unchanged_counterfactual_do_not_ask() -> None:
+    from profagent.preference_uncertainty import (
+        PreferenceUncertaintyEvidence,
+        PreferenceUncertaintyPolicy,
+    )
+
+    wide = PreferenceUncertaintyEvidence(
+        gap_code="color:navy_vs_beige",
+        neutral_margin=0.051,
+        counterfactual_winners=("outfit_navy", "outfit_beige"),
+        urgency="low",
+        confirmed=False,
+        already_asked=False,
+    )
+    unchanged = PreferenceUncertaintyEvidence(
+        gap_code="color:navy_vs_beige",
+        neutral_margin=0.01,
+        counterfactual_winners=("outfit_navy", "outfit_navy"),
+        urgency="low",
+        confirmed=False,
+        already_asked=False,
+    )
+    assert PreferenceUncertaintyPolicy.should_ask(wide) is False
+    assert PreferenceUncertaintyPolicy.should_ask(unchanged) is False
+
+
+def test_applicable_confirmed_or_session_preference_suppresses_question() -> None:
+    from profagent.memory_candidates import SessionPreference
+    from profagent.memory_service import MemorySignal
+    from profagent.models import OutfitValidation, RecommendedOutfit
+    from profagent.preference_uncertainty import PreferenceUncertaintyPolicy
+
+    def outfit(outfit_id: str, item_id: str, score: float):
+        return RecommendedOutfit(
+            outfit_id=outfit_id,
+            strategy_label=outfit_id,
+            items=[item_id],
+            reasons=[],
+            risks=[],
+            alternatives={},
+            is_primary=False,
+            trust_statement="grounded",
+            validation=OutfitValidation(
+                all_ids_grounded=True,
+                hard_constraints_passed=True,
+                required_slots_complete=True,
+            ),
+            server_ranking_score=score,
+        )
+
+    garments = {
+        "navy": SimpleNamespace(color="navy"),
+        "beige": SimpleNamespace(color="beige"),
+    }
+    policy = PreferenceUncertaintyPolicy(
+        SimpleNamespace(get_garment=garments.get)
+    )
+    recommendation = SimpleNamespace(
+        outfits=[
+            outfit("outfit_navy", "navy", 1.0),
+            outfit("outfit_beige", "beige", 0.97),
+        ]
+    )
+    scene = SimpleNamespace(urgency="low")
+    confirmed = policy.evaluate(
+        scene=scene,
+        recommendation=recommendation,
+        confirmed_signals=(
+            MemorySignal(
+                memory_id="mem_confirmed",
+                namespace="stylist",
+                type="preference",
+                applied_signal="prefer_color:navy",
+            ),
+        ),
+        session_preferences=(),
+        asked_gap_codes=frozenset(),
+    )
+    session = policy.evaluate(
+        scene=scene,
+        recommendation=recommendation,
+        confirmed_signals=(),
+        session_preferences=(
+            SessionPreference(
+                user_id="u01",
+                styling_session_id="session_pref",
+                canonical_kind="color_preference",
+                canonical_value="beige",
+                expires_at=9999999999.0,
+            ),
+        ),
+        asked_gap_codes=frozenset(),
+    )
+    assert confirmed.clarification is None
+    assert confirmed.reason_code == "APPLICABLE_PREFERENCE_PRESENT"
+    assert session.clarification is None
+    assert session.reason_code == "APPLICABLE_PREFERENCE_PRESENT"
+
+
+def test_dialogue_material_question_is_advisory_and_keeps_valid_recommendation(
+    tmp_path, offline_settings
+) -> None:
+    path = tmp_path / "preference_question.sqlite3"
+    app = create_app(
+        offline_settings.__class__(
+            **{
+                **offline_settings.__dict__,
+                "database_url": f"sqlite:///{path.as_posix()}",
+            }
+        )
+    )
+    calls = _install_dialogue_provider(app)
+    with TestClient(app) as client:
+        response = _turn(
+            client,
+            message="下周通勤帮我搭两套",
+            request_id="pref_question_01",
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["action"] == "recommend"
+        assert body["recommendation_paused"] is False
+        assert len(body["recommendation"]["outfits"]) == 2
+        assert body["preference_clarification"] is not None
+        assert len(body["preference_clarification"]["options"]) == 3
+        assert body["memory_candidates"] == []
+        assert len(calls) == 1
+        owned = app.state.services.repository.garment_ids("u01")
+        for outfit in body["recommendation"]["outfits"]:
+            assert "server_ranking_score" not in outfit
+            assert set(outfit["items"]).issubset(owned)
+            assert outfit["validation"] == {
+                "all_ids_grounded": True,
+                "hard_constraints_passed": True,
+                "required_slots_complete": True,
+            }
+        trace = app.state.services.traces.get(body["trace_id"])
+        assert trace is not None
+        assert trace.catalog["call_count"] == 0
+        preference_trace = trace.dialogue["preference_uncertainty"]
+        serialized_preference_trace = str(preference_trace)
+        assert "neutral_margin" not in serialized_preference_trace
+        assert "weights" not in serialized_preference_trace
+
+
+def test_explicit_answer_reorders_same_grounded_sets_and_emits_one_decidable_card(
+    tmp_path, offline_settings
+) -> None:
+    path = tmp_path / "preference_answer.sqlite3"
+    settings = offline_settings.__class__(
+        **{
+            **offline_settings.__dict__,
+            "database_url": f"sqlite:///{path.as_posix()}",
+        }
+    )
+    app = create_app(settings)
+    calls = _install_dialogue_provider(app)
+    with TestClient(app) as client:
+        first = _turn(
+            client,
+            message="下周通勤帮我搭两套",
+            request_id="pref_answer_01",
+        ).json()
+        question = first["preference_clarification"]
+        option = question["options"][1]
+        before_sets = _outfit_item_sets(first)
+        before_primary = first["recommendation"]["outfits"][0]["outfit_id"]
+        app.state.services.recommendations.recommend = lambda _scene: (_ for _ in ()).throw(
+            AssertionError("preference answer must not rerun recommendation tools")
+        )
+        answer = _turn(
+            client,
+            message=option["label"],
+            request_id="pref_answer_02",
+            session_id=first["styling_session_id"],
+            question_id=question["question_id"],
+            option_id=option["option_id"],
+        )
+        assert answer.status_code == 200, answer.text
+        body = answer.json()
+        assert body["action"] == "recommend"
+        assert body["recommendation_paused"] is False
+        assert _outfit_item_sets(body) == before_sets
+        assert sum(
+            outfit["is_primary"] for outfit in body["recommendation"]["outfits"]
+        ) == 1
+        assert body["recommendation"]["outfits"][0]["outfit_id"] != before_primary
+        assert len(body["memory_candidates"]) == 1
+        assert body["preference_clarification"] is None
+        assert len(calls) == 2
+        answer_trace = app.state.services.traces.get(body["trace_id"])
+        assert answer_trace is not None
+        preference_trace = answer_trace.dialogue["preference_uncertainty"]
+        assert option["label"] not in str(preference_trace)
+        assert "neutral_margin" not in str(preference_trace)
+        connection = sqlite3.connect(path)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM memory_records"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM memory_outbox"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM memory_candidates"
+        ).fetchone()[0] == 1
+        connection.close()
+
+        card = body["memory_candidates"][0]
+        decided = client.post(
+            f"/memory/candidates/{card['candidate_id']}/decide",
+            json={
+                "user_id": "u01",
+                "styling_session_id": first["styling_session_id"],
+                "decision": "remember",
+                "idempotency_key": "pref_answer_commit_01",
+            },
+        )
+        assert decided.status_code == 200, decided.text
+        assert decided.json()["status"] == "committed"
+        connection = sqlite3.connect(path)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM memory_records"
+        ).fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT COUNT(*) FROM memory_outbox"
+        ).fetchone()[0] == 1
+        connection.close()
+
+
+def test_neutral_answer_and_unanswered_followup_do_not_ask_or_write_memory(
+    tmp_path, offline_settings
+) -> None:
+    path = tmp_path / "preference_neutral.sqlite3"
+    settings = offline_settings.__class__(
+        **{
+            **offline_settings.__dict__,
+            "database_url": f"sqlite:///{path.as_posix()}",
+        }
+    )
+    app = create_app(settings)
+    _install_dialogue_provider(app)
+    with TestClient(app) as client:
+        first = _turn(
+            client,
+            message="下周通勤帮我搭两套",
+            request_id="pref_neutral_01",
+        ).json()
+        question = first["preference_clarification"]
+        neutral = question["options"][2]
+        answer = _turn(
+            client,
+            message="你决定",
+            request_id="pref_neutral_02",
+            session_id=first["styling_session_id"],
+            question_id=question["question_id"],
+            option_id=neutral["option_id"],
+        )
+        assert answer.status_code == 200, answer.text
+        body = answer.json()
+        assert body["memory_candidates"] == []
+        assert body["preference_clarification"] is None
+        assert _outfit_item_sets(body) == _outfit_item_sets(first)
+        followup = _turn(
+            client,
+            message="还是按刚才的场景继续",
+            request_id="pref_neutral_03",
+            session_id=first["styling_session_id"],
+        )
+        assert followup.status_code == 200, followup.text
+        assert followup.json()["preference_clarification"] is None
+    connection = sqlite3.connect(path)
+    assert connection.execute("SELECT COUNT(*) FROM memory_records").fetchone()[0] == 0
+    assert connection.execute("SELECT COUNT(*) FROM memory_outbox").fetchone()[0] == 0
+    assert connection.execute(
+        "SELECT COUNT(*) FROM memory_candidates"
+    ).fetchone()[0] == 0
+    connection.close()
+
+
+def test_high_urgency_question_budget_and_retry_do_not_duplicate_cpa_or_candidate(
+    tmp_path, offline_settings
+) -> None:
+    path = tmp_path / "preference_high_retry.sqlite3"
+    settings = offline_settings.__class__(
+        **{
+            **offline_settings.__dict__,
+            "database_url": f"sqlite:///{path.as_posix()}",
+        }
+    )
+    app = create_app(settings)
+    calls = _install_dialogue_provider(app)
+    with TestClient(app) as client:
+        first_response = _turn(
+            client,
+            message="今晚通勤，帮我搭两套",
+            request_id="pref_high_01",
+        )
+        assert first_response.status_code == 200, first_response.text
+        first = first_response.json()
+        assert first["scene"]["urgency"] == "high"
+        assert first["scene"]["shopping_allowed"] is False
+        question = first["preference_clarification"]
+        assert question is not None
+        option = question["options"][0]
+        payload = dict(
+            message=option["label"],
+            request_id="pref_high_02",
+            session_id=first["styling_session_id"],
+            question_id=question["question_id"],
+            option_id=option["option_id"],
+        )
+        answer = _turn(client, **payload)
+        replay = _turn(client, **payload)
+        assert answer.status_code == replay.status_code == 200
+        assert answer.json() == replay.json()
+        assert answer.json()["preference_clarification"] is None
+        assert len(answer.json()["memory_candidates"]) == 1
+        assert len(calls) == 2
+        answer_trace = app.state.services.traces.get(answer.json()["trace_id"])
+        assert answer_trace is not None
+        assert answer_trace.catalog["attempted"] is False
+        assert answer_trace.catalog["call_count"] == 0
+        connection = sqlite3.connect(path)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM memory_candidates"
+        ).fetchone()[0] == 1
+        connection.close()
+        trace = app.state.services.traces.get(first["trace_id"])
+        assert trace is not None
+        assert trace.catalog["attempted"] is False
+        assert trace.catalog["call_count"] == 0

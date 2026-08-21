@@ -164,6 +164,7 @@ class AppServices:
             self.recommendations,
             self.llm,
             self.traces,
+            self.memory_candidates,
         )
         self.looks = LookService(
             settings,

@@ -669,6 +669,9 @@ class OutfitAssembler:
                         hard_constraints_passed=True,
                         required_slots_complete=True,
                     ),
+                    server_ranking_score=max(
+                        0.0, self._combo_score(combo, rank_score, scene)
+                    ),
                 )
             )
         gap = None

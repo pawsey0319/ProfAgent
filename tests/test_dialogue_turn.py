@@ -65,6 +65,45 @@ def get_trace(client: TestClient, response: dict) -> dict:
     )["trace"]
 
 
+def test_preference_answer_fields_are_paired_and_server_authoritative(
+    offline_settings,
+) -> None:
+    app = create_app(offline_settings)
+    with TestClient(app) as client:
+        unpaired = client.post(
+            "/dialogue/turn",
+            json={
+                "user_id": "u01",
+                "message": "藏青色",
+                "request_id": "preference_unpaired_01",
+                "preference_question_id": "prefq_unknown",
+            },
+        )
+        assert unpaired.status_code == 422
+        forged = client.post(
+            "/dialogue/turn",
+            json={
+                "user_id": "u01",
+                "message": "藏青色",
+                "request_id": "preference_forged_01",
+                "preference_question_id": "prefq_unknown",
+                "preference_option_id": "prefopt_color_navy",
+            },
+        )
+        assert forged.status_code in {404, 409}
+        for forbidden in ("neutral_margin", "weights", "score", "question_budget"):
+            response = client.post(
+                "/dialogue/turn",
+                json={
+                    "user_id": "u01",
+                    "message": "藏青色",
+                    "request_id": f"preference_forbidden_{forbidden}",
+                    forbidden: 0.01,
+                },
+            )
+            assert response.status_code == 422
+
+
 def assert_no_tools(client: TestClient, response: dict) -> None:
     assert response["recommendation"] is None
     if response["scene"] is not None:
