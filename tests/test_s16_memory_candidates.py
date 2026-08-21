@@ -288,12 +288,26 @@ def test_provider_success_maps_to_server_canonical_candidate_and_verified_eviden
         "reasoning",
     ):
         assert forbidden not in prompt_dump
+    assert raw in prompt_dump
     assert _repository_write_counts(path) == {
         "memory_proposals": 0,
         "memory_records": 0,
         "memory_outbox": 0,
     }
     assert services.traces._records == {}
+    assert raw not in result.model_dump_json()
+    connection = sqlite3.connect(path)
+    persisted = "\n".join(
+        str(value)
+        for table in ("memory_proposals", "memory_records", "memory_outbox")
+        for row in connection.execute(f"SELECT * FROM {table}").fetchall()
+        for value in row
+    )
+    connection.close()
+    assert raw not in persisted
+    assert raw not in json.dumps(
+        services.traces._records, ensure_ascii=False, default=str
+    )
     services.memory.close()
 
 
@@ -408,6 +422,130 @@ def test_provider_rejects_entire_invalid_candidate_payload_before_any_write(
     services.memory.close()
 
 
+@pytest.mark.parametrize(
+    "outer_body",
+    (
+        (
+            '{"model":"grok-4.5","model":"grok-4.6-build",'
+            '"choices":[{"message":{"content":'
+            + json.dumps(_PROVIDER_SUCCESS_CONTENT)
+            + "}}]}"
+        ),
+        (
+            '{"model":"grok-4.6-build","choices":[],"choices":'
+            '[{"message":{"content":'
+            + json.dumps(_PROVIDER_SUCCESS_CONTENT)
+            + "}}]}"
+        ),
+    ),
+)
+def test_provider_rejects_duplicate_keys_in_outer_cpa_body_before_any_write(
+    outer_body, monkeypatch, tmp_path, offline_settings
+) -> None:
+    path = tmp_path / "provider_outer_duplicate.sqlite3"
+    settings = replace(
+        offline_settings,
+        cpa_text_enabled=True,
+        database_url=f"sqlite:///{path.as_posix()}",
+    )
+
+    async def duplicate_outer_post(_self, url, **_kwargs):
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", url),
+            content=outer_body.encode("utf-8"),
+            headers={"content-type": "application/json"},
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", duplicate_outer_post)
+    app = create_app(settings)
+    services = app.state.services
+
+    with pytest.raises(ProviderUnavailable) as captured:
+        asyncio.run(services.memory_candidates.extract("我偏爱藏青色"))
+
+    assert captured.value.reason_code == "CPA_MEMORY_CANDIDATE_INVALID_RESPONSE"
+    assert _repository_write_counts(path) == {
+        "memory_proposals": 0,
+        "memory_records": 0,
+        "memory_outbox": 0,
+    }
+    assert services.traces._records == {}
+    services.memory.close()
+
+
+def test_provider_rejects_root_candidate_envelope_extra_field(
+    monkeypatch, tmp_path, offline_settings
+) -> None:
+    path = tmp_path / "provider_root_extra.sqlite3"
+    settings = replace(
+        offline_settings,
+        cpa_text_enabled=True,
+        database_url=f"sqlite:///{path.as_posix()}",
+    )
+    content = json.dumps(
+        {
+            "candidates": [],
+            "reasoning": "must never be accepted or persisted",
+        }
+    )
+
+    async def root_extra_post(_self, url, **_kwargs):
+        return _provider_response(url, content=content)
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", root_extra_post)
+    app = create_app(settings)
+    services = app.state.services
+
+    with pytest.raises(ProviderUnavailable) as captured:
+        asyncio.run(services.memory_candidates.extract("我偏爱藏青色"))
+
+    assert captured.value.reason_code == "CPA_MEMORY_CANDIDATE_INVALID_RESPONSE"
+    assert "must never be accepted" not in str(captured.value)
+    assert _repository_write_counts(path) == {
+        "memory_proposals": 0,
+        "memory_records": 0,
+        "memory_outbox": 0,
+    }
+    assert services.traces._records == {}
+    services.memory.close()
+
+
+def test_provider_network_failure_is_honest_and_creates_no_state(
+    monkeypatch, tmp_path, offline_settings
+) -> None:
+    path = tmp_path / "provider_network_failure.sqlite3"
+    settings = replace(
+        offline_settings,
+        cpa_text_enabled=True,
+        database_url=f"sqlite:///{path.as_posix()}",
+    )
+
+    async def network_failure_post(_self, url, **_kwargs):
+        raise httpx.ConnectError(
+            "private upstream network detail",
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", network_failure_post)
+    app = create_app(settings)
+    services = app.state.services
+
+    with pytest.raises(ProviderUnavailable) as captured:
+        asyncio.run(services.memory_candidates.extract("我偏爱藏青色"))
+
+    assert captured.value.reason_code == "CPA_PROVIDER_UNAVAILABLE"
+    assert "private upstream network detail" not in str(captured.value)
+    assert services.llm.resolved_model is None
+    assert _repository_write_counts(path) == {
+        "memory_proposals": 0,
+        "memory_records": 0,
+        "memory_outbox": 0,
+    }
+    assert services.traces._records == {}
+    services.memory.close()
+
+
 def test_provider_rejects_wrong_model_before_any_write(
     monkeypatch, tmp_path, offline_settings
 ) -> None:
@@ -507,6 +645,61 @@ def test_provider_direct_identifier_prefilter_never_calls_transport_or_writes(
     }
     assert services.traces._records == {}
     assert raw not in result.model_dump_json()
+    services.memory.close()
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        "请记住 u01 喜欢藏青色",
+        "请记住 g001 适合通勤",
+        "我的手机号是13812345678，请记住我喜欢藏青色",
+    ),
+)
+def test_provider_internal_identifier_prefilter_blocks_before_prompt_and_state(
+    raw, monkeypatch, tmp_path, offline_settings
+) -> None:
+    path = tmp_path / "provider_internal_identifier.sqlite3"
+    settings = replace(
+        offline_settings,
+        cpa_text_enabled=True,
+        database_url=f"sqlite:///{path.as_posix()}",
+    )
+    captured_prompts: list[dict[str, object]] = []
+
+    async def forbidden_post(_self, url, **kwargs):
+        captured_prompts.append(kwargs["json"])
+        return _provider_response(url)
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", forbidden_post)
+    app = create_app(settings)
+    services = app.state.services
+
+    result = asyncio.run(services.memory_candidates.extract(raw))
+
+    assert result.allowed is False
+    assert result.code == "SENSITIVE_MEMORY_DEFAULT_NO_WRITE"
+    assert services.llm.memory_candidate_operation_count == 0
+    assert captured_prompts == []
+    assert _repository_write_counts(path) == {
+        "memory_proposals": 0,
+        "memory_records": 0,
+        "memory_outbox": 0,
+    }
+    assert services.traces._records == {}
+    assert raw not in result.model_dump_json()
+    connection = sqlite3.connect(path)
+    persisted = "\n".join(
+        str(value)
+        for table in ("memory_proposals", "memory_records", "memory_outbox")
+        for row in connection.execute(f"SELECT * FROM {table}").fetchall()
+        for value in row
+    )
+    connection.close()
+    assert raw not in persisted
+    assert raw not in json.dumps(
+        services.traces._records, ensure_ascii=False, default=str
+    )
     services.memory.close()
 
 

@@ -453,7 +453,10 @@ class GrokLLMProvider:
                 response.raise_for_status()
                 if len(response.content) > self._MAX_MEMORY_CANDIDATE_RESPONSE_BYTES:
                     raise ValueError("memory candidate response is too large")
-                body = response.json()
+                body = json.loads(
+                    response.content,
+                    object_pairs_hook=reject_duplicate_keys,
+                )
             self._verify_reported_model(body.get("model"), "memory_candidates")
             content = body["choices"][0]["message"]["content"]
             if not isinstance(content, str):

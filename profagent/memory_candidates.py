@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from threading import RLock
 from typing import Literal, Protocol
@@ -80,9 +81,16 @@ class MemoryCandidateExtractionResult(BaseModel):
 class MemoryCandidatePrefilter:
     """Reject sensitive free text before any provider or repository call."""
 
+    _INTERNAL_IDENTIFIER = re.compile(
+        r"(?i)(?<![a-z0-9])(?:u|g)\d+(?![a-z0-9])"
+    )
+
     @staticmethod
     def prefilter(text: str) -> MemoryCandidatePrefilterResult:
-        if MemoryService.is_sensitive(text):
+        if MemoryService.is_sensitive(text) or (
+            MemoryCandidatePrefilter._INTERNAL_IDENTIFIER.search(text)
+            is not None
+        ):
             return MemoryCandidatePrefilterResult(
                 allowed=False,
                 code="SENSITIVE_MEMORY_DEFAULT_NO_WRITE",
