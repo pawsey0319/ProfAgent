@@ -599,7 +599,7 @@ S16 复用 S15 Memory 路线 A、R1 owner/ID/HardFilter/购物门控、不可变
 - **目标**：实现自由文本拆分候选、逐条 `remember|session_only|reject|rephrase`、冲突确认和 session-bound working context；多套合法候选接近且缺少关键偏好时最多提出一个非阻断问题。
 - **对应 AC / 硬规则**：AC-01/03/04/05/06/07/10/11/14/16，MEM-01–12，SAFE-04/08，OBS-05；敏感默认不写，长期记忆仍走 `propose→confirm→commit`，硬记忆永远不进 RRF，高急切度 `shopping_allowed=false` 且 Catalog 调用为 0，ID 幻觉/硬约束违反/人物评分均为 0。
 - **输入/输出依赖**：消费 S16-0 冻结合同及 S15 SQL/outbox/RRF；产出候选确认卡、working context 和由服务端拥有的排序/问题预算证据。
-- **验收口径**：原始自由文本、敏感值和模型正文不进入长期记录、outbox、RRF 或 Trace；高急最多问一次且不阻塞合法推荐；拒绝后不换说法重复。
+- **验收口径**：原始自由文本、原始对话、模型推理/正文、敏感值和直接标识符不得进入长期 Memory、RRF、outbox、Trace、Debug DOM 或 browser storage；候选卡仅含服务端生成的脱敏闭集字段。高急最多问一次且不阻塞合法推荐；拒绝后不换说法重复。
 
 #### S16B — 女装 V1 资产与授权来源（`backend` + `frontend` → `reviewer` → `tester`，未完成）
 

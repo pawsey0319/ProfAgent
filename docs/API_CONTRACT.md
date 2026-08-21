@@ -362,7 +362,7 @@ S16A 自由文本候选提取入口；当前合同已冻结但尚未实现。请
 - `text`；
 - `request_id`。
 
-不接受客户端提交 canonical 类型、值、适用标签、敏感度、来源、确认次数、排序特征或作用域。响应使用 `memory_candidates` 返回服务端签发的候选卡；每项 `candidate_id` 只能用于下面的决定端点。自由文本不能直接 commit，长期保存仍须执行受控 `propose→confirm→commit`。
+不接受客户端提交 canonical 类型、值、适用标签、敏感度、来源、确认次数、排序特征或作用域。响应使用 `memory_candidates` 返回服务端签发的候选卡；候选卡仅含服务端生成的脱敏闭集字段，不得回显原始自由文本、原始对话、模型推理/正文、敏感值或直接标识符，也不得将这些内容写入长期 Memory、RRF、outbox、Trace、Debug DOM 或 browser storage。每项 `candidate_id` 只能用于下面的决定端点。自由文本不能直接 commit，长期保存仍须执行受控 `propose→confirm→commit`。
 
 ### POST `/memory/candidates/{candidate_id}/decide`
 
