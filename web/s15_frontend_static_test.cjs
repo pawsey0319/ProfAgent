@@ -8,7 +8,10 @@ const app = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
 const html = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
 const runtime = fs.readFileSync(path.join(__dirname, "memory_runtime.js"), "utf8");
 
-assert.match(html, /memory_runtime\.js\?v=s15-memory-visibility-20260819/);
+assert.match(html, /memory_runtime\.js\?v=s16-free-text-memory-20260821/);
+assert.match(html, /memory_candidate_runtime\.js\?v=s16-free-text-memory-20260821/);
+assert.match(html, /id="memory-free-text"/);
+assert.doesNotMatch(html, /id="memory-type"|id="memory-content"|受控模板/);
 assert.match(html, /Working context 使用 Session \+ TTL，只服务当前任务，不是长期记忆/);
 assert.match(html, /不会作为长期记录从此列表返回/);
 
@@ -27,6 +30,7 @@ assert.match(runtime, /raw\.lifecycle_status === "active"/);
 assert.match(runtime, /raw\.styling_session_id == null/);
 assert.match(runtime, /Date\.parse\(raw\.valid_to\) > effectiveNow/);
 assert.match(runtime, /raw\.expires_at === raw\.valid_to/);
+assert.match(runtime, /config\.isApprovedContent\(raw\.type, raw\.content\)/);
 assert.match(runtime, /config\.expectedMemoryClass\(raw\.type, raw\.content\) === raw\.memory_class/);
 assert.match(runtime, /raw\.supersedes_memory_id !== raw\.memory_id/);
 assert.match(runtime, /raw\.source === "user_confirmed"/);
@@ -43,7 +47,7 @@ assert.match(runtime, /raw\?\.user_id !== config\.userId/);
 assert.match(runtime, /metadata_valid: false/);
 assert.match(runtime, /actionable: false/);
 
-const memoryStart = app.indexOf("function memoryTemplatesFor");
+const memoryStart = app.indexOf("function isControlledMemoryContent");
 const memoryEnd = app.indexOf("function sanitizeDebugValue", memoryStart);
 const memoryUi = app.slice(memoryStart, memoryEnd);
 assert.doesNotMatch(memoryUi, /\brrf\b|rerank|outbox|final_score|context_match|confirmation_strength/i);
@@ -60,8 +64,8 @@ assert.ok(receiptCheck >= 0 && localRemoval > receiptCheck, "local record must r
 assert.match(deleteBlock, /catch \(error\)[\s\S]*button\.disabled = false/);
 
 assert.match(app, /memoryRuntime\.normalizeList\(response, memoryRuntimeConfig\(\)\)/);
-assert.match(app, /normalizeMutationReceipt\(response, \{[\s\S]*operation: "propose",[\s\S]*request: \{ \.\.\.proposePayload, sensitivity: "non_sensitive" \}/);
-assert.match(app, /styling_session_id: state\.stylingSessionId \|\| null,[\s\S]*ttl_days: null/);
+assert.match(app, /api\("\/memory\/candidates\/extract"/);
+assert.match(app, /styling_session_id: state\.stylingSessionId \|\| null,[\s\S]*text: sourceText,[\s\S]*request_id: requestId/);
 assert.match(app, /proposalId: proposal\.proposal_id/);
 assert.match(runtime, /normalizedProposal\.record_id !== normalizedRecord\.memory_id/);
 assert.match(runtime, /normalizedRecord\.source_proposal_id !== normalizedProposal\.proposal_id/);
@@ -70,5 +74,6 @@ assert.match(runtime, /raw\.truth_version >= 2/);
 assert.match(app, /proposal\.metadata_valid !== true[\s\S]*该项不可确认，也不会进入长期记忆/);
 assert.match(app, /record\.deletable === true[\s\S]*deleteMemory/);
 assert.match(app, /长时间站立时优先选择适合久走的鞋。/);
+assert.doesNotMatch(app, /memoryTemplatesFor|renderMemoryTemplateOptions|isApprovedMemoryTemplate/);
 
 console.log("web S15 memory UI/static visibility contract: PASS");

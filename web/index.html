@@ -5,13 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="ProfAgent R1 Stylist Demo：从场景理解到衣橱穿搭方向的可解释决策。">
   <title>ProfAgent · 私人穿搭团队</title>
-  <link rel="stylesheet" href="./styles.css?v=s15-memory-visibility-20260819">
-  <script defer src="./dialogue_runtime.js?v=s15-memory-visibility-20260819"></script>
-  <script defer src="./image_asset_runtime.js?v=s15-memory-visibility-20260819"></script>
+  <link rel="stylesheet" href="./styles.css?v=s16-free-text-memory-20260821">
+  <script defer src="./dialogue_runtime.js?v=s16-free-text-memory-20260821"></script>
+  <script defer src="./image_asset_runtime.js?v=s16-free-text-memory-20260821"></script>
   <script defer src="./recommendation_preview_runtime.js?v=s15-memory-visibility-20260819"></script>
-  <script defer src="./memory_runtime.js?v=s15-memory-visibility-20260819"></script>
-  <script defer src="./fixtures.js?v=s15-memory-visibility-20260819"></script>
-  <script defer src="./app.js?v=s15-memory-visibility-20260819"></script>
+  <script defer src="./memory_runtime.js?v=s16-free-text-memory-20260821"></script>
+  <script defer src="./memory_candidate_runtime.js?v=s16-free-text-memory-20260821"></script>
+  <script defer src="./fixtures.js?v=s16-free-text-memory-20260821"></script>
+  <script defer src="./app.js?v=s16-free-text-memory-20260821"></script>
 </head>
 <body>
   <a class="skip-link" href="#studio">跳到 Stylist Studio</a>
@@ -393,22 +394,19 @@
       </div>
       <div class="memory-grid">
         <article class="work-card">
-          <div class="work-card-heading"><div><p class="eyebrow">PROPOSE</p><h3>提出一条记忆</h3></div></div>
+          <div class="work-card-heading"><div><p class="eyebrow">PROPOSE</p><h3>用自己的话告诉我</h3></div></div>
           <form id="memory-propose-form" class="stack-form">
             <label for="memory-namespace">可见范围</label>
             <select id="memory-namespace" disabled><option value="stylist">仅 Stylist</option><option value="shared">团队共享</option></select>
-            <label for="memory-type">类型</label>
-            <select id="memory-type" disabled><option value="constraint">长期约束</option><option value="preference">穿搭偏好</option></select>
-            <label for="memory-content">受控模板</label>
-            <select id="memory-content" disabled></select>
-            <p class="form-help">R1 只接受服务端批准的精确语义模板，不保存任意自由文本。</p>
-            <label class="check-row"><input id="memory-sensitive" type="checkbox" disabled> 这条内容可能敏感（默认不写入）</label>
-            <button id="memory-propose-submit" class="button button-primary" type="submit" disabled>仅创建待确认提议</button>
+            <label for="memory-free-text">想让 Stylist 记住什么？</label>
+            <textarea id="memory-free-text" class="memory-free-text" maxlength="1000" rows="5" placeholder="例如：我平时更喜欢藏青色，约会时不想穿高跟鞋。" disabled></textarea>
+            <p class="form-help">原话只用于本次提取，不进入浏览器持久状态；Stylist 会把可记忆内容拆开，请你逐条决定。</p>
+            <button id="memory-propose-submit" class="button button-primary" type="submit" disabled>拆成待确认记忆</button>
           </form>
           <p id="memory-write-status" class="guard-note compact" role="status" hidden></p>
         </article>
         <article class="work-card">
-          <div class="work-card-heading"><div><p class="eyebrow">PENDING</p><h3>待你确认</h3></div></div>
+          <div class="work-card-heading"><div><p class="eyebrow">PENDING</p><h3>逐条确认</h3></div></div>
           <div id="memory-pending-list" class="memory-list"><p class="empty-state compact">暂无待确认提议。</p></div>
         </article>
         <article class="work-card">

@@ -106,7 +106,7 @@
       && typeof raw.content === "string"
       && raw.content.length > 0
       && raw.content.length <= 1_000
-      && config.isApprovedTemplate(raw.type, raw.content)
+      && config.isApprovedContent(raw.type, raw.content)
       && config.expectedMemoryClass(raw.type, raw.content) === raw.memory_class
       && statusAllowed.has(raw.status)
       && raw.lifecycle_status === "active"
@@ -148,7 +148,7 @@
         ? raw.content === null
         : raw.sensitivity === "non_sensitive"
           && typeof raw.content === "string"
-          && config.isApprovedTemplate(raw.type, raw.content))
+          && config.isApprovedContent(raw.type, raw.content))
     );
     const committedStateValid = raw.status !== "committed" || (
       validId(raw.record_id)

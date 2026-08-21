@@ -21,7 +21,7 @@ const config = Object.freeze({
   allowedProvenanceVersions: new Set(["memory_provenance_v1", "memory_legacy_v0"]),
   allowedConsentVersions: new Set(["explicit_confirm_v1", "legacy_confirm_v0"]),
   nowMs: NOW,
-  isApprovedTemplate: (type, content) => approved[type]?.has(content) === true,
+  isApprovedContent: (type, content) => approved[type]?.has(content) === true,
   expectedMemoryClass: (type) => type === "constraint" ? "hard_constraint" : "preference_event"
 });
 

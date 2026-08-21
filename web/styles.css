@@ -2160,6 +2160,37 @@ h1 {
   gap: 9px;
 }
 
+.memory-free-text {
+  min-height: 122px;
+  resize: vertical;
+  line-height: 1.6;
+}
+
+.memory-candidate-card {
+  border-color: #afc9bb;
+  background: #f4f8f5;
+}
+
+.memory-candidate-copy {
+  color: var(--ink) !important;
+  font-size: 0.82rem !important;
+  line-height: 1.55;
+}
+
+.memory-candidate-conflict,
+.memory-candidate-note {
+  padding: 7px 8px;
+  border-radius: 7px;
+  background: #fff8e9;
+}
+
+.memory-candidate-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+}
+
 .memory-subheading {
   margin: 14px 0 5px;
   color: var(--forest);
