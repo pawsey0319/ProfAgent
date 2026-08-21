@@ -80,6 +80,7 @@ from .memory_service import (
     MemoryProposeInput,
     MemoryService,
 )
+from .memory_candidates import MemoryCandidateService
 from .repository import FixtureRepository
 from .retrieval import HardFilter, HybridRetriever, OutfitAssembler, RecommendationValidator
 from .scene import SceneParser, SceneStateConflict, SceneStateStore
@@ -107,6 +108,10 @@ class AppServices:
             root_dir=settings.root_dir,
         )
         self.llm = GrokLLMProvider(settings)
+        self.memory_candidates = MemoryCandidateService(
+            memory=self.memory,
+            provider=self.llm,
+        )
         self.image_provider = GrokImageProvider(settings)
         self.dense = DenseAdapter(settings)
         self.hard_filter = HardFilter()

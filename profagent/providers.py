@@ -51,6 +51,7 @@ class GrokLLMProvider:
     # accepting the stable transport alias.  Never accept arbitrary prefixes.
     _REPORTED_MODEL_ALLOWLIST = {CPA_TRANSPORT_MODEL: CPA_REPORTED_MODELS}
     _MAX_DIALOGUE_RESPONSE_BYTES = 64 * 1024
+    _MAX_MEMORY_CANDIDATE_RESPONSE_BYTES = 16 * 1024
     # R1 has no 3D/360/video/dynamic path.  Model output mentioning one of
     # these modes is never necessary to satisfy a server-authorized action;
     # fail closed rather than attempting to infer whether it is a promise.
@@ -352,6 +353,170 @@ class GrokLLMProvider:
                 exc, (json.JSONDecodeError, KeyError, IndexError, TypeError, ValueError)
             ):
                 reason_code = "CPA_PROVIDER_INVALID_RESPONSE"
+            else:
+                reason_code = "CPA_PROVIDER_UNAVAILABLE"
+            self.mark_interaction_failure(reason_code)
+            raise ProviderUnavailable(
+                type(exc).__name__, reason_code=reason_code
+            ) from exc
+
+    async def extract_memory_candidates(
+        self,
+        text: str,
+        *,
+        allowed_kinds: tuple[str, ...],
+        allowed_values: dict[str, tuple[str, ...]],
+    ) -> tuple[tuple[dict[str, object], ...], dict[str, object]]:
+        """Return bounded schema-only candidate advisories from CPA.
+
+        Sensitive/direct-identifier filtering is owned by the application-level
+        MemoryCandidateService and runs before this transport method. Provider
+        output remains untrusted: every field and kind/value pair is checked
+        against the server-authored closure supplied by that service.
+        """
+
+        if not self.settings.cpa_text_enabled:
+            raise ProviderUnavailable(
+                "CPA text provider is disabled",
+                reason_code="CPA_PROVIDER_DISABLED",
+            )
+        if time.monotonic() < self._unavailable_until:
+            raise ProviderUnavailable(
+                "CPA circuit breaker is open",
+                reason_code="CPA_CIRCUIT_OPEN",
+            )
+        if (
+            not allowed_kinds
+            or len(set(allowed_kinds)) != len(allowed_kinds)
+            or set(allowed_values) != set(allowed_kinds)
+            or any(
+                not values or len(set(values)) != len(values)
+                for values in allowed_values.values()
+            )
+        ):
+            raise ProviderUnavailable(
+                "memory candidate closure is invalid",
+                reason_code="CPA_MEMORY_CANDIDATE_SCHEMA_INVALID",
+                opens_circuit=False,
+            )
+
+        closure = {
+            kind: list(allowed_values[kind]) for kind in allowed_kinds
+        }
+        system_prompt = (
+            "你是服装造型偏好候选提取器。只输出 JSON 对象，根键只能是 candidates。"
+            "candidates 最多 5 项；每项键必须且只能为 canonical_kind、"
+            "canonical_value、applicability_tags、confidence_band。"
+            "canonical_kind/value 必须来自给定闭集；applicability_tags 本阶段必须为空数组；"
+            "confidence_band 只能为 high/medium/low。不要输出解释、推理、原文、用户标识或衣物 ID。"
+            f"闭集：{json.dumps(closure, ensure_ascii=False, separators=(',', ':'))}"
+        )
+        request_body = {
+            "model": self.transport_model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": text},
+            ],
+            "temperature": 0,
+            "response_format": {"type": "json_object"},
+        }
+        started = time.perf_counter()
+
+        def reject_duplicate_keys(
+            pairs: list[tuple[str, object]],
+        ) -> dict[str, object]:
+            parsed: dict[str, object] = {}
+            for key, value in pairs:
+                if key in parsed:
+                    raise ValueError("duplicate JSON key")
+                parsed[key] = value
+            return parsed
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=self.settings.cpa_timeout_seconds,
+                trust_env=False,
+            ) as client:
+                response = await client.post(
+                    f"{self.settings.cpa_base_url}/chat/completions",
+                    headers=self._headers(),
+                    json=request_body,
+                )
+                response.raise_for_status()
+                if len(response.content) > self._MAX_MEMORY_CANDIDATE_RESPONSE_BYTES:
+                    raise ValueError("memory candidate response is too large")
+                body = response.json()
+            self._verify_reported_model(body.get("model"), "memory_candidates")
+            content = body["choices"][0]["message"]["content"]
+            if not isinstance(content, str):
+                raise TypeError("memory candidate content must be text")
+            payload = json.loads(content, object_pairs_hook=reject_duplicate_keys)
+            if not isinstance(payload, dict) or set(payload) != {"candidates"}:
+                raise ValueError("memory candidate envelope is invalid")
+            raw_candidates = payload["candidates"]
+            if not isinstance(raw_candidates, list) or len(raw_candidates) > 5:
+                raise ValueError("memory candidate count is invalid")
+            expected_fields = {
+                "canonical_kind",
+                "canonical_value",
+                "applicability_tags",
+                "confidence_band",
+            }
+            candidates: list[dict[str, object]] = []
+            seen: set[tuple[str, str]] = set()
+            for raw in raw_candidates:
+                if not isinstance(raw, dict) or set(raw) != expected_fields:
+                    raise ValueError("memory candidate fields are invalid")
+                kind = raw["canonical_kind"]
+                value = raw["canonical_value"]
+                if (
+                    not isinstance(kind, str)
+                    or kind not in allowed_kinds
+                    or not isinstance(value, str)
+                    or value not in allowed_values[kind]
+                    or raw["applicability_tags"] != []
+                    or raw["confidence_band"] not in {"high", "medium", "low"}
+                ):
+                    raise ValueError("memory candidate value is outside closure")
+                key = (kind, value)
+                if key in seen:
+                    raise ValueError("duplicate memory candidate")
+                seen.add(key)
+                candidates.append(
+                    {
+                        "canonical_kind": kind,
+                        "canonical_value": value,
+                        "applicability_tags": [],
+                        "confidence_band": raw["confidence_band"],
+                    }
+                )
+            metadata: dict[str, object] = {
+                "attempted": True,
+                "status": "ok",
+                "requested_model": self.requested_model,
+                "transport_model": self.transport_model,
+                "resolved_model": self.resolved_model,
+                "model_verified": True,
+                "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+            }
+            return tuple(candidates), metadata
+        except ProviderUnavailable as exc:
+            self.mark_interaction_failure(exc.reason_code)
+            raise
+        except Exception as exc:
+            if isinstance(exc, httpx.TimeoutException):
+                reason_code = "CPA_PROVIDER_TIMEOUT"
+            elif isinstance(
+                exc,
+                (
+                    json.JSONDecodeError,
+                    KeyError,
+                    IndexError,
+                    TypeError,
+                    ValueError,
+                ),
+            ):
+                reason_code = "CPA_MEMORY_CANDIDATE_INVALID_RESPONSE"
             else:
                 reason_code = "CPA_PROVIDER_UNAVAILABLE"
             self.mark_interaction_failure(reason_code)

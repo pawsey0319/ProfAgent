@@ -14,7 +14,6 @@ from profagent.memory_candidates import (
     CanonicalMemoryCandidate,
     MemoryCandidateError,
     MemoryCandidatePrefilter,
-    MemoryCandidateService,
     SessionPreference,
     SessionPreferenceStore,
     canonicalize_candidate,
@@ -26,6 +25,7 @@ from profagent.memory_service import (
 )
 from profagent.memory_repository import SqlMemoryRepository
 from profagent.models import SceneParseInput
+from profagent.providers import ProviderUnavailable
 from profagent.tracing import TraceStore
 
 
@@ -113,25 +113,6 @@ def test_current_non_color_vocabulary_is_closed(
         canonicalize_candidate(kind, f"{value}_from_provider")
 
 
-class _RecordingCandidateProvider:
-    def __init__(self) -> None:
-        self.interaction_count = 0
-        self.last_text: str | None = None
-
-    async def extract_memory_candidates(
-        self,
-        text: str,
-        *,
-        allowed_kinds: tuple[str, ...],
-        allowed_values: dict[str, tuple[str, ...]],
-    ) -> tuple[tuple[dict[str, object], ...], dict[str, object]]:
-        self.interaction_count += 1
-        self.last_text = text
-        assert "color_preference" in allowed_kinds
-        assert "navy" in allowed_values["color_preference"]
-        return (), {"attempted": True}
-
-
 def _repository_write_counts(path) -> dict[str, int]:
     connection = sqlite3.connect(path)
     counts = {
@@ -160,9 +141,11 @@ def test_sensitive_ingress_blocks_real_provider_repository_outbox_and_trace(
     memory = services.memory
     provider = services.llm
     traces = services.traces
-    ingress = MemoryCandidateService(memory=memory, provider=provider)
+    ingress = services.memory_candidates
     before = _repository_write_counts(path)
 
+    assert ingress.memory is memory
+    assert ingress.provider is provider
     assert provider._chat_attempted is False
     result = asyncio.run(ingress.extract(raw))
 
@@ -189,28 +172,30 @@ def test_sensitive_ingress_blocks_real_provider_repository_outbox_and_trace(
     memory.close()
 
 
-def test_safe_ingress_reaches_injected_candidate_provider(tmp_path) -> None:
-    path = tmp_path / "safe_ingress.sqlite3"
-    memory = MemoryService(
-        TraceStore(),
+def test_safe_application_ingress_uses_actual_provider_and_fails_closed_offline(
+    tmp_path, offline_settings
+) -> None:
+    path = tmp_path / "safe_application_ingress.sqlite3"
+    settings = replace(
+        offline_settings,
         database_url=f"sqlite:///{path.as_posix()}",
-        root_dir=tmp_path,
     )
-    provider = _RecordingCandidateProvider()
-    ingress = MemoryCandidateService(memory=memory, provider=provider)
+    app = create_app(settings)
+    services = app.state.services
 
-    result = asyncio.run(ingress.extract("我偏爱藏青色"))
+    with pytest.raises(ProviderUnavailable) as captured:
+        asyncio.run(services.memory_candidates.extract("我偏爱藏青色"))
 
-    assert result.code == "MEMORY_TEXT_READY"
-    assert result.allowed is True
-    assert provider.interaction_count == 1
-    assert provider.last_text == "我偏爱藏青色"
+    assert captured.value.reason_code == "CPA_PROVIDER_DISABLED"
+    assert not isinstance(captured.value.__cause__, AttributeError)
+    assert services.llm._chat_attempted is False
     assert _repository_write_counts(path) == {
         "memory_proposals": 0,
         "memory_records": 0,
         "memory_outbox": 0,
     }
-    memory.close()
+    assert services.traces._records == {}
+    services.memory.close()
 
 
 def test_direct_identifier_is_blocked_without_echoing_the_value() -> None:
