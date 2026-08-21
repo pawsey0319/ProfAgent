@@ -12,3 +12,4 @@ config.local.json
 *.pem
 reports/runtime/
 .profagent/
+.worktrees/
