@@ -100,11 +100,18 @@ class GrokLLMProvider:
         # Explicit user-approved CPA alias mapping; never auto-select another model.
         self.transport_model = self._TRANSPORT_MODEL_BY_LOGICAL[self.requested_model]
         self.resolved_model: str | None = None
+        self._memory_candidate_operation_count = 0
         self._chat_attempted = False
         self._chat_model_verified = False
         self._last_chat_verification_error: str | None = None
         self._unavailable_until = 0.0
         self._health_cache: tuple[float, dict[str, Any]] | None = None
+
+    @property
+    def memory_candidate_operation_count(self) -> int:
+        """Count candidate-operation entries, not successful transports."""
+
+        return self._memory_candidate_operation_count
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -375,6 +382,7 @@ class GrokLLMProvider:
         against the server-authored closure supplied by that service.
         """
 
+        self._memory_candidate_operation_count += 1
         if not self.settings.cpa_text_enabled:
             raise ProviderUnavailable(
                 "CPA text provider is disabled",

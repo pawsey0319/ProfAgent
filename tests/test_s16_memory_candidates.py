@@ -146,11 +146,13 @@ def test_sensitive_ingress_blocks_real_provider_repository_outbox_and_trace(
 
     assert ingress.memory is memory
     assert ingress.provider is provider
+    assert provider.memory_candidate_operation_count == 0
     assert provider._chat_attempted is False
     result = asyncio.run(ingress.extract(raw))
 
     assert result.code == "SENSITIVE_MEMORY_DEFAULT_NO_WRITE"
     assert result.allowed is False
+    assert provider.memory_candidate_operation_count == 0
     assert provider._chat_attempted is False
     assert _repository_write_counts(path) == before == {
         "memory_proposals": 0,
@@ -182,12 +184,15 @@ def test_safe_application_ingress_uses_actual_provider_and_fails_closed_offline(
     )
     app = create_app(settings)
     services = app.state.services
+    raw = "我偏爱藏青色"
 
+    assert services.llm.memory_candidate_operation_count == 0
     with pytest.raises(ProviderUnavailable) as captured:
-        asyncio.run(services.memory_candidates.extract("我偏爱藏青色"))
+        asyncio.run(services.memory_candidates.extract(raw))
 
     assert captured.value.reason_code == "CPA_PROVIDER_DISABLED"
     assert not isinstance(captured.value.__cause__, AttributeError)
+    assert services.llm.memory_candidate_operation_count == 1
     assert services.llm._chat_attempted is False
     assert _repository_write_counts(path) == {
         "memory_proposals": 0,
@@ -195,6 +200,9 @@ def test_safe_application_ingress_uses_actual_provider_and_fails_closed_offline(
         "memory_outbox": 0,
     }
     assert services.traces._records == {}
+    assert raw not in json.dumps(
+        services.traces._records, ensure_ascii=False, default=str
+    )
     services.memory.close()
 
 
