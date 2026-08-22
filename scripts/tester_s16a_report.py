@@ -19,6 +19,7 @@ REPORT_MD = ROOT / "reports" / "eval" / "s16a_memory_uncertainty_v1.md"
 REPORT_BUNDLE = (
     ROOT / "reports" / "eval" / "s16a_memory_uncertainty_v1.bundle.json"
 )
+REVIEW_EVIDENCE_ROOT = ROOT.resolve()
 REPORT_COMMAND = (
     "conda run --no-capture-output -n torch128 "
     "python scripts/tester_s16a_report.py"
@@ -282,43 +283,254 @@ def _pending_reviewer_gate() -> dict[str, Any]:
     }
 
 
-def _select_reviewer_gate(
-    source_revision: str, evidence: dict[str, Any] | None
+def _safe_read_evidence_bytes(raw_path: Any) -> tuple[str, bytes]:
+    if not isinstance(raw_path, str) or not raw_path:
+        raise GateFailure("review evidence path must be a non-empty absolute string")
+    candidate = Path(raw_path)
+    if not candidate.is_absolute() or ".." in candidate.parts:
+        raise GateFailure("review evidence path must be absolute without dot-dot")
+    try:
+        root = REVIEW_EVIDENCE_ROOT.resolve(strict=True)
+        resolved = candidate.resolve(strict=True)
+        relative = resolved.relative_to(root)
+    except (OSError, ValueError) as exc:
+        raise GateFailure("review evidence path escapes the allowed root") from exc
+    if not resolved.is_file():
+        raise GateFailure("review evidence path is not a regular file")
+    try:
+        with resolved.open("rb") as stream:
+            before = os.fstat(stream.fileno())
+            content = stream.read()
+            after = os.fstat(stream.fileno())
+        final = resolved.stat()
+        resolved_after = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise GateFailure("review evidence file could not be read safely") from exc
+    stable_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns")
+    if any(getattr(before, field) != getattr(after, field) for field in stable_fields):
+        raise GateFailure("review evidence file changed during read")
+    if any(getattr(after, field) != getattr(final, field) for field in stable_fields):
+        raise GateFailure("review evidence file changed after read")
+    if resolved_after != resolved or len(content) != after.st_size:
+        raise GateFailure("review evidence path changed during read")
+    return relative.as_posix(), content
+
+
+def _parse_fixed_package(
+    content: bytes, expected_source: str, reviewed_head: str
 ) -> dict[str, Any]:
-    if not isinstance(evidence, dict):
-        return _pending_reviewer_gate()
+    try:
+        package = json.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise GateFailure("fixed package is not valid UTF-8 JSON") from exc
     required = {
         "schema_version",
-        "source_revision",
-        "fixed_package_sha256",
-        "review_output_sha256",
+        "base_revision",
+        "head_revision",
+        "tested_source_revision",
+        "commits",
+        "diff",
+    }
+    if not isinstance(package, dict) or set(package) != required:
+        raise GateFailure("fixed package shape is not closed")
+    if package["schema_version"] != 1:
+        raise GateFailure("fixed package schema version is unsupported")
+    for field in ("base_revision", "head_revision", "tested_source_revision"):
+        if not re.fullmatch(r"[0-9a-f]{40}", str(package[field])):
+            raise GateFailure(f"fixed package {field} is malformed")
+    if (
+        package["head_revision"] != reviewed_head
+        or package["tested_source_revision"] != expected_source
+        or reviewed_head != expected_source
+        or package["base_revision"] == package["head_revision"]
+    ):
+        raise GateFailure("fixed package head/tested source binding mismatch")
+    commits = package["commits"]
+    if not isinstance(commits, list) or not commits or not all(
+        isinstance(item, str) and re.fullmatch(r"[0-9a-f]{40}", item)
+        for item in commits
+    ):
+        raise GateFailure("fixed package commit list is malformed")
+    if len(commits) != len(set(commits)) or commits[-1] != reviewed_head:
+        raise GateFailure("fixed package commit list does not terminate at reviewed head")
+    base = package["base_revision"]
+    actual_commits = [
+        line
+        for line in _run(
+            ["git", "rev-list", "--reverse", f"{base}..{reviewed_head}"],
+            "review package commit list",
+        ).stdout.splitlines()
+        if line
+    ]
+    if commits != actual_commits:
+        raise GateFailure("fixed package commit list differs from local git truth")
+    actual_diff = _run(
+        ["git", "diff", "--no-ext-diff", "--binary", base, reviewed_head],
+        "review package diff truth",
+    ).stdout
+    if not isinstance(package["diff"], str) or package["diff"] != actual_diff:
+        raise GateFailure("fixed package diff differs from local git truth")
+    return {
+        "base_revision": base,
+        "head_revision": reviewed_head,
+        "tested_source_revision": expected_source,
+        "commits": commits,
+    }
+
+
+_REVIEW_BLOCK = re.compile(
+    r"(?m)^\[S16A_REVIEW_RESULT_V1\]\r?\n"
+    r"source_revision=([0-9a-f]{40})\r?\n"
+    r"reviewed_head=([0-9a-f]{40})\r?\n"
+    r"final_verdict=(PASS|CHANGES REQUIRED)\r?\n"
+    r"P0=(\d+)\r?\n"
+    r"P1=(\d+)\r?\n"
+    r"P2=(\d+)\r?\n"
+    r"\[/S16A_REVIEW_RESULT_V1\]\r?$"
+)
+
+
+def _parse_review_output(
+    content: bytes, expected_source: str, reviewed_head: str
+) -> dict[str, Any]:
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise GateFailure("review output is not valid UTF-8") from exc
+    matches = list(_REVIEW_BLOCK.finditer(text))
+    if len(matches) != 1:
+        raise GateFailure("review output must contain exactly one closed result block")
+    match = matches[0]
+    outside = text[: match.start()] + text[match.end() :]
+    if (
+        "[S16A_REVIEW_RESULT_V1]" in outside
+        or "[/S16A_REVIEW_RESULT_V1]" in outside
+        or re.search(r"(?i)final\s+verdict\s*[:=]", outside)
+    ):
+        raise GateFailure("review output contains an ambiguous verdict")
+    source, head, verdict = match.group(1), match.group(2), match.group(3)
+    if source != expected_source or head != reviewed_head or head != source:
+        raise GateFailure("review output source/head binding mismatch")
+    findings = {
+        "P0": int(match.group(4)),
+        "P1": int(match.group(5)),
+        "P2": int(match.group(6)),
+    }
+    observed = {
+        priority: len(re.findall(rf"\[{priority}\]", outside))
+        for priority in findings
+    }
+    if findings != observed:
+        raise GateFailure("review output finding counts differ from finding tags")
+    if verdict == "PASS" and any(findings.values()):
+        raise GateFailure("PASS review output contains findings")
+    if verdict == "CHANGES REQUIRED" and not any(findings.values()):
+        raise GateFailure("CHANGES REQUIRED review output has no findings")
+    return {
+        "status": "PASS" if verdict == "PASS" else "CHANGES_REQUIRED",
+        "findings": findings,
+    }
+
+
+def _review_gate_from_descriptor(
+    source_revision: str, descriptor: dict[str, Any] | None
+) -> dict[str, Any]:
+    try:
+        required = {
+            "schema_version",
+            "expected_source_revision",
+            "reviewed_head",
+            "fixed_package_path",
+            "review_output_path",
+        }
+        if not isinstance(descriptor, dict) or set(descriptor) != required:
+            raise GateFailure("review descriptor shape is not closed")
+        if descriptor["schema_version"] != 1:
+            raise GateFailure("review descriptor schema version is unsupported")
+        if (
+            descriptor["expected_source_revision"] != source_revision
+            or descriptor["reviewed_head"] != source_revision
+        ):
+            raise GateFailure("review descriptor source binding mismatch")
+        package_path, package_bytes = _safe_read_evidence_bytes(
+            descriptor["fixed_package_path"]
+        )
+        review_path, review_bytes = _safe_read_evidence_bytes(
+            descriptor["review_output_path"]
+        )
+        package = _parse_fixed_package(
+            package_bytes, source_revision, descriptor["reviewed_head"]
+        )
+        parsed_review = _parse_review_output(
+            review_bytes, source_revision, descriptor["reviewed_head"]
+        )
+        accepted = {
+            "status": parsed_review["status"],
+            "findings": parsed_review["findings"],
+            "source_revision": source_revision,
+            "reviewed_head": descriptor["reviewed_head"],
+            "fixed_package_path": package_path,
+            "review_output_path": review_path,
+            "fixed_package_sha256": _sha256(package_bytes),
+            "review_output_sha256": _sha256(review_bytes),
+            "fixed_package": package,
+        }
+        accepted["evidence_sha256"] = _sha256(_canonical_json_bytes(accepted))
+        return accepted
+    except (GateFailure, OSError, ValueError, TypeError):
+        return _pending_reviewer_gate()
+
+
+def _preserve_reviewer_gate(
+    source_revision: str, stored_gate: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    if stored_gate is None:
+        try:
+            stored_gate = _load_authoritative_report().get("reviewer_gate")
+        except GateFailure:
+            return _pending_reviewer_gate()
+    if (
+        not isinstance(stored_gate, dict)
+        or stored_gate.get("status") not in {"PASS", "CHANGES_REQUIRED"}
+        or stored_gate.get("source_revision") != source_revision
+    ):
+        return _pending_reviewer_gate()
+    package_relative = stored_gate.get("fixed_package_path")
+    review_relative = stored_gate.get("review_output_path")
+    if not isinstance(package_relative, str) or not isinstance(review_relative, str):
+        return _pending_reviewer_gate()
+    if (
+        Path(package_relative).is_absolute()
+        or Path(review_relative).is_absolute()
+        or ".." in Path(package_relative).parts
+        or ".." in Path(review_relative).parts
+    ):
+        return _pending_reviewer_gate()
+    descriptor = {
+        "schema_version": 1,
+        "expected_source_revision": source_revision,
+        "reviewed_head": stored_gate.get("reviewed_head"),
+        "fixed_package_path": str((REVIEW_EVIDENCE_ROOT / package_relative).absolute()),
+        "review_output_path": str((REVIEW_EVIDENCE_ROOT / review_relative).absolute()),
+    }
+    recomputed = _review_gate_from_descriptor(source_revision, descriptor)
+    if recomputed.get("status") == "PENDING":
+        return recomputed
+    fields = {
         "status",
         "findings",
+        "source_revision",
+        "reviewed_head",
+        "fixed_package_path",
+        "review_output_path",
+        "fixed_package_sha256",
+        "review_output_sha256",
+        "fixed_package",
+        "evidence_sha256",
     }
-    if not required.issubset(evidence) or evidence.get("schema_version") != 1:
+    if any(stored_gate.get(field) != recomputed.get(field) for field in fields):
         return _pending_reviewer_gate()
-    if evidence.get("source_revision") != source_revision:
-        return _pending_reviewer_gate()
-    if not all(
-        re.fullmatch(r"[0-9a-f]{64}", str(evidence.get(field, "")))
-        for field in ("fixed_package_sha256", "review_output_sha256")
-    ):
-        return _pending_reviewer_gate()
-    status = evidence.get("status")
-    findings = evidence.get("findings")
-    if status not in {"PASS", "CHANGES_REQUIRED"} or not isinstance(findings, dict):
-        return _pending_reviewer_gate()
-    if set(findings) != {"P0", "P1", "P2"} or not all(
-        isinstance(findings[key], int) and findings[key] >= 0 for key in findings
-    ):
-        return _pending_reviewer_gate()
-    if status == "PASS" and any(findings.values()):
-        return _pending_reviewer_gate()
-    if status == "CHANGES_REQUIRED" and not any(findings.values()):
-        return _pending_reviewer_gate()
-    accepted = {key: evidence[key] for key in required}
-    accepted["evidence_sha256"] = _sha256(_canonical_json_bytes(accepted))
-    return accepted
+    return recomputed
 
 
 def _metric_passes(name: str, value: float | int) -> bool:
@@ -383,10 +595,10 @@ def _validate_report_contract(report: dict[str, Any]) -> None:
     if reviewer.get("status") == "PENDING":
         if reviewer.get("findings") != {"P0": None, "P1": None, "P2": None}:
             raise GateFailure("pending reviewer findings must remain unknown")
-    elif not isinstance(source_revision, str) or _select_reviewer_gate(
+    elif not isinstance(source_revision, str) or _preserve_reviewer_gate(
         source_revision, reviewer
-    ).get("status") != reviewer.get("status"):
-        raise GateFailure("reviewer evidence is not hash/source bound")
+    ) != reviewer:
+        raise GateFailure("reviewer evidence is not source/content bound")
 
 
 def _selected_metric(metric: dict[str, Any]) -> dict[str, Any]:
@@ -515,13 +727,9 @@ def _execute(review_evidence: dict[str, Any] | None = None) -> dict[str, Any]:
     gate(["git", "diff", "--check"], "git diff check")
 
     if review_evidence is None:
-        try:
-            prior = _load_authoritative_report().get("reviewer_gate")
-        except GateFailure:
-            prior = None
-        reviewer_gate = _select_reviewer_gate(source["source_revision"], prior)
+        reviewer_gate = _preserve_reviewer_gate(source["source_revision"])
     else:
-        reviewer_gate = _select_reviewer_gate(
+        reviewer_gate = _review_gate_from_descriptor(
             source["source_revision"], review_evidence
         )
     command_plan_sha256 = _command_plan_sha256(commands)
@@ -687,7 +895,7 @@ def _markdown(report: dict[str, Any]) -> str:
         "",
         "## 审查边界",
         "",
-        f"本报告只证明 tester 技术门禁。当前 reviewer={report['reviewer_gate']['status']}；只有 source revision、fixed package SHA-256 与 review output SHA-256 全部有效且绑定当前 source 时才保留 reviewer evidence。S16B、S16C、S16R 均未关闭。",
+        f"本报告只证明 tester 技术门禁。当前 reviewer={report['reviewer_gate']['status']}；调用方只提供仓库允许根内的 fixed package/review output 绝对路径与预期 source/head，runner 从安全读取的同一份 bytes 自行解析并计算 SHA-256；只有内容、路径与当前 source 持续匹配时才保留 reviewer evidence。S16B、S16C、S16R 均未关闭。",
         "",
         "报告不包含原始对话、敏感值、直接标识符、模型推理或外部 Provider 正文。",
         "",
@@ -754,7 +962,11 @@ def main(review_evidence: dict[str, Any] | None = None) -> int:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--review-evidence", type=Path)
+    parser.add_argument(
+        "--review-evidence",
+        type=Path,
+        help="closed descriptor with repository-contained evidence paths; hashes/verdict/findings are runner-derived",
+    )
     arguments = parser.parse_args()
     evidence = None
     if arguments.review_evidence is not None:

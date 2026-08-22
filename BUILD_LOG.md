@@ -601,6 +601,7 @@ S16 复用 S15 Memory 路线 A、R1 owner/ID/HardFilter/购物门控、不可变
 - **输入/输出依赖**：消费 S16-0 冻结合同及 S15 SQL/outbox/RRF；产出候选确认卡、working context 和由服务端拥有的排序/问题预算证据。
 - **验收口径**：原始自由文本、原始对话、模型推理/正文、敏感值和直接标识符不得进入长期 Memory、RRF、outbox、Trace、Debug DOM 或 browser storage；候选卡仅含服务端生成的脱敏闭集字段。高急最多问一次且不阻塞合法推荐；拒绝后不换说法重复。
 - **Task8 权威性修复边界（2026-08-22）**：canonical bundle 是唯一权威，固定 JSON/MD 仅为 projection；只有 bundle hash、双 projection hash 和 source/tree/command-plan provenance 全部匹配才可读取 authoritative PASS。修复代码 clean 提交后才能运行全套 runner 并另行提交 artifacts；后续只读 review 前 finding 保持 pending/unknown。
+- **Task8 review evidence 修复边界（2026-08-22，验收中）**：review descriptor 只允许提交仓库允许根内的 fixed package/review output 绝对路径与预期 source/head，不接受调用方提供 SHA、verdict 或 findings。runner 必须从安全读取的同一份 bytes 自行验证 Git base/head/commit list/diff、解析唯一闭合 review result block 并计算 hashes；内容、路径或 source 漂移一律回到 `PENDING/unknown`。本记录不关闭 S16A，S16B/S16C/S16R 仍未完成。
 
 #### S16B — 女装 V1 资产与授权来源（`backend` + `frontend` → `reviewer` → `tester`，未完成）
 

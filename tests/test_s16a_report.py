@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 
@@ -276,30 +277,210 @@ def test_s16a_bundle_commit_interruption_never_exposes_mixed_pass_and_repairs(
     assert report_module._load_authoritative_report() == replacement
 
 
-def test_s16a_review_evidence_is_hash_and_source_bound() -> None:
-    source = "a" * 40
-    evidence = {
-        "schema_version": 1,
-        "source_revision": source,
-        "fixed_package_sha256": "b" * 64,
-        "review_output_sha256": "c" * 64,
-        "status": "PASS",
-        "findings": {"P0": 0, "P1": 0, "P2": 0},
-    }
-    accepted = report_module._select_reviewer_gate(source, evidence)
-    assert accepted["status"] == "PASS"
-    assert accepted["source_revision"] == source
-    assert accepted["fixed_package_sha256"] == "b" * 64
-    assert accepted["review_output_sha256"] == "c" * 64
+def _git_text(*arguments: str) -> str:
+    return subprocess.run(
+        ["git", *arguments],
+        cwd=report_module.ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+    ).stdout
 
-    changed = report_module._select_reviewer_gate("d" * 40, evidence)
-    assert changed == {
+
+def _real_review_fixture(root: Path) -> tuple[str, dict, Path, Path]:
+    head = _git_text("rev-parse", "HEAD").strip()
+    base = _git_text("rev-parse", "HEAD^").strip()
+    commits = [
+        line for line in _git_text("rev-list", "--reverse", f"{base}..{head}").splitlines()
+        if line
+    ]
+    diff = _git_text("diff", "--no-ext-diff", "--binary", base, head)
+    package_path = root / "fixed-package.json"
+    package_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "base_revision": base,
+                "head_revision": head,
+                "tested_source_revision": head,
+                "commits": commits,
+                "diff": diff,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    review_path = root / "review-output.md"
+    review_path.write_text(
+        "reviewed exact fixed package\n"
+        "[S16A_REVIEW_RESULT_V1]\n"
+        f"source_revision={head}\n"
+        f"reviewed_head={head}\n"
+        "final_verdict=PASS\n"
+        "P0=0\n"
+        "P1=0\n"
+        "P2=0\n"
+        "[/S16A_REVIEW_RESULT_V1]\n",
+        encoding="utf-8",
+    )
+    descriptor = {
+        "schema_version": 1,
+        "expected_source_revision": head,
+        "reviewed_head": head,
+        "fixed_package_path": str(package_path.resolve()),
+        "review_output_path": str(review_path.resolve()),
+    }
+    return head, descriptor, package_path, review_path
+
+
+def test_s16a_review_descriptor_reads_real_files_and_derives_hashes(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(report_module, "REVIEW_EVIDENCE_ROOT", tmp_path.resolve())
+    source, descriptor, package_path, review_path = _real_review_fixture(tmp_path)
+    accepted = report_module._review_gate_from_descriptor(source, descriptor)
+    assert accepted["status"] == "PASS"
+    assert accepted["findings"] == {"P0": 0, "P1": 0, "P2": 0}
+    assert accepted["source_revision"] == source
+    assert accepted["reviewed_head"] == source
+    assert accepted["fixed_package_sha256"] == report_module._sha256(
+        package_path.read_bytes()
+    )
+    assert accepted["review_output_sha256"] == report_module._sha256(
+        review_path.read_bytes()
+    )
+    assert "sha" not in " ".join(descriptor).lower()
+    caller_hash = dict(descriptor, fixed_package_sha256="0" * 64)
+    assert (
+        report_module._review_gate_from_descriptor(source, caller_hash)["status"]
+        == "PENDING"
+    )
+
+
+def test_s16a_review_content_change_wrong_head_tamper_and_fake_pass_fail_closed(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(report_module, "REVIEW_EVIDENCE_ROOT", tmp_path.resolve())
+    source, descriptor, package_path, review_path = _real_review_fixture(tmp_path)
+    accepted = report_module._review_gate_from_descriptor(source, descriptor)
+
+    review_path.write_text(
+        review_path.read_text(encoding="utf-8") + "post-read modification\n",
+        encoding="utf-8",
+    )
+    assert report_module._preserve_reviewer_gate(source, accepted)["status"] == "PENDING"
+
+    source, descriptor, package_path, review_path = _real_review_fixture(tmp_path)
+    wrong_source = dict(descriptor, expected_source_revision="0" * 40)
+    assert (
+        report_module._review_gate_from_descriptor(source, wrong_source)["status"]
+        == "PENDING"
+    )
+
+    source, descriptor, package_path, review_path = _real_review_fixture(tmp_path)
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["head_revision"] = package["base_revision"]
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+    assert report_module._review_gate_from_descriptor(source, descriptor)["status"] == "PENDING"
+
+    source, descriptor, package_path, review_path = _real_review_fixture(tmp_path)
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["commits"] = list(reversed(package["commits"])) + [package["base_revision"]]
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+    assert report_module._review_gate_from_descriptor(source, descriptor)["status"] == "PENDING"
+
+    source, descriptor, package_path, review_path = _real_review_fixture(tmp_path)
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["diff"] += "tampered diff\n"
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+    assert report_module._review_gate_from_descriptor(source, descriptor)["status"] == "PENDING"
+
+    source, descriptor, _package_path, review_path = _real_review_fixture(tmp_path)
+    review_path.write_text("Final Verdict: PASS\nP0=0 P1=0 P2=0\n", encoding="utf-8")
+    assert report_module._review_gate_from_descriptor(source, descriptor)["status"] == "PENDING"
+
+
+def test_s16a_review_output_rejects_ambiguous_blocks_and_finding_count_mismatch(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(report_module, "REVIEW_EVIDENCE_ROOT", tmp_path.resolve())
+    source, descriptor, _package_path, review_path = _real_review_fixture(tmp_path)
+    valid_block = review_path.read_text(encoding="utf-8")
+    review_path.write_text(valid_block + valid_block, encoding="utf-8")
+    assert report_module._review_gate_from_descriptor(source, descriptor)["status"] == "PENDING"
+
+    _source, descriptor, _package_path, review_path = _real_review_fixture(tmp_path)
+    mismatch = (
+        "[P1] actual finding\n"
+        "[S16A_REVIEW_RESULT_V1]\n"
+        f"source_revision={source}\nreviewed_head={source}\n"
+        "final_verdict=CHANGES REQUIRED\nP0=0\nP1=0\nP2=0\n"
+        "[/S16A_REVIEW_RESULT_V1]\n"
+    )
+    review_path.write_text(mismatch, encoding="utf-8")
+    assert report_module._review_gate_from_descriptor(source, descriptor)["status"] == "PENDING"
+
+
+def test_s16a_review_paths_reject_escape_dotdot_and_external_symlink(
+    monkeypatch, tmp_path: Path
+) -> None:
+    evidence_root = tmp_path / "inside"
+    evidence_root.mkdir()
+    monkeypatch.setattr(report_module, "REVIEW_EVIDENCE_ROOT", evidence_root.resolve())
+    source, descriptor, package_path, review_path = _real_review_fixture(evidence_root)
+    outside = tmp_path / "outside-review.md"
+    outside.write_text(review_path.read_text(encoding="utf-8"), encoding="utf-8")
+    escaped = dict(descriptor, review_output_path=str(outside.resolve()))
+    assert report_module._review_gate_from_descriptor(source, escaped)["status"] == "PENDING"
+
+    dotdot = dict(
+        descriptor,
+        fixed_package_path=str(package_path.parent / "nested" / ".." / package_path.name),
+    )
+    assert report_module._review_gate_from_descriptor(source, dotdot)["status"] == "PENDING"
+
+    link = evidence_root / "external-review-link.md"
+    try:
+        os.symlink(outside, link)
+    except OSError:
+        outside_directory = tmp_path / "outside-directory"
+        outside_directory.mkdir()
+        outside_in_directory = outside_directory / "review-output.md"
+        outside_in_directory.write_bytes(outside.read_bytes())
+        junction = evidence_root / "external-review-junction"
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(junction), str(outside_directory)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        link = junction / outside_in_directory.name
+    linked = dict(descriptor, review_output_path=str(link.absolute()))
+    assert report_module._review_gate_from_descriptor(source, linked)["status"] == "PENDING"
+
+
+def test_s16a_same_source_bundle_preserves_evidence_and_source_drift_clears_it(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(report_module, "REVIEW_EVIDENCE_ROOT", tmp_path.resolve())
+    source, descriptor, _package_path, _review_path = _real_review_fixture(tmp_path)
+    accepted = report_module._review_gate_from_descriptor(source, descriptor)
+    report = _passing_report()
+    report["provenance"] = {"source_revision": source}
+    report["reviewer_gate"] = accepted
+    _redirect_reports(monkeypatch, tmp_path)
+    report_module._publish_authoritative_bundle(report, "# reviewed PASS\n")
+
+    assert report_module._preserve_reviewer_gate(source)["status"] == "PASS"
+    assert report_module._preserve_reviewer_gate("f" * 40) == {
         "status": "PENDING",
         "findings": {"P0": None, "P1": None, "P2": None},
         "note": "no valid hash-bound reviewer evidence for current source revision",
     }
-    invalid = dict(evidence, review_output_sha256="not-a-sha")
-    assert report_module._select_reviewer_gate(source, invalid)["status"] == "PENDING"
 
 
 def test_s16a_clean_source_provenance_and_command_plan_hash(monkeypatch) -> None:
