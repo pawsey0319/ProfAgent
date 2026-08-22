@@ -18,6 +18,10 @@ from generate_s16_wardrobe import (
     ROOT,
     SCHEMA_PATH,
     SOURCE_ID,
+    _assert_contract,
+    _build_rows,
+    _manifest,
+    _schema,
     _sha256,
 )
 
@@ -82,12 +86,15 @@ def main() -> None:
 
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     Draft202012Validator.check_schema(schema)
+    _assert_equal(schema, _schema(), "extension schema contract")
     validator = Draft202012Validator(schema)
     extension = _read_jsonl(EXTENSION_PATH)
     for line_number, row in enumerate(extension, 1):
         errors = list(validator.iter_errors(row))
         if errors:
             raise RuntimeError(f"invalid S16 garment row: {line_number}")
+    _assert_contract(extension)
+    _assert_equal(extension, _build_rows(), "declarative garment profiles")
     _assert_equal(len(extension), 70, "extension garment count")
     _assert_equal(
         [row["garment_id"] for row in extension],
@@ -133,6 +140,7 @@ def main() -> None:
     )
 
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    _assert_equal(manifest, _manifest(extension), "closed manifest contract")
     _assert_equal(manifest.get("schema_version"), 1, "manifest schema version")
     _assert_equal(manifest.get("data_version"), DATA_VERSION, "manifest data version")
     _assert_equal(manifest.get("source_id"), SOURCE_ID, "manifest source")

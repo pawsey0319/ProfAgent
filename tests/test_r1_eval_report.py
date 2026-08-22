@@ -21,7 +21,9 @@ from profagent.eval import (
     independent_slots_complete,
     run_evaluation,
 )
-from profagent.models import SceneParseInput
+from profagent.models import SceneConstraints, SceneParseInput
+from profagent.feedback_service import RecommendationFeedbackInput
+from profagent.memory_service import MemoryConfirmInput
 from profagent.repository import FixtureRepository
 import profagent.eval as eval_module
 
@@ -212,7 +214,7 @@ def _assert_safe_report(report: dict) -> None:
         "catalog": {"status": "PASS", "failed_steps": []},
         "vision": {"status": "PASS", "failed_steps": []},
     }
-    assert "same_universe_fixed_penalty_and_risk_rank_never_improves" in report["assurance_checks"]["AC-07"]["checks"]
+    assert "actual_trace_top30_witnesses_present_pre_and_post" in report["assurance_checks"]["AC-07"]["checks"]
     assert "end_to_end_similar_risk_scores_decrease" in report["assurance_checks"]["AC-07"]["checks"]
     assert "v2_rescore_has_nonzero_parent_comparison" in report["assurance_checks"]["AC-13"]["checks"]
     assert "canonical_trouser_cuff_single" in report["assurance_checks"]["AC-14"]["checks"]
@@ -294,26 +296,69 @@ async def _actual_ac07_trace_witnesses(root: Path) -> tuple[tuple[str, str], str
         )
     )
     try:
-        scene = await services.scene_parser.parse(
+        seed = await services.scene_parser.parse(
             SceneParseInput(
                 user_id="u01",
-                query_text="下周通勤要久走并长时间站立，想穿得轻松舒适。",
+                query_text="下周面试，请从现有衣橱给可靠的正式搭配。",
                 event_horizon="soon",
                 intent="recommend",
-                occasion="commute",
-                goals=["comfortable"],
+                occasion="interview",
+                goals=["reliable"],
             )
         )
-        result = services.recommendations.recommend(
-            services.recommendations.resolve_payload({"request_id": scene.request_id})
+        seed_result = services.recommendations.recommend(
+            services.recommendations.resolve_payload({"request_id": seed.request_id})
         )
-        trace = services.traces.get(result.trace_id)
+        seed_outfit = next(
+            outfit for outfit in seed_result.outfits if "g020" in outfit.items
+        )
+        proposal_result = services.feedback.submit(
+            RecommendationFeedbackInput(
+                user_id="u01",
+                styling_session_id=seed.styling_session_id,
+                request_id=seed.request_id,
+                outfit_id=seed_outfit.outfit_id,
+                decision="dislike",
+                reason_code="long_walk_shoes",
+                memory_scope="propose",
+            )
+        )
+        proposal = proposal_result.memory_proposal
+        assert proposal is not None
+
+        related_payload = {
+            "user_id": "u01",
+            "query_text": "下周通勤要久走并长时间站立，想穿得轻松舒适。",
+            "event_horizon": "soon",
+            "intent": "recommend",
+            "occasion": "commute",
+            "goals": ["comfortable"],
+            "constraints": SceneConstraints(
+                taboo_colors=list(eval_module._AC07_ASSURANCE_TABOO_COLORS)
+            ),
+        }
+        before = await services.scene_parser.parse(SceneParseInput(**related_payload))
+        before_result = services.recommendations.recommend(
+            services.recommendations.resolve_payload({"request_id": before.request_id})
+        )
+        before_trace = services.traces.get(before_result.trace_id)
+        services.memory.confirm(
+            proposal.proposal_id,
+            MemoryConfirmInput(user_id="u01", decision="confirm"),
+        )
+        after = await services.scene_parser.parse(SceneParseInput(**related_payload))
+        after_result = services.recommendations.recommend(
+            services.recommendations.resolve_payload({"request_id": after.request_id})
+        )
+        after_trace = services.traces.get(after_result.trace_id)
         target = services.repository.get_garment("g020")
-        assert trace is not None
+        assert before_trace is not None
+        assert after_trace is not None
         assert target is not None
         risk_items, safe_item = eval_module._select_ac07_trace_witnesses(
             services.repository,
-            trace,
+            before_trace,
+            after_trace,
             target,
         )
         return tuple(item.garment_id for item in risk_items), safe_item.garment_id
@@ -342,24 +387,33 @@ def test_ac07_trace_witnesses_preserve_base_and_overlay_causality(
     overlay_assurance = asyncio.run(
         eval_module._assure_ac07_rank_causality(project_root)
     )
-    assert base_assurance["status"] == "PASS"
+    assert base_assurance["status"] == "PASS", (base_witnesses, base_assurance)
     assert overlay_assurance["status"] == "PASS", (
         overlay_witnesses,
         overlay_assurance,
     )
 
 
-def test_ac07_trace_witness_selection_fails_closed_when_trace_is_insufficient(
+def test_ac07_trace_witness_selection_fails_closed_when_post_trace_is_insufficient(
     project_root: Path,
 ) -> None:
     repository = FixtureRepository(project_root)
     target = repository.get_garment("g020")
     assert target is not None
-    incomplete_trace = SimpleNamespace(
+    before_trace = SimpleNamespace(
         retrieval={
             "rrf": [
                 {"item_id": "g019", "score": 1.0},
                 {"item_id": "g021", "score": 0.9},
+                {"item_id": "g022", "score": 0.8},
+            ]
+        }
+    )
+    incomplete_after_trace = SimpleNamespace(
+        retrieval={
+            "rrf": [
+                {"item_id": "g019", "score": 1.0},
+                {"item_id": "g021", "score": 0.89},
             ]
         }
     )
@@ -367,7 +421,8 @@ def test_ac07_trace_witness_selection_fails_closed_when_trace_is_insufficient(
     try:
         eval_module._select_ac07_trace_witnesses(
             repository,
-            incomplete_trace,
+            before_trace,
+            incomplete_after_trace,
             target,
         )
     except eval_module._AssuranceFailure as exc:

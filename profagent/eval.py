@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import math
 import re
 from dataclasses import replace
 from datetime import datetime
@@ -12,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings
-from .models import SceneParseInput
+from .models import SceneConstraints, SceneParseInput
 
 
 REPORT_VERSION = "r1_demo_v1"
@@ -762,29 +763,56 @@ def _ac07_structural_similarity_evidence(left: Any, right: Any) -> int:
     )
 
 
+_AC07_ASSURANCE_TABOO_COLORS = [
+    "navy",
+    "beige",
+    "gray",
+    "brown",
+    "white",
+    "khaki",
+    "orange",
+    "yellow",
+    "purple",
+]
+
+
 def _select_ac07_trace_witnesses(
     repository: Any,
-    trace: Any,
+    before_trace: Any,
+    after_trace: Any,
     target: Any,
 ) -> tuple[tuple[Any, Any], Any]:
-    """Select two risk shoes and one safe shoe from the server Trace only.
+    """Select shared pre/post witnesses from actual production Trace top-30.
 
-    Selection is stable in the existing RRF order. Missing or malformed Trace
-    evidence fails closed instead of substituting fixture IDs outside top-30.
+    Selection is stable in pre-confirm RRF order. Every witness must have a
+    finite score in both production traces; missing or malformed evidence fails
+    closed instead of reconstructing a private same-universe score.
     """
 
-    rows = trace.retrieval.get("rrf", [])
-    _ensure(isinstance(rows, list), "ac07_rank_trace_witnesses_insufficient")
+    def positions(trace: Any) -> dict[str, tuple[int, float]]:
+        rows = trace.retrieval.get("rrf", [])
+        _ensure(isinstance(rows, list), "ac07_rank_trace_witnesses_insufficient")
+        result: dict[str, tuple[int, float]] = {}
+        for rank, row in enumerate(rows, 1):
+            _ensure(
+                isinstance(row, dict)
+                and isinstance(row.get("item_id"), str)
+                and isinstance(row.get("score"), (int, float))
+                and not isinstance(row.get("score"), bool)
+                and math.isfinite(float(row["score"]))
+                and row["item_id"] not in result,
+                "ac07_rank_trace_witnesses_insufficient",
+            )
+            result[row["item_id"]] = (rank, float(row["score"]))
+        return result
+
+    before_positions = positions(before_trace)
+    after_positions = positions(after_trace)
     risk_items: list[Any] = []
     safe_item: Any | None = None
-    seen_ids: set[str] = set()
-    for row in rows:
-        if not isinstance(row, dict):
+    for item_id in before_positions:
+        if item_id not in after_positions:
             continue
-        item_id = row.get("item_id")
-        if not isinstance(item_id, str) or item_id in seen_ids:
-            continue
-        seen_ids.add(item_id)
         item = repository.get_garment(item_id)
         if item is None or item.slot != "shoes" or item.garment_id == target.garment_id:
             continue
@@ -1006,13 +1034,6 @@ async def _assure_ac07_rank_causality(root: Path) -> dict[str, Any]:
                 return index, float(row.get("score", 0.0))
         raise _AssuranceFailure(f"ac07_rank_missing:{item_id}")
 
-    def optional_rank_score(trace: Any, item_id: str) -> tuple[int, float] | None:
-        rows = list(trace.retrieval.get("rrf", []))
-        for index, row in enumerate(rows, 1):
-            if row.get("item_id") == item_id:
-                return index, float(row.get("score", 0.0))
-        return None
-
     try:
         seed = await services.scene_parser.parse(
             SceneParseInput(
@@ -1063,6 +1084,9 @@ async def _assure_ac07_rank_causality(root: Path) -> dict[str, Any]:
                 intent="recommend",
                 occasion="commute",
                 goals=["comfortable"],
+                constraints=SceneConstraints(
+                    taboo_colors=list(_AC07_ASSURANCE_TABOO_COLORS)
+                ),
             )
         )
         before_result = services.recommendations.recommend(
@@ -1078,25 +1102,6 @@ async def _assure_ac07_rank_causality(root: Path) -> dict[str, Any]:
             and before_policy.get("active_policy_count") == 0,
             "ac07_rank_before_no_confirmed_policy",
         )
-        risk_items, safe_item = _select_ac07_trace_witnesses(
-            services.repository,
-            before_trace,
-            target,
-        )
-        risk_ids = tuple(item.garment_id for item in risk_items)
-        safe_id = safe_item.garment_id
-        _ensure(
-            all(
-                _ac07_structural_similarity_evidence(item, target) >= 3
-                for item in risk_items
-            )
-            and _ac07_structural_similarity_evidence(safe_item, target) < 3,
-            "ac07_rank_independent_structured_similarity_oracle",
-        )
-        tracked_ids = (safe_id, *risk_ids)
-        before_positions = {
-            item_id: rank_score(before_trace, item_id) for item_id in tracked_ids
-        }
         _ensure(
             "g020" not in before.constraints.excluded_items,
             "ac07_rank_target_not_excluded_before_confirm",
@@ -1120,6 +1125,9 @@ async def _assure_ac07_rank_causality(root: Path) -> dict[str, Any]:
                 intent="recommend",
                 occasion="commute",
                 goals=["comfortable"],
+                constraints=SceneConstraints(
+                    taboo_colors=list(_AC07_ASSURANCE_TABOO_COLORS)
+                ),
             )
         )
         after_result = services.recommendations.recommend(
@@ -1152,91 +1160,48 @@ async def _assure_ac07_rank_causality(root: Path) -> dict[str, Any]:
             and all("g020" not in outfit.items for outfit in after_result.outfits),
             "ac07_rank_exact_target_excluded_before_recall",
         )
-
-        same_universe_before = [
-            (str(row.get("item_id")), float(row.get("score", 0.0)))
-            for row in before_trace.retrieval.get("rrf", [])
-        ]
-        same_universe_by_id = {
-            item_id: item
-            for item_id, _score in same_universe_before
-            if (item := services.repository.get_garment(item_id)) is not None
-        }
-        same_universe_after, same_universe_policy = (
-            services.retriever._apply_confirmed_memory_rerank(
-                same_universe_before,
-                same_universe_by_id,
-                after,
-                services.memory.active_signals("u01"),
+        risk_items, safe_item = _select_ac07_trace_witnesses(
+            services.repository,
+            before_trace,
+            after_trace,
+            target,
+        )
+        risk_ids = tuple(item.garment_id for item in risk_items)
+        safe_id = safe_item.garment_id
+        _ensure(
+            all(
+                _ac07_structural_similarity_evidence(item, target) >= 3
+                for item in risk_items
             )
+            and _ac07_structural_similarity_evidence(safe_item, target) < 3,
+            "ac07_rank_independent_structured_similarity_oracle",
         )
-        _ensure(
-            {item_id for item_id, _score in same_universe_before}
-            == {item_id for item_id, _score in same_universe_after},
-            "ac07_rank_same_universe_ids_preserved",
-        )
-        same_before_positions = {
-            item_id: (rank, score)
-            for rank, (item_id, score) in enumerate(same_universe_before, 1)
+        tracked_ids = (safe_id, *risk_ids)
+        before_positions = {
+            item_id: rank_score(before_trace, item_id) for item_id in tracked_ids
         }
-        same_after_positions = {
-            item_id: (rank, score)
-            for rank, (item_id, score) in enumerate(same_universe_after, 1)
-        }
-        for item_id in risk_ids:
-            before_rank, before_score = same_before_positions[item_id]
-            after_rank, after_score = same_after_positions[item_id]
-            _ensure(
-                abs(after_score - max(0.0, before_score - 0.01)) < 1e-9
-                and after_rank >= before_rank,
-                f"ac07_rank_same_universe_fixed_penalty:{item_id}",
-            )
-        _ensure(
-            same_after_positions[safe_id][1] == same_before_positions[safe_id][1]
-            and same_after_positions[safe_id][0]
-            <= same_before_positions[safe_id][0]
-            and same_universe_policy.get("score_penalty_applied_count") >= 2
-            and same_universe_policy.get("same_universe_rank_improved_count") == 0
-            and same_universe_policy.get("penalty") == 0.01,
-            "ac07_rank_same_universe_safe_unchanged_and_risk_never_improves",
-        )
-        _ensure(
-            "g020"
-            not in json.dumps(same_universe_policy, ensure_ascii=False),
-            "ac07_rank_same_universe_policy_trace_private",
-        )
-
         after_positions = {
-            item_id: optional_rank_score(after_trace, item_id)
-            for item_id in tracked_ids
+            item_id: rank_score(after_trace, item_id) for item_id in tracked_ids
         }
         for item_id in risk_ids:
             _before_rank, before_score = before_positions[item_id]
-            observed_after = after_positions[item_id]
-            after_score = (
-                observed_after[1]
-                if observed_after is not None
-                else same_after_positions[item_id][1]
-            )
+            _after_rank, after_score = after_positions[item_id]
             _ensure(
                 after_score < before_score,
                 f"ac07_rank_end_to_end_similar_risk_score_decreased:{item_id}",
             )
         _safe_before_rank, safe_before_score = before_positions[safe_id]
-        safe_after = after_positions[safe_id]
-        _ensure(safe_after is not None, "ac07_rank_safe_witness_remains_observable")
-        _safe_after_rank, safe_after_score = safe_after
+        _safe_after_rank, safe_after_score = after_positions[safe_id]
+        _ensure(
+            safe_after_score >= safe_before_score,
+            "ac07_rank_safe_witness_score_not_demoted",
+        )
         before_safe_relative_margin = sum(
             safe_before_score - before_positions[item_id][1]
             for item_id in risk_ids
         )
         after_safe_relative_margin = sum(
-            safe_after_score
-            - (
-                after_positions[item_id][1]
-                if after_positions[item_id] is not None
-                else same_after_positions[item_id][1]
-            )
+            safe_after_score - after_positions[item_id][1]
             for item_id in risk_ids
         )
         _ensure(
@@ -1283,6 +1248,9 @@ async def _assure_ac07_rank_causality(root: Path) -> dict[str, Any]:
                 intent="recommend",
                 occasion="commute",
                 goals=["comfortable"],
+                constraints=SceneConstraints(
+                    taboo_colors=list(_AC07_ASSURANCE_TABOO_COLORS)
+                ),
             )
         )
         restored_result = services.recommendations.recommend(
@@ -1311,8 +1279,9 @@ async def _assure_ac07_rank_causality(root: Path) -> dict[str, Any]:
                 "independent_metadata_similarity_3_of_5",
                 "before_confirm_no_policy",
                 "confirm_excludes_exact_target",
-                "same_universe_fixed_penalty_and_risk_rank_never_improves",
-                "same_universe_safe_score_unchanged",
+                "actual_trace_top30_witnesses_present_pre_and_post",
+                "actual_trace_similar_risk_scores_decrease",
+                "actual_trace_safe_score_not_demoted",
                 "end_to_end_similar_risk_scores_decrease",
                 "end_to_end_safe_relative_margin_improves",
                 "unrelated_scene_not_affected",

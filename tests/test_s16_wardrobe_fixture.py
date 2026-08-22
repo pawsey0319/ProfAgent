@@ -59,6 +59,35 @@ ADDED_SLOT_COUNTS = {
     "bag": 4,
     "accessory": 5,
 }
+ADDED_OWNER_SLOT_COUNTS = {
+    "u01": {
+        "top": 8,
+        "bottom": 9,
+        "dress": 7,
+        "outer": 7,
+        "shoes": 7,
+        "bag": 3,
+        "accessory": 3,
+    },
+    "u02": {
+        "top": 3,
+        "bottom": 3,
+        "dress": 2,
+        "outer": 2,
+        "shoes": 2,
+        "bag": 0,
+        "accessory": 0,
+    },
+    "u03": {
+        "top": 3,
+        "bottom": 3,
+        "dress": 2,
+        "outer": 2,
+        "shoes": 1,
+        "bag": 1,
+        "accessory": 2,
+    },
+}
 EXPECTED_OWNER_SLOT_COUNTS = {
     "u01": {
         "top": 14,
@@ -118,6 +147,62 @@ EXTENSION_ROW_KEYS = {
     "fit",
     "search_text",
     "audience",
+}
+SEASON_LABELS = {
+    "all": "四季",
+    "spring": "春季",
+    "summer": "夏季",
+    "autumn": "秋季",
+    "winter": "冬季",
+}
+STYLE_LABELS = {
+    "simple": "简约",
+    "classic": "经典",
+    "smart": "利落",
+    "formal": "正式",
+    "street": "街头",
+    "sporty": "运动",
+    "soft": "柔和",
+    "vintage": "复古",
+    "business": "商务",
+    "campus": "学院",
+}
+OCCASION_LABELS = {
+    "daily": "日常",
+    "commute": "通勤",
+    "interview": "面试",
+    "meeting": "会议",
+    "date": "约会",
+    "party": "聚会",
+    "travel": "旅行",
+    "outdoor": "户外",
+    "home": "居家",
+    "sports": "运动",
+}
+MATERIAL_LABELS = {
+    "cotton": "棉质",
+    "knit": "针织",
+    "denim": "牛仔",
+    "wool": "羊毛",
+    "linen": "亚麻",
+    "leather": "皮质",
+    "synthetic": "合成材质",
+}
+FIT_LABELS = {
+    "regular": "常规版型",
+    "straight": "直筒版型",
+    "loose": "宽松版型",
+    "slim": "修身版型",
+}
+SHOE_LONG_WALK_CLAIM = "缓震平底结构，适合久走与长时间站立"
+SHOE_SHORT_ACTIVITY_CLAIM = "鞋跟或细带结构适合短时活动，长时间活动前需另行确认"
+ALLOWED_COMFORT_CLAIMS = {
+    "宽松版型便于活动，仍需按场景确认舒适度",
+    "修身版型活动前需确认贴合与舒适度",
+    "常规活动前需确认穿着舒适度",
+    "适合一般步行，长时间活动前需确认舒适度",
+    SHOE_LONG_WALK_CLAIM,
+    SHOE_SHORT_ACTIVITY_CLAIM,
 }
 
 
@@ -200,7 +285,12 @@ def _relative_files(root: Path) -> set[str]:
 
 
 def _copy_repository_root(project_root: Path, temp_root: Path) -> Path:
-    for directory in ("data/fixtures", "data/schemas", "data/manifests"):
+    for directory in (
+        "data/fixtures",
+        "data/schemas",
+        "data/manifests",
+        "data/eval",
+    ):
         source = project_root / directory
         destination = temp_root / directory
         shutil.copytree(source, destination)
@@ -339,6 +429,105 @@ def test_extension_rows_use_closed_metadata_and_exact_additions(
     assert any("sporty" in row.get("styles", []) for row in rows)
 
 
+def test_every_extension_row_has_coherent_declarative_semantics(
+    project_root: Path,
+) -> None:
+    rows = _extension_rows(project_root)
+    by_id = {str(row["garment_id"]): row for row in rows}
+    for row in rows:
+        name = str(row["name"])
+        search_text = str(row["search_text"])
+        assert f"季节：{'、'.join(SEASON_LABELS[item] for item in row['seasons'])}" in search_text
+        assert f"材质：{MATERIAL_LABELS[str(row['material'])]}" in search_text
+        assert f"版型：{FIT_LABELS[str(row['fit'])]}" in search_text
+        assert f"风格：{'、'.join(STYLE_LABELS[item] for item in row['styles'])}" in search_text
+        assert f"场景：{'、'.join(OCCASION_LABELS[item] for item in row['occasions'])}" in search_text
+        assert f"正式度：{row['formal']}/4" in search_text
+        assert f"保暖度：{row['warmth']}/5" in search_text
+        marker = "舒适说明："
+        assert search_text.count(marker) == 1
+        comfort_claim = search_text.split(marker, 1)[1]
+        assert comfort_claim in ALLOWED_COMFORT_CLAIMS
+
+        token_contracts = {
+            "针织": row["material"] == "knit",
+            "牛仔": row["material"] == "denim",
+            "羊毛": row["material"] == "wool",
+            "亚麻": row["material"] == "linen",
+            "皮质": row["material"] == "leather",
+            "软皮": row["material"] == "leather",
+            "通勤": "commute" in row["occasions"],
+            "商务": "business" in row["styles"] and int(row["formal"]) >= 3,
+            "会议": "meeting" in row["occasions"] and int(row["formal"]) >= 3,
+            "宴会": "party" in row["occasions"] and int(row["formal"]) >= 3,
+            "旅行": "travel" in row["occasions"],
+            "约会": "date" in row["occasions"],
+            "运动": "sporty" in row["styles"] and "sports" in row["occasions"],
+        }
+        for token, coherent in token_contracts.items():
+            if token in name:
+                assert coherent, f"{row['garment_id']} {token} metadata drift"
+        if "凉鞋" in name:
+            assert "winter" not in row["seasons"] and int(row["warmth"]) <= 2
+        if "大衣" in name:
+            assert "winter" in row["seasons"] and int(row["warmth"]) >= 4
+        if "防晒" in name:
+            assert "summer" in row["seasons"] and int(row["warmth"]) <= 2
+        if "修身" in name:
+            assert row["fit"] == "slim"
+        if "直筒" in name:
+            assert row["fit"] == "straight"
+        if "宽腿" in name or "廓形" in name:
+            assert row["fit"] == "loose"
+        if row["styles"] and "sporty" in row["styles"]:
+            assert int(row["formal"]) <= 1
+        if "formal" in row["styles"] or "business" in row["styles"]:
+            assert int(row["formal"]) >= 3
+        if "winter" in row["seasons"] and len(row["seasons"]) == 1:
+            assert int(row["warmth"]) >= 4
+        if row["seasons"] == ["summer"]:
+            assert int(row["warmth"]) <= 2
+
+        if row["slot"] == "shoes" and any(
+            token in name for token in ("尖头", "中跟", "细带", "凉鞋")
+        ):
+            assert comfort_claim == SHOE_SHORT_ACTIVITY_CLAIM
+        if comfort_claim == SHOE_LONG_WALK_CLAIM:
+            assert row["slot"] == "shoes"
+            assert any(token in name for token in ("平底", "运动鞋", "缓震"))
+
+    assert {
+        key: by_id["g051"][key]
+        for key in (
+            "name",
+            "slot",
+            "material",
+            "seasons",
+            "styles",
+            "occasions",
+            "formal",
+            "warmth",
+            "fit",
+        )
+    } == {
+        "name": "飘带衬衫",
+        "slot": "top",
+        "material": "synthetic",
+        "seasons": ["spring", "summer"],
+        "styles": ["soft", "smart"],
+        "occasions": ["date", "meeting"],
+        "formal": 2,
+        "warmth": 1,
+        "fit": "regular",
+    }
+    assert by_id["g085"]["search_text"].endswith(
+        f"舒适说明：{SHOE_LONG_WALK_CLAIM}"
+    )
+    assert by_id["g086"]["search_text"].endswith(
+        f"舒适说明：{SHOE_SHORT_ACTIVITY_CLAIM}"
+    )
+
+
 def test_extension_schema_is_closed_and_rejects_out_of_contract_rows(
     project_root: Path,
 ) -> None:
@@ -383,17 +572,51 @@ def test_extension_manifest_binds_base_and_generated_bytes(project_root: Path) -
     manifest_path = project_root / EXTENSION_MANIFEST
     assert manifest_path.is_file(), f"missing S16 extension manifest: {EXTENSION_MANIFEST}"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    serialized = json.dumps(manifest, ensure_ascii=False, sort_keys=True)
+    assert set(manifest) == {
+        "schema_version",
+        "data_version",
+        "source_id",
+        "seed",
+        "base",
+        "files",
+        "counts",
+        "audiences",
+    }
     assert manifest.get("schema_version") == 1
     assert manifest.get("data_version") == DATA_VERSION
     assert manifest.get("source_id") == SOURCE_ID
     assert manifest.get("seed") == 20260729
+    assert manifest["audiences"] == [
+        "womenswear",
+        "unisex_womenswear_compatible",
+    ]
+    assert manifest["counts"] == {
+        "added_owners": ADDED_OWNER_COUNTS,
+        "added_slots": ADDED_SLOT_COUNTS,
+        "added_owner_slots": ADDED_OWNER_SLOT_COUNTS,
+        "final_owners": EXPECTED_OWNER_COUNTS,
+        "final_slots": EXPECTED_SLOT_COUNTS,
+        "final_owner_slots": EXPECTED_OWNER_SLOT_COUNTS,
+        "total_added": 70,
+        "total_garments": 120,
+    }
+    assert set(manifest["base"]) == {"data_version", "files"}
+    assert manifest["base"]["data_version"] == "fixtures_v1.0"
+    assert set(manifest["base"]["files"]) == set(BASE_FILE_SHA256)
     for relative, expected_hash in BASE_FILE_SHA256.items():
-        assert relative in serialized
-        assert expected_hash in serialized
-    assert EXTENSION.as_posix() in serialized
-    assert _sha256(project_root / EXTENSION) in serialized
-    assert "70" in serialized
+        receipt = manifest["base"]["files"][relative]
+        assert receipt == {"path": relative, "sha256": expected_hash}
+        assert _sha256(project_root / relative) == expected_hash
+    assert set(manifest["files"]) == {"garments_extension", "schema"}
+    assert manifest["files"]["garments_extension"] == {
+        "path": EXTENSION.as_posix(),
+        "count": 70,
+        "sha256": _sha256(project_root / EXTENSION),
+    }
+    assert manifest["files"]["schema"] == {
+        "path": EXTENSION_SCHEMA.as_posix(),
+        "sha256": _sha256(project_root / EXTENSION_SCHEMA),
+    }
 
 
 def test_repository_loads_exact_s16_distribution_and_preserves_base_records(
@@ -420,6 +643,80 @@ def test_repository_loads_exact_s16_distribution_and_preserves_base_records(
         assert loaded is not None
         loaded_data = loaded.model_dump()
         assert {key: loaded_data[key] for key in row} == row
+
+
+def test_repository_keeps_base_50_compatible_when_overlay_is_absent(
+    project_root: Path, tmp_path: Path
+) -> None:
+    repository_root = _copy_repository_root(project_root, tmp_path / "base-only")
+    (repository_root / EXTENSION).unlink()
+    repository = FixtureRepository(repository_root)
+    assert repository.counts["garments"] == 50
+    assert len(_repository_rows(repository)) == 50
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "empty",
+        "truncated",
+        "extra",
+        "internal_duplicate",
+        "manifest_missing",
+        "manifest_hash",
+        "manifest_path",
+        "manifest_count",
+        "manifest_version",
+        "manifest_extra_field",
+    ],
+)
+def test_repository_requires_complete_manifest_bound_overlay_without_partial_state(
+    project_root: Path, tmp_path: Path, case: str
+) -> None:
+    repository_root = _copy_repository_root(project_root, tmp_path / case)
+    fixture_path = repository_root / EXTENSION
+    manifest_path = repository_root / EXTENSION_MANIFEST
+    rows = _read_jsonl(fixture_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if case == "empty":
+        _write_jsonl(fixture_path, [])
+    elif case == "truncated":
+        _write_jsonl(fixture_path, rows[:-1])
+    elif case == "extra":
+        extra = dict(rows[-1], garment_id="g121", name="越界额外单品")
+        _write_jsonl(fixture_path, [*rows, extra])
+    elif case == "internal_duplicate":
+        _write_jsonl(fixture_path, [*rows[:-1], dict(rows[-2])])
+    elif case == "manifest_missing":
+        manifest_path.unlink()
+    elif case == "manifest_hash":
+        manifest["files"]["garments_extension"]["sha256"] = "0" * 64
+    elif case == "manifest_path":
+        manifest["files"]["garments_extension"]["path"] = "data/fixtures/other.jsonl"
+    elif case == "manifest_count":
+        manifest["files"]["garments_extension"]["count"] = 69
+    elif case == "manifest_version":
+        manifest["data_version"] = "fixtures_s16_drift"
+    else:
+        manifest["unexpected"] = True
+    if case in {
+        "empty",
+        "truncated",
+        "extra",
+        "internal_duplicate",
+    }:
+        manifest["files"]["garments_extension"]["sha256"] = _sha256(fixture_path)
+    if manifest_path.exists():
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
+    repository = FixtureRepository.__new__(FixtureRepository)
+    with pytest.raises((RuntimeError, ValueError)):
+        repository.__init__(repository_root)
+    assert not hasattr(repository, "_garments")
 
 
 @pytest.mark.parametrize(

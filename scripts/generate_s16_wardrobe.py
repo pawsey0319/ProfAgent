@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -70,92 +71,10 @@ EXPECTED_FINAL_SLOT_COUNTS = {
     "bag": 10,
     "accessory": 10,
 }
-
-NAMES = {
-    "top": (
-        "真丝飘带衬衫",
-        "细针织方领上衣",
-        "垂感通勤衬衣",
-        "柔棉修身打底衫",
-        "泡泡袖约会上衣",
-        "简约无袖针织背心",
-        "商务翻领衬衫",
-        "轻盈亚麻衬衣",
-        "运动拉链短上衣",
-        "复古圆领开衫",
-        "宴会光泽上衣",
-        "旅行防晒衬衫",
-        "法式领口针织衫",
-        "利落半高领上衣",
-    ),
-    "bottom": (
-        "高腰直筒西装裤",
-        "垂感阔腿通勤裤",
-        "中长百褶半身裙",
-        "简洁铅笔半身裙",
-        "复古牛仔直筒裤",
-        "柔软针织半身裙",
-        "轻量旅行束脚裤",
-        "运动弹力长裤",
-        "高腰伞摆半身裙",
-        "九分烟管西装裤",
-        "亚麻宽腿长裤",
-        "宴会缎面半身裙",
-        "工装直筒长裤",
-        "通勤开衩半身裙",
-        "日常锥形休闲裤",
-    ),
-    "dress": (
-        "收腰通勤连衣裙",
-        "简洁衬衫连衣裙",
-        "法式约会茶歇裙",
-        "商务直筒连衣裙",
-        "旅行亚麻连衣裙",
-        "柔软针织连衣裙",
-        "宴会缎面长裙",
-        "复古方领连衣裙",
-        "运动翻领连衣裙",
-        "日常伞摆连衣裙",
-        "会议西装连衣裙",
-    ),
-    "outer": (
-        "双排扣通勤西装",
-        "轻量防风旅行外套",
-        "短款软呢夹克",
-        "经典收腰风衣",
-        "羊毛廓形大衣",
-        "运动连帽外套",
-        "宴会短款披肩",
-        "亚麻单排扣西装",
-        "复古牛仔夹克",
-        "简约针织长开衫",
-        "正式会议西装外套",
-    ),
-    "shoes": (
-        "低跟通勤乐福鞋",
-        "尖头中跟单鞋",
-        "舒适芭蕾平底鞋",
-        "轻量旅行运动鞋",
-        "宴会细带凉鞋",
-        "复古玛丽珍鞋",
-        "简洁短靴",
-        "运动缓震跑鞋",
-        "方头低跟穆勒鞋",
-        "商务皮质德比鞋",
-    ),
-    "bag": (
-        "结构感通勤托特包",
-        "轻便旅行斜挎包",
-        "宴会链条手拿包",
-        "日常软皮肩背包",
-    ),
-    "accessory": (
-        "真丝几何方巾",
-        "简约金属耳饰",
-        "复古细腰带",
-        "运动遮阳帽",
-        "宴会珍珠项链",
-    ),
+EXPECTED_FINAL_OWNER_SLOT_COUNTS = {
+    "u01": {"top": 14, "bottom": 14, "dress": 10, "outer": 11, "shoes": 11, "bag": 6, "accessory": 6},
+    "u02": {"top": 5, "bottom": 5, "dress": 3, "outer": 4, "shoes": 4, "bag": 2, "accessory": 1},
+    "u03": {"top": 5, "bottom": 5, "dress": 3, "outer": 3, "shoes": 3, "bag": 2, "accessory": 3},
 }
 
 COLORS = (
@@ -191,21 +110,6 @@ COLOR_LABELS = {
     "yellow": "黄色",
     "multi": "多色",
 }
-PROFILE_CYCLE = (
-    (("commute", "meeting"), ("business", "smart"), 3),
-    (("interview", "meeting"), ("formal", "classic"), 4),
-    (("date", "daily"), ("soft", "classic"), 2),
-    (("daily", "travel"), ("simple", "street"), 1),
-    (("sports", "daily"), ("sporty", "simple"), 0),
-    (("party", "date"), ("formal", "vintage"), 4),
-    (("travel", "outdoor"), ("sporty", "street"), 1),
-)
-U01_LIFESTYLE_PROFILES = (
-    (("date", "party"), ("vintage", "street"), 0),
-    (("travel", "outdoor"), ("street", "vintage"), 0),
-    (("party", "date"), ("street", "vintage"), 0),
-    (("outdoor", "travel"), ("vintage", "street"), 0),
-)
 OWNER_AVOID_COLOR = {"u01": "purple", "u02": "yellow", "u03": "orange"}
 U01_SLOT_COLORS = {
     "top": "navy",
@@ -228,29 +132,12 @@ OCCASION_LABELS = {
     "home": "居家",
     "sports": "运动",
 }
-SEASON_CYCLE = (
-    ("all",),
-    ("spring", "autumn"),
-    ("summer",),
-    ("autumn", "winter"),
-    ("spring", "summer"),
-    ("winter",),
-)
 SEASON_LABELS = {
     "all": "四季",
     "spring": "春季",
     "summer": "夏季",
     "autumn": "秋季",
     "winter": "冬季",
-}
-MATERIALS_BY_SLOT = {
-    "top": ("cotton", "knit", "linen", "synthetic"),
-    "bottom": ("cotton", "wool", "denim", "linen", "synthetic"),
-    "dress": ("cotton", "knit", "linen", "synthetic"),
-    "outer": ("wool", "cotton", "denim", "knit", "synthetic"),
-    "shoes": ("leather", "synthetic", "cotton"),
-    "bag": ("leather", "synthetic", "cotton"),
-    "accessory": ("synthetic", "leather", "cotton", "knit"),
 }
 MATERIAL_LABELS = {
     "cotton": "棉质",
@@ -261,12 +148,132 @@ MATERIAL_LABELS = {
     "leather": "皮质",
     "synthetic": "合成材质",
 }
-FITS = ("regular", "straight", "loose", "slim")
 FIT_LABELS = {
     "regular": "常规版型",
     "straight": "直筒版型",
     "loose": "宽松版型",
     "slim": "修身版型",
+}
+STYLE_LABELS = {
+    "simple": "简约",
+    "classic": "经典",
+    "smart": "利落",
+    "formal": "正式",
+    "street": "街头",
+    "sporty": "运动",
+    "soft": "柔和",
+    "vintage": "复古",
+    "business": "商务",
+    "campus": "学院",
+}
+
+COMFORT_LOOSE = "宽松版型便于活动，仍需按场景确认舒适度"
+COMFORT_SLIM = "修身版型活动前需确认贴合与舒适度"
+COMFORT_REGULAR = "常规活动前需确认穿着舒适度"
+COMFORT_WALK = "适合一般步行，长时间活动前需确认舒适度"
+COMFORT_LONG_WALK = "缓震平底结构，适合久走与长时间站立"
+COMFORT_SHORT_SHOE = "鞋跟或细带结构适合短时活动，长时间活动前需另行确认"
+
+
+@dataclass(frozen=True)
+class GarmentProfile:
+    name: str
+    material: str
+    seasons: tuple[str, ...]
+    styles: tuple[str, ...]
+    occasions: tuple[str, ...]
+    formal: int
+    warmth: int
+    fit: str
+    comfort: str
+
+
+P = GarmentProfile
+GARMENT_PROFILES = {
+    "top": (
+        P("飘带衬衫", "synthetic", ("spring", "summer"), ("soft", "smart"), ("date", "meeting"), 2, 1, "regular", COMFORT_REGULAR),
+        P("细针织方领上衣", "knit", ("autumn", "winter"), ("soft", "classic"), ("date", "daily"), 2, 3, "slim", COMFORT_SLIM),
+        P("垂感通勤衬衣", "cotton", ("all",), ("smart", "business"), ("commute", "meeting"), 3, 2, "regular", COMFORT_REGULAR),
+        P("柔棉修身打底衫", "cotton", ("autumn", "winter"), ("simple", "soft"), ("daily", "home"), 1, 3, "slim", COMFORT_SLIM),
+        P("泡泡袖约会上衣", "cotton", ("spring", "summer"), ("soft", "vintage"), ("date", "party"), 2, 1, "regular", COMFORT_REGULAR),
+        P("简约无袖针织背心", "knit", ("spring", "summer"), ("simple", "soft"), ("daily", "travel"), 1, 1, "regular", COMFORT_REGULAR),
+        P("商务翻领衬衫", "cotton", ("all",), ("business", "smart"), ("commute", "meeting", "interview"), 4, 2, "regular", COMFORT_REGULAR),
+        P("轻盈亚麻衬衣", "linen", ("spring", "summer"), ("simple", "smart"), ("travel", "daily"), 1, 1, "loose", COMFORT_LOOSE),
+        P("运动拉链短上衣", "synthetic", ("all",), ("sporty", "simple"), ("sports", "daily", "travel"), 0, 1, "regular", COMFORT_REGULAR),
+        P("复古圆领开衫", "knit", ("autumn", "winter"), ("vintage", "soft"), ("date", "daily"), 2, 3, "regular", COMFORT_REGULAR),
+        P("宴会光泽上衣", "synthetic", ("all",), ("formal", "soft"), ("party", "date"), 4, 2, "slim", COMFORT_SLIM),
+        P("旅行防晒衬衫", "synthetic", ("spring", "summer"), ("sporty", "simple"), ("travel", "outdoor", "sports"), 0, 1, "loose", COMFORT_LOOSE),
+        P("法式领口针织衫", "knit", ("spring", "autumn"), ("soft", "classic"), ("date", "daily"), 2, 2, "regular", COMFORT_REGULAR),
+        P("利落半高领上衣", "knit", ("autumn", "winter"), ("smart", "business"), ("commute", "meeting"), 3, 3, "slim", COMFORT_SLIM),
+    ),
+    "bottom": (
+        P("高腰直筒西装裤", "wool", ("all",), ("business", "formal"), ("commute", "meeting", "interview"), 4, 2, "straight", COMFORT_REGULAR),
+        P("垂感阔腿通勤裤", "synthetic", ("all",), ("smart", "business"), ("commute", "meeting"), 3, 2, "loose", COMFORT_LOOSE),
+        P("中长百褶半身裙", "synthetic", ("spring", "autumn"), ("classic", "soft"), ("commute", "date"), 2, 2, "regular", COMFORT_REGULAR),
+        P("简洁铅笔半身裙", "wool", ("autumn", "winter"), ("business", "formal"), ("meeting", "interview"), 4, 4, "slim", COMFORT_SLIM),
+        P("复古牛仔直筒裤", "denim", ("all",), ("vintage", "street"), ("daily", "travel"), 1, 2, "straight", COMFORT_REGULAR),
+        P("柔软针织半身裙", "knit", ("autumn", "winter"), ("soft", "simple"), ("daily", "date"), 1, 3, "regular", COMFORT_REGULAR),
+        P("轻量旅行束脚裤", "synthetic", ("spring", "summer", "autumn"), ("sporty", "simple"), ("travel", "outdoor", "sports"), 0, 1, "regular", COMFORT_REGULAR),
+        P("运动弹力长裤", "synthetic", ("all",), ("sporty", "simple"), ("sports", "daily"), 0, 1, "slim", COMFORT_SLIM),
+        P("高腰伞摆半身裙", "cotton", ("spring", "summer"), ("soft", "vintage"), ("date", "daily"), 2, 1, "regular", COMFORT_REGULAR),
+        P("九分烟管西装裤", "wool", ("all",), ("business", "smart"), ("commute", "meeting", "interview"), 4, 2, "straight", COMFORT_REGULAR),
+        P("亚麻宽腿长裤", "linen", ("spring", "summer"), ("simple", "soft"), ("travel", "daily"), 1, 1, "loose", COMFORT_LOOSE),
+        P("宴会缎面半身裙", "synthetic", ("spring", "summer", "autumn"), ("formal", "soft"), ("party", "date"), 4, 1, "regular", COMFORT_REGULAR),
+        P("工装直筒长裤", "cotton", ("all",), ("street", "simple"), ("daily", "outdoor", "travel"), 1, 2, "straight", COMFORT_REGULAR),
+        P("通勤开衩半身裙", "wool", ("autumn", "winter"), ("business", "smart"), ("commute", "meeting"), 3, 4, "slim", COMFORT_SLIM),
+        P("日常锥形休闲裤", "cotton", ("all",), ("simple", "smart"), ("daily", "commute"), 1, 2, "regular", COMFORT_REGULAR),
+    ),
+    "dress": (
+        P("收腰通勤连衣裙", "wool", ("all",), ("business", "smart"), ("commute", "meeting"), 3, 2, "slim", COMFORT_SLIM),
+        P("简洁衬衫连衣裙", "cotton", ("spring", "summer"), ("smart", "simple"), ("commute", "daily"), 2, 1, "straight", COMFORT_REGULAR),
+        P("法式约会茶歇裙", "synthetic", ("spring", "summer"), ("soft", "vintage"), ("date", "party"), 2, 1, "slim", COMFORT_SLIM),
+        P("商务直筒连衣裙", "wool", ("autumn", "winter"), ("business", "formal"), ("meeting", "interview", "commute"), 4, 4, "straight", COMFORT_REGULAR),
+        P("旅行亚麻连衣裙", "linen", ("spring", "summer"), ("simple", "soft"), ("travel", "daily"), 1, 1, "loose", COMFORT_LOOSE),
+        P("柔软针织连衣裙", "knit", ("autumn", "winter"), ("soft", "simple"), ("daily", "date"), 1, 3, "regular", COMFORT_REGULAR),
+        P("宴会缎面长裙", "synthetic", ("spring", "autumn"), ("formal", "soft"), ("party", "date"), 4, 2, "slim", COMFORT_SLIM),
+        P("复古方领连衣裙", "cotton", ("spring", "summer"), ("vintage", "soft"), ("date", "party"), 2, 1, "regular", COMFORT_REGULAR),
+        P("运动翻领连衣裙", "synthetic", ("spring", "summer"), ("sporty", "simple"), ("sports", "daily"), 0, 1, "regular", COMFORT_REGULAR),
+        P("日常伞摆连衣裙", "cotton", ("spring", "summer"), ("soft", "simple"), ("daily", "date"), 1, 1, "regular", COMFORT_REGULAR),
+        P("会议西装连衣裙", "wool", ("autumn", "winter"), ("business", "formal"), ("meeting", "interview"), 4, 4, "straight", COMFORT_REGULAR),
+    ),
+    "outer": (
+        P("双排扣通勤西装", "wool", ("autumn", "winter"), ("business", "formal"), ("commute", "meeting", "interview"), 4, 4, "regular", COMFORT_REGULAR),
+        P("轻量防风旅行外套", "synthetic", ("spring", "summer", "autumn"), ("sporty", "simple"), ("travel", "outdoor", "sports"), 0, 1, "loose", COMFORT_LOOSE),
+        P("短款软呢夹克", "wool", ("autumn", "winter"), ("classic", "smart"), ("commute", "daily"), 2, 4, "regular", COMFORT_REGULAR),
+        P("经典收腰风衣", "cotton", ("spring", "autumn"), ("classic", "smart"), ("commute", "travel"), 3, 2, "slim", COMFORT_SLIM),
+        P("羊毛廓形大衣", "wool", ("winter",), ("classic", "formal"), ("commute", "meeting"), 4, 5, "loose", COMFORT_LOOSE),
+        P("运动连帽外套", "synthetic", ("all",), ("sporty", "simple"), ("sports", "daily", "travel"), 0, 2, "loose", COMFORT_LOOSE),
+        P("宴会短款披肩", "synthetic", ("autumn", "winter"), ("formal", "soft"), ("party", "date"), 4, 4, "regular", COMFORT_REGULAR),
+        P("亚麻单排扣西装", "linen", ("spring", "summer"), ("business", "smart"), ("commute", "meeting"), 3, 1, "regular", COMFORT_REGULAR),
+        P("复古牛仔夹克", "denim", ("all",), ("vintage", "street"), ("daily", "travel"), 1, 2, "loose", COMFORT_LOOSE),
+        P("简约针织长开衫", "knit", ("autumn", "winter"), ("simple", "soft"), ("daily", "home"), 1, 3, "loose", COMFORT_LOOSE),
+        P("正式会议西装外套", "wool", ("all",), ("business", "formal"), ("meeting", "interview", "commute"), 4, 3, "regular", COMFORT_REGULAR),
+    ),
+    "shoes": (
+        P("低跟通勤乐福鞋", "leather", ("all",), ("business", "classic"), ("commute", "meeting"), 3, 1, "regular", COMFORT_WALK),
+        P("尖头中跟单鞋", "leather", ("spring", "autumn"), ("formal", "classic"), ("meeting", "date", "party"), 4, 1, "slim", COMFORT_SHORT_SHOE),
+        P("舒适芭蕾平底鞋", "leather", ("spring", "summer", "autumn"), ("soft", "classic"), ("daily", "date", "travel"), 1, 1, "regular", COMFORT_LONG_WALK),
+        P("轻量旅行运动鞋", "synthetic", ("all",), ("sporty", "simple"), ("travel", "sports", "outdoor"), 0, 1, "regular", COMFORT_LONG_WALK),
+        P("宴会细带凉鞋", "synthetic", ("spring", "summer"), ("formal", "soft"), ("party", "date"), 4, 1, "slim", COMFORT_SHORT_SHOE),
+        P("复古玛丽珍鞋", "leather", ("spring", "autumn"), ("vintage", "classic"), ("date", "daily"), 2, 1, "regular", COMFORT_WALK),
+        P("简洁短靴", "leather", ("autumn", "winter"), ("classic", "smart"), ("commute", "daily"), 3, 4, "regular", COMFORT_WALK),
+        P("运动缓震跑鞋", "synthetic", ("all",), ("sporty", "simple"), ("sports", "travel", "outdoor"), 0, 1, "regular", COMFORT_LONG_WALK),
+        P("方头低跟穆勒鞋", "leather", ("spring", "summer"), ("classic", "smart"), ("commute", "daily"), 2, 1, "regular", COMFORT_WALK),
+        P("商务皮质德比鞋", "leather", ("all",), ("business", "formal"), ("commute", "meeting", "interview"), 4, 2, "regular", COMFORT_WALK),
+    ),
+    "bag": (
+        P("结构感通勤托特包", "leather", ("all",), ("business", "smart"), ("commute", "meeting"), 3, 2, "regular", COMFORT_REGULAR),
+        P("轻便旅行斜挎包", "synthetic", ("all",), ("simple", "sporty"), ("travel", "daily", "sports"), 0, 1, "regular", COMFORT_REGULAR),
+        P("宴会链条手拿包", "synthetic", ("all",), ("formal", "vintage"), ("party", "date"), 4, 1, "slim", COMFORT_SLIM),
+        P("日常软皮肩背包", "leather", ("all",), ("simple", "soft"), ("daily", "commute"), 1, 1, "regular", COMFORT_REGULAR),
+    ),
+    "accessory": (
+        P("几何方巾", "synthetic", ("spring", "autumn"), ("smart", "vintage"), ("commute", "date"), 2, 1, "regular", COMFORT_REGULAR),
+        P("简约金属耳饰", "synthetic", ("all",), ("simple", "smart"), ("daily", "meeting"), 2, 1, "regular", COMFORT_REGULAR),
+        P("复古细腰带", "leather", ("all",), ("vintage", "classic"), ("daily", "date"), 2, 1, "slim", COMFORT_SLIM),
+        P("运动遮阳帽", "synthetic", ("spring", "summer"), ("sporty", "simple"), ("sports", "outdoor", "travel"), 0, 1, "regular", COMFORT_REGULAR),
+        P("宴会珍珠项链", "synthetic", ("all",), ("formal", "classic"), ("party", "date"), 4, 1, "regular", COMFORT_REGULAR),
+    ),
 }
 
 
@@ -415,7 +422,7 @@ def _schema() -> dict[str, object]:
                 ]
             },
             "fit": {"enum": ["slim", "regular", "loose", "straight"]},
-            "search_text": {"type": "string", "minLength": 2, "maxLength": 100},
+            "search_text": {"type": "string", "minLength": 2, "maxLength": 220},
             "audience": {
                 "enum": ["womenswear", "unisex_womenswear_compatible"]
             },
@@ -424,16 +431,16 @@ def _schema() -> dict[str, object]:
 
 
 def _build_rows() -> list[dict[str, object]]:
-    name_offsets = {slot: 0 for slot in NAMES}
+    profile_offsets = {slot: 0 for slot in GARMENT_PROFILES}
     rows: list[dict[str, object]] = []
     for user_id, allocation in OWNER_SLOT_ADDITIONS.items():
         for slot, count in allocation.items():
             for _ in range(count):
                 index = len(rows)
-                name_index = name_offsets[slot]
-                name = NAMES[slot][name_index]
-                name_offsets[slot] += 1
-                color_index = (index + name_index) % len(COLORS)
+                profile_index = profile_offsets[slot]
+                profile = GARMENT_PROFILES[slot][profile_index]
+                profile_offsets[slot] += 1
+                color_index = (index + profile_index) % len(COLORS)
                 color = (
                     U01_SLOT_COLORS[slot]
                     if user_id == "u01"
@@ -441,39 +448,20 @@ def _build_rows() -> list[dict[str, object]]:
                 )
                 if color == OWNER_AVOID_COLOR[user_id]:
                     color = COLORS[(color_index + 1) % len(COLORS)]
-                seasons = SEASON_CYCLE[(index + name_index) % len(SEASON_CYCLE)]
-                if user_id == "u01":
-                    occasions, styles, formal = U01_LIFESTYLE_PROFILES[
-                        index % len(U01_LIFESTYLE_PROFILES)
-                    ]
-                else:
-                    occasions, styles, formal = PROFILE_CYCLE[
-                        index % len(PROFILE_CYCLE)
-                    ]
-                if slot == "shoes" and user_id == "u01":
-                    occasions, styles, formal = (
-                        ("date", "party"),
-                        ("classic", "formal"),
-                        2,
-                    )
-                materials = MATERIALS_BY_SLOT[slot]
-                material = materials[(index + name_index) % len(materials)]
-                fit = FITS[(index + name_index) % len(FITS)]
-                warmth = 5 if seasons == ("winter",) else 4 if "winter" in seasons else 2
                 audience = (
                     "unisex_womenswear_compatible"
                     if slot in {"top", "outer", "shoes", "bag", "accessory"}
                     and index % 4 == 0
                     else "womenswear"
                 )
-                season_text = "、".join(SEASON_LABELS[item] for item in seasons)
-                occasion_text = "、".join(
-                    OCCASION_LABELS[item] for item in occasions
+                season_text = "、".join(
+                    SEASON_LABELS[item] for item in profile.seasons
                 )
-                shoe_usage_text = (
-                    "，兼顾通勤久走、长时间站立与舒适需求"
-                    if slot == "shoes" and user_id == "u01"
-                    else ""
+                style_text = "、".join(
+                    STYLE_LABELS[item] for item in profile.styles
+                )
+                occasion_text = "、".join(
+                    OCCASION_LABELS[item] for item in profile.occasions
                 )
                 rows.append(
                     {
@@ -483,21 +471,23 @@ def _build_rows() -> list[dict[str, object]]:
                         "synthetic": True,
                         "garment_id": f"g{index + 51:03d}",
                         "user_id": user_id,
-                        "name": name,
+                        "name": profile.name,
                         "slot": slot,
                         "color": color,
-                        "seasons": list(seasons),
-                        "styles": list(styles),
-                        "occasions": list(occasions),
+                        "seasons": list(profile.seasons),
+                        "styles": list(profile.styles),
+                        "occasions": list(profile.occasions),
                         "status": "available",
-                        "formal": formal,
-                        "warmth": warmth,
-                        "material": material,
-                        "fit": fit,
+                        "formal": profile.formal,
+                        "warmth": profile.warmth,
+                        "material": profile.material,
+                        "fit": profile.fit,
                         "search_text": (
-                            f"{name}，{COLOR_LABELS[color]}，{season_text}，"
-                            f"{MATERIAL_LABELS[material]}，{FIT_LABELS[fit]}，"
-                            f"适合{occasion_text}{shoe_usage_text}"
+                            f"{profile.name}；颜色：{COLOR_LABELS[color]}；"
+                            f"季节：{season_text}；材质：{MATERIAL_LABELS[profile.material]}；"
+                            f"版型：{FIT_LABELS[profile.fit]}；风格：{style_text}；"
+                            f"场景：{occasion_text}；正式度：{profile.formal}/4；"
+                            f"保暖度：{profile.warmth}/5；舒适说明：{profile.comfort}"
                         ),
                         "audience": audience,
                     }
@@ -506,6 +496,10 @@ def _build_rows() -> list[dict[str, object]]:
 
 
 def _assert_contract(rows: list[dict[str, object]]) -> None:
+    if {slot: len(profiles) for slot, profiles in GARMENT_PROFILES.items()} != (
+        EXPECTED_ADDED_SLOT_COUNTS
+    ):
+        raise RuntimeError("S16 declarative profile counts drifted")
     if [row["garment_id"] for row in rows] != [
         f"g{index:03d}" for index in range(51, 121)
     ]:
@@ -518,29 +512,21 @@ def _assert_contract(rows: list[dict[str, object]]) -> None:
         raise RuntimeError("S16 slot allocation drifted")
     if len({row["name"] for row in rows}) != len(rows):
         raise RuntimeError("S16 garment names must be unique")
+    added_owner_slots = {
+        user_id: {
+            slot: sum(
+                row["user_id"] == user_id and row["slot"] == slot for row in rows
+            )
+            for slot in EXPECTED_ADDED_SLOT_COUNTS
+        }
+        for user_id in OWNER_SLOT_ADDITIONS
+    }
+    if added_owner_slots != OWNER_SLOT_ADDITIONS:
+        raise RuntimeError("S16 owner-slot allocation drifted")
 
 
-def main() -> None:
-    for relative, expected in BASE_HASHES.items():
-        path = ROOT / relative
-        if not path.is_file() or _sha256(path) != expected:
-            raise RuntimeError(f"immutable baseline mismatch: {relative}")
-
-    rows = _build_rows()
-    _assert_contract(rows)
-    schema = _schema()
-    SCHEMA_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _write_json(SCHEMA_PATH, schema)
-    EXTENSION_PATH.parent.mkdir(parents=True, exist_ok=True)
-    EXTENSION_PATH.write_text(
-        "".join(
-            json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n"
-            for row in rows
-        ),
-        encoding="utf-8",
-        newline="\n",
-    )
-    manifest = {
+def _manifest(rows: list[dict[str, object]]) -> dict[str, object]:
+    return {
         "schema_version": 1,
         "data_version": DATA_VERSION,
         "source_id": SOURCE_ID,
@@ -566,13 +552,38 @@ def main() -> None:
         "counts": {
             "added_owners": EXPECTED_ADDED_OWNER_COUNTS,
             "added_slots": EXPECTED_ADDED_SLOT_COUNTS,
+            "added_owner_slots": OWNER_SLOT_ADDITIONS,
             "final_owners": EXPECTED_FINAL_OWNER_COUNTS,
             "final_slots": EXPECTED_FINAL_SLOT_COUNTS,
+            "final_owner_slots": EXPECTED_FINAL_OWNER_SLOT_COUNTS,
             "total_added": len(rows),
             "total_garments": 120,
         },
         "audiences": ["womenswear", "unisex_womenswear_compatible"],
     }
+
+
+def main() -> None:
+    for relative, expected in BASE_HASHES.items():
+        path = ROOT / relative
+        if not path.is_file() or _sha256(path) != expected:
+            raise RuntimeError(f"immutable baseline mismatch: {relative}")
+
+    rows = _build_rows()
+    _assert_contract(rows)
+    schema = _schema()
+    SCHEMA_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(SCHEMA_PATH, schema)
+    EXTENSION_PATH.parent.mkdir(parents=True, exist_ok=True)
+    EXTENSION_PATH.write_text(
+        "".join(
+            json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n"
+            for row in rows
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    manifest = _manifest(rows)
     _write_json(MANIFEST_PATH, manifest)
     print(
         "generated S16 womenswear extension: "

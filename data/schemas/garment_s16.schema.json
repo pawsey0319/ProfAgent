@@ -87,7 +87,7 @@
       "const": 1
     },
     "search_text": {
-      "maxLength": 100,
+      "maxLength": 220,
       "minLength": 2,
       "type": "string"
     },

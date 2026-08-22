@@ -29,6 +29,35 @@
     }
   },
   "counts": {
+    "added_owner_slots": {
+      "u01": {
+        "accessory": 3,
+        "bag": 3,
+        "bottom": 9,
+        "dress": 7,
+        "outer": 7,
+        "shoes": 7,
+        "top": 8
+      },
+      "u02": {
+        "accessory": 0,
+        "bag": 0,
+        "bottom": 3,
+        "dress": 2,
+        "outer": 2,
+        "shoes": 2,
+        "top": 3
+      },
+      "u03": {
+        "accessory": 2,
+        "bag": 1,
+        "bottom": 3,
+        "dress": 2,
+        "outer": 2,
+        "shoes": 1,
+        "top": 3
+      }
+    },
     "added_owners": {
       "u01": 44,
       "u02": 12,
@@ -42,6 +71,35 @@
       "outer": 11,
       "shoes": 10,
       "top": 14
+    },
+    "final_owner_slots": {
+      "u01": {
+        "accessory": 6,
+        "bag": 6,
+        "bottom": 14,
+        "dress": 10,
+        "outer": 11,
+        "shoes": 11,
+        "top": 14
+      },
+      "u02": {
+        "accessory": 1,
+        "bag": 2,
+        "bottom": 5,
+        "dress": 3,
+        "outer": 4,
+        "shoes": 4,
+        "top": 5
+      },
+      "u03": {
+        "accessory": 3,
+        "bag": 2,
+        "bottom": 5,
+        "dress": 3,
+        "outer": 3,
+        "shoes": 3,
+        "top": 5
+      }
     },
     "final_owners": {
       "u01": 72,
@@ -65,11 +123,11 @@
     "garments_extension": {
       "count": 70,
       "path": "data/fixtures/garments_s16_womenswear.jsonl",
-      "sha256": "0d192ab633d18fffb01cc79d617fa9df8ceb488925aa53605c2a822d2ee4f2fc"
+      "sha256": "f792f51b7a9436a3239d9e246ba5f9771c88e3775f9b230824bb4dbcfee01d21"
     },
     "schema": {
       "path": "data/schemas/garment_s16.schema.json",
-      "sha256": "b5d7edb588fbc6b06067c8ab9187f012422288fd3678f092f60f40931100b117"
+      "sha256": "014e9239d655e91e2058bab91b6d081daa0e4c92dbf0a580becb89f59565f292"
     }
   },
   "schema_version": 1,
