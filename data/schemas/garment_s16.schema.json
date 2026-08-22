@@ -1,0 +1,188 @@
+{
+  "$id": "garment_s16.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "audience": {
+      "enum": [
+        "womenswear",
+        "unisex_womenswear_compatible"
+      ]
+    },
+    "color": {
+      "enum": [
+        "black",
+        "white",
+        "gray",
+        "navy",
+        "beige",
+        "brown",
+        "khaki",
+        "red",
+        "pink",
+        "orange",
+        "yellow",
+        "green",
+        "blue",
+        "purple",
+        "multi"
+      ]
+    },
+    "data_version": {
+      "const": "fixtures_s16_womenswear_v1"
+    },
+    "fit": {
+      "enum": [
+        "slim",
+        "regular",
+        "loose",
+        "straight"
+      ]
+    },
+    "formal": {
+      "maximum": 4,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "garment_id": {
+      "pattern": "^g(?:0(?:5[1-9]|[6-9][0-9])|1(?:0[0-9]|1[0-9]|20))$",
+      "type": "string"
+    },
+    "material": {
+      "enum": [
+        "cotton",
+        "knit",
+        "denim",
+        "wool",
+        "linen",
+        "leather",
+        "synthetic"
+      ]
+    },
+    "name": {
+      "maxLength": 30,
+      "minLength": 1,
+      "type": "string"
+    },
+    "occasions": {
+      "items": {
+        "enum": [
+          "daily",
+          "commute",
+          "interview",
+          "meeting",
+          "date",
+          "party",
+          "travel",
+          "outdoor",
+          "home",
+          "sports"
+        ]
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "search_text": {
+      "maxLength": 100,
+      "minLength": 2,
+      "type": "string"
+    },
+    "seasons": {
+      "items": {
+        "enum": [
+          "spring",
+          "summer",
+          "autumn",
+          "winter",
+          "all"
+        ]
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "slot": {
+      "enum": [
+        "outer",
+        "top",
+        "bottom",
+        "dress",
+        "shoes",
+        "bag",
+        "accessory"
+      ]
+    },
+    "source_id": {
+      "const": "fixtures_s16"
+    },
+    "status": {
+      "enum": [
+        "available",
+        "laundry",
+        "reserved",
+        "unavailable"
+      ]
+    },
+    "styles": {
+      "items": {
+        "enum": [
+          "simple",
+          "classic",
+          "smart",
+          "formal",
+          "street",
+          "sporty",
+          "soft",
+          "vintage",
+          "business",
+          "campus"
+        ]
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "synthetic": {
+      "const": true
+    },
+    "user_id": {
+      "enum": [
+        "u01",
+        "u02",
+        "u03"
+      ]
+    },
+    "warmth": {
+      "maximum": 5,
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "data_version",
+    "source_id",
+    "synthetic",
+    "garment_id",
+    "user_id",
+    "name",
+    "slot",
+    "color",
+    "seasons",
+    "styles",
+    "occasions",
+    "status",
+    "formal",
+    "warmth",
+    "material",
+    "fit",
+    "search_text",
+    "audience"
+  ],
+  "title": "S16 Womenswear Garment Extension",
+  "type": "object"
+}

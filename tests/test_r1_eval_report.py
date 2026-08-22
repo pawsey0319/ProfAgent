@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from profagent.app import create_app
+from profagent.app import AppServices, create_app
+from profagent.config import Settings
 from profagent.eval import (
     REPORT_JSON,
     REPORT_MARKDOWN,
@@ -18,6 +21,8 @@ from profagent.eval import (
     independent_slots_complete,
     run_evaluation,
 )
+from profagent.models import SceneParseInput
+from profagent.repository import FixtureRepository
 import profagent.eval as eval_module
 
 
@@ -275,6 +280,100 @@ def _assert_safe_report(report: dict) -> None:
     assert "bearer " not in serialized
     assert "sk-" not in serialized
     assert all("query" not in case for case in report["cases"])
+
+
+async def _actual_ac07_trace_witnesses(root: Path) -> tuple[tuple[str, str], str]:
+    services = AppServices(
+        Settings(
+            root_dir=root,
+            cpa_text_enabled=False,
+            cpa_api_key=None,
+            dense_enabled=False,
+            catalog_enabled=True,
+            vision_force_failure=True,
+        )
+    )
+    try:
+        scene = await services.scene_parser.parse(
+            SceneParseInput(
+                user_id="u01",
+                query_text="下周通勤要久走并长时间站立，想穿得轻松舒适。",
+                event_horizon="soon",
+                intent="recommend",
+                occasion="commute",
+                goals=["comfortable"],
+            )
+        )
+        result = services.recommendations.recommend(
+            services.recommendations.resolve_payload({"request_id": scene.request_id})
+        )
+        trace = services.traces.get(result.trace_id)
+        target = services.repository.get_garment("g020")
+        assert trace is not None
+        assert target is not None
+        risk_items, safe_item = eval_module._select_ac07_trace_witnesses(
+            services.repository,
+            trace,
+            target,
+        )
+        return tuple(item.garment_id for item in risk_items), safe_item.garment_id
+    finally:
+        services.assets.close()
+
+
+def test_ac07_trace_witnesses_preserve_base_and_overlay_causality(
+    project_root: Path, tmp_path: Path
+) -> None:
+    base_root = tmp_path / "base_only"
+    shutil.copytree(project_root / "data", base_root / "data")
+    for relative in (
+        "data/fixtures/garments_s16_womenswear.jsonl",
+        "data/schemas/garment_s16.schema.json",
+        "data/manifests/fixtures_s16_womenswear_v1.json",
+    ):
+        (base_root / relative).unlink()
+
+    base_witnesses = asyncio.run(_actual_ac07_trace_witnesses(base_root))
+    overlay_witnesses = asyncio.run(_actual_ac07_trace_witnesses(project_root))
+    assert base_witnesses == (("g021", "g022"), "g019")
+    assert len(set((*overlay_witnesses[0], overlay_witnesses[1]))) == 3
+
+    base_assurance = asyncio.run(eval_module._assure_ac07_rank_causality(base_root))
+    overlay_assurance = asyncio.run(
+        eval_module._assure_ac07_rank_causality(project_root)
+    )
+    assert base_assurance["status"] == "PASS"
+    assert overlay_assurance["status"] == "PASS", (
+        overlay_witnesses,
+        overlay_assurance,
+    )
+
+
+def test_ac07_trace_witness_selection_fails_closed_when_trace_is_insufficient(
+    project_root: Path,
+) -> None:
+    repository = FixtureRepository(project_root)
+    target = repository.get_garment("g020")
+    assert target is not None
+    incomplete_trace = SimpleNamespace(
+        retrieval={
+            "rrf": [
+                {"item_id": "g019", "score": 1.0},
+                {"item_id": "g021", "score": 0.9},
+            ]
+        }
+    )
+
+    try:
+        eval_module._select_ac07_trace_witnesses(
+            repository,
+            incomplete_trace,
+            target,
+        )
+    except eval_module._AssuranceFailure as exc:
+        assert str(exc) == "ac07_rank_trace_witnesses_insufficient"
+    else:
+        raise AssertionError("insufficient Trace witnesses must fail closed")
 
 
 def test_frozen_eval_writes_stable_json_and_markdown(project_root: Path) -> None:

@@ -1,0 +1,78 @@
+{
+  "audiences": [
+    "womenswear",
+    "unisex_womenswear_compatible"
+  ],
+  "base": {
+    "data_version": "fixtures_v1.0",
+    "files": {
+      "data/eval/eval.jsonl": {
+        "path": "data/eval/eval.jsonl",
+        "sha256": "a534e04346a60b837528248e38891d9e17a1024895f36aea9433e209409bff66"
+      },
+      "data/fixtures/catalog.jsonl": {
+        "path": "data/fixtures/catalog.jsonl",
+        "sha256": "c56e47f700b38be3053aeb476d116c3ecfcac0c0784e6c2a6c92a3eae0ce33af"
+      },
+      "data/fixtures/garments.jsonl": {
+        "path": "data/fixtures/garments.jsonl",
+        "sha256": "b9f6d85ace1dc31079b304d342c37a29ba9f6362d63ca3cd548e62f7226be001"
+      },
+      "data/fixtures/outfits.jsonl": {
+        "path": "data/fixtures/outfits.jsonl",
+        "sha256": "cf2a439194d4bf209a3fa2289903271c95cb36424dcdb5b772d22e37550045a2"
+      },
+      "data/fixtures/users.jsonl": {
+        "path": "data/fixtures/users.jsonl",
+        "sha256": "a47a1225037834c85b890fa06011e43ba69d485c9fcf419935fd027d5eaff466"
+      }
+    }
+  },
+  "counts": {
+    "added_owners": {
+      "u01": 44,
+      "u02": 12,
+      "u03": 14
+    },
+    "added_slots": {
+      "accessory": 5,
+      "bag": 4,
+      "bottom": 15,
+      "dress": 11,
+      "outer": 11,
+      "shoes": 10,
+      "top": 14
+    },
+    "final_owners": {
+      "u01": 72,
+      "u02": 24,
+      "u03": 24
+    },
+    "final_slots": {
+      "accessory": 10,
+      "bag": 10,
+      "bottom": 24,
+      "dress": 16,
+      "outer": 18,
+      "shoes": 18,
+      "top": 24
+    },
+    "total_added": 70,
+    "total_garments": 120
+  },
+  "data_version": "fixtures_s16_womenswear_v1",
+  "files": {
+    "garments_extension": {
+      "count": 70,
+      "path": "data/fixtures/garments_s16_womenswear.jsonl",
+      "sha256": "0d192ab633d18fffb01cc79d617fa9df8ceb488925aa53605c2a822d2ee4f2fc"
+    },
+    "schema": {
+      "path": "data/schemas/garment_s16.schema.json",
+      "sha256": "b5d7edb588fbc6b06067c8ab9187f012422288fd3678f092f60f40931100b117"
+    }
+  },
+  "schema_version": 1,
+  "seed": 20260729,
+  "source_id": "fixtures_s16"
+}

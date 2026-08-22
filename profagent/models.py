@@ -68,6 +68,7 @@ Style = Literal[
     "business",
     "campus",
 ]
+Audience = Literal["womenswear", "unisex_womenswear_compatible"]
 
 
 class ApiModel(BaseModel):
@@ -110,6 +111,7 @@ class Garment(ApiModel):
     material: Literal["cotton", "knit", "denim", "wool", "linen", "leather", "synthetic"]
     fit: Literal["slim", "regular", "loose", "straight"]
     search_text: str
+    audience: Audience = "womenswear"
 
 
 class OutfitFixture(ApiModel):

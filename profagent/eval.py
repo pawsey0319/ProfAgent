@@ -748,6 +748,58 @@ def _observed_assurance(
     }
 
 
+def _ac07_structural_similarity_evidence(left: Any, right: Any) -> int:
+    """Independent AC-07 3-of-5 structural shoe similarity predicate."""
+
+    return sum(
+        (
+            bool(set(left.styles).intersection(right.styles)),
+            left.fit == right.fit,
+            left.material == right.material,
+            abs(left.formal - right.formal) <= 1,
+            abs(left.warmth - right.warmth) <= 1,
+        )
+    )
+
+
+def _select_ac07_trace_witnesses(
+    repository: Any,
+    trace: Any,
+    target: Any,
+) -> tuple[tuple[Any, Any], Any]:
+    """Select two risk shoes and one safe shoe from the server Trace only.
+
+    Selection is stable in the existing RRF order. Missing or malformed Trace
+    evidence fails closed instead of substituting fixture IDs outside top-30.
+    """
+
+    rows = trace.retrieval.get("rrf", [])
+    _ensure(isinstance(rows, list), "ac07_rank_trace_witnesses_insufficient")
+    risk_items: list[Any] = []
+    safe_item: Any | None = None
+    seen_ids: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        item_id = row.get("item_id")
+        if not isinstance(item_id, str) or item_id in seen_ids:
+            continue
+        seen_ids.add(item_id)
+        item = repository.get_garment(item_id)
+        if item is None or item.slot != "shoes" or item.garment_id == target.garment_id:
+            continue
+        similarity = _ac07_structural_similarity_evidence(item, target)
+        if similarity >= 3 and len(risk_items) < 2:
+            risk_items.append(item)
+        elif similarity < 3 and safe_item is None:
+            safe_item = item
+    _ensure(
+        len(risk_items) == 2 and safe_item is not None,
+        "ac07_rank_trace_witnesses_insufficient",
+    )
+    return (risk_items[0], risk_items[1]), safe_item
+
+
 async def _assure_ac07(root: Path) -> dict[str, Any]:
     """Exercise feedback -> confirm -> relevant scene -> delete causality."""
 
@@ -954,16 +1006,12 @@ async def _assure_ac07_rank_causality(root: Path) -> dict[str, Any]:
                 return index, float(row.get("score", 0.0))
         raise _AssuranceFailure(f"ac07_rank_missing:{item_id}")
 
-    def similarity_evidence(left: Any, right: Any) -> int:
-        return sum(
-            (
-                bool(set(left.styles).intersection(right.styles)),
-                left.fit == right.fit,
-                left.material == right.material,
-                abs(left.formal - right.formal) <= 1,
-                abs(left.warmth - right.warmth) <= 1,
-            )
-        )
+    def optional_rank_score(trace: Any, item_id: str) -> tuple[int, float] | None:
+        rows = list(trace.retrieval.get("rrf", []))
+        for index, row in enumerate(rows, 1):
+            if row.get("item_id") == item_id:
+                return index, float(row.get("score", 0.0))
+        return None
 
     try:
         seed = await services.scene_parser.parse(
@@ -1004,22 +1052,7 @@ async def _assure_ac07_rank_causality(root: Path) -> dict[str, Any]:
         )
 
         target = services.repository.get_garment("g020")
-        risk_items = [
-            services.repository.get_garment("g021"),
-            services.repository.get_garment("g022"),
-        ]
-        safe_item = services.repository.get_garment("g019")
-        _ensure(
-            target is not None
-            and safe_item is not None
-            and all(item is not None for item in risk_items),
-            "ac07_rank_fixture_shoes_grounded",
-        )
-        _ensure(
-            all(similarity_evidence(item, target) >= 3 for item in risk_items)
-            and similarity_evidence(safe_item, target) < 3,
-            "ac07_rank_independent_structured_similarity_oracle",
-        )
+        _ensure(target is not None, "ac07_rank_target_shoe_grounded")
 
         related_text = "下周通勤要久走并长时间站立，想穿得轻松舒适。"
         before = await services.scene_parser.parse(
@@ -1045,7 +1078,22 @@ async def _assure_ac07_rank_causality(root: Path) -> dict[str, Any]:
             and before_policy.get("active_policy_count") == 0,
             "ac07_rank_before_no_confirmed_policy",
         )
-        tracked_ids = ("g019", "g021", "g022")
+        risk_items, safe_item = _select_ac07_trace_witnesses(
+            services.repository,
+            before_trace,
+            target,
+        )
+        risk_ids = tuple(item.garment_id for item in risk_items)
+        safe_id = safe_item.garment_id
+        _ensure(
+            all(
+                _ac07_structural_similarity_evidence(item, target) >= 3
+                for item in risk_items
+            )
+            and _ac07_structural_similarity_evidence(safe_item, target) < 3,
+            "ac07_rank_independent_structured_similarity_oracle",
+        )
+        tracked_ids = (safe_id, *risk_ids)
         before_positions = {
             item_id: rank_score(before_trace, item_id) for item_id in tracked_ids
         }
@@ -1135,7 +1183,7 @@ async def _assure_ac07_rank_causality(root: Path) -> dict[str, Any]:
             item_id: (rank, score)
             for rank, (item_id, score) in enumerate(same_universe_after, 1)
         }
-        for item_id in ("g021", "g022"):
+        for item_id in risk_ids:
             before_rank, before_score = same_before_positions[item_id]
             after_rank, after_score = same_after_positions[item_id]
             _ensure(
@@ -1144,9 +1192,9 @@ async def _assure_ac07_rank_causality(root: Path) -> dict[str, Any]:
                 f"ac07_rank_same_universe_fixed_penalty:{item_id}",
             )
         _ensure(
-            same_after_positions["g019"][1] == same_before_positions["g019"][1]
-            and same_after_positions["g019"][0]
-            <= same_before_positions["g019"][0]
+            same_after_positions[safe_id][1] == same_before_positions[safe_id][1]
+            and same_after_positions[safe_id][0]
+            <= same_before_positions[safe_id][0]
             and same_universe_policy.get("score_penalty_applied_count") >= 2
             and same_universe_policy.get("same_universe_rank_improved_count") == 0
             and same_universe_policy.get("penalty") == 0.01,
@@ -1159,24 +1207,37 @@ async def _assure_ac07_rank_causality(root: Path) -> dict[str, Any]:
         )
 
         after_positions = {
-            item_id: rank_score(after_trace, item_id) for item_id in tracked_ids
+            item_id: optional_rank_score(after_trace, item_id)
+            for item_id in tracked_ids
         }
-        for item_id in ("g021", "g022"):
+        for item_id in risk_ids:
             _before_rank, before_score = before_positions[item_id]
-            _after_rank, after_score = after_positions[item_id]
+            observed_after = after_positions[item_id]
+            after_score = (
+                observed_after[1]
+                if observed_after is not None
+                else same_after_positions[item_id][1]
+            )
             _ensure(
                 after_score < before_score,
                 f"ac07_rank_end_to_end_similar_risk_score_decreased:{item_id}",
             )
-        _safe_before_rank, safe_before_score = before_positions["g019"]
-        _safe_after_rank, safe_after_score = after_positions["g019"]
+        _safe_before_rank, safe_before_score = before_positions[safe_id]
+        safe_after = after_positions[safe_id]
+        _ensure(safe_after is not None, "ac07_rank_safe_witness_remains_observable")
+        _safe_after_rank, safe_after_score = safe_after
         before_safe_relative_margin = sum(
             safe_before_score - before_positions[item_id][1]
-            for item_id in ("g021", "g022")
+            for item_id in risk_ids
         )
         after_safe_relative_margin = sum(
-            safe_after_score - after_positions[item_id][1]
-            for item_id in ("g021", "g022")
+            safe_after_score
+            - (
+                after_positions[item_id][1]
+                if after_positions[item_id] is not None
+                else same_after_positions[item_id][1]
+            )
+            for item_id in risk_ids
         )
         _ensure(
             after_safe_relative_margin > before_safe_relative_margin,
