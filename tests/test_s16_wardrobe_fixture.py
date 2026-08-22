@@ -196,13 +196,32 @@ FIT_LABELS = {
 }
 SHOE_LONG_WALK_CLAIM = "缓震平底结构，适合久走与长时间站立"
 SHOE_SHORT_ACTIVITY_CLAIM = "鞋跟或细带结构适合短时活动，长时间活动前需另行确认"
+SHOE_UNVERIFIED_SUPPORT_CLAIM = (
+    "鞋底与支撑信息需实物确认，久走或长时间站立前需确认舒适度"
+)
+BAG_CARRY_CLAIM = "容量、重量与携带舒适度需按实际装载确认"
+BAG_HAND_CARRY_CLAIM = "手拿方式与容量适合短时场景，长时间携带前需确认"
+ACCESSORY_WEAR_CLAIM = "佩戴尺寸与接触舒适度需按实际情况确认"
 ALLOWED_COMFORT_CLAIMS = {
     "宽松版型便于活动，仍需按场景确认舒适度",
     "修身版型活动前需确认贴合与舒适度",
     "常规活动前需确认穿着舒适度",
-    "适合一般步行，长时间活动前需确认舒适度",
     SHOE_LONG_WALK_CLAIM,
     SHOE_SHORT_ACTIVITY_CLAIM,
+    SHOE_UNVERIFIED_SUPPORT_CLAIM,
+    BAG_CARRY_CLAIM,
+    BAG_HAND_CARRY_CLAIM,
+    ACCESSORY_WEAR_CLAIM,
+}
+
+SLOT_NAME_MARKERS = {
+    "top": ("衬衫", "上衣", "衬衣", "打底衫", "背心", "开衫", "针织衫"),
+    "bottom": ("裤", "半身裙"),
+    "dress": ("连衣裙", "长裙", "茶歇裙"),
+    "outer": ("西装", "外套", "夹克", "风衣", "大衣", "披肩", "长开衫"),
+    "shoes": ("鞋", "靴"),
+    "bag": ("包",),
+    "accessory": ("方巾", "耳饰", "腰带", "帽", "项链"),
 }
 
 
@@ -230,6 +249,60 @@ def _write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
         json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in rows
     )
     path.write_text(payload, encoding="utf-8", newline="\n")
+
+
+def _owner_slot_counts(rows: list[dict[str, object]]) -> dict[str, dict[str, int]]:
+    return {
+        user_id: {
+            slot: sum(
+                row.get("user_id") == user_id and row.get("slot") == slot
+                for row in rows
+            )
+            for slot in ADDED_SLOT_COUNTS
+        }
+        for user_id in ADDED_OWNER_COUNTS
+    }
+
+
+def _refresh_extension_manifest_receipts(
+    repository_root: Path,
+    rows: list[dict[str, object]],
+    *,
+    recompute_counts: bool = True,
+) -> None:
+    """Rebind a deliberately mutated fixture/schema without hiding count drift."""
+
+    fixture_path = repository_root / EXTENSION
+    schema_path = repository_root / EXTENSION_SCHEMA
+    manifest_path = repository_root / EXTENSION_MANIFEST
+    base_rows = _read_jsonl(repository_root / "data/fixtures/garments.jsonl")
+    combined = [*base_rows, *rows]
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"]["garments_extension"] = {
+        "path": EXTENSION.as_posix(),
+        "count": len(rows),
+        "sha256": _sha256(fixture_path),
+    }
+    manifest["files"]["schema"] = {
+        "path": EXTENSION_SCHEMA.as_posix(),
+        "sha256": _sha256(schema_path),
+    }
+    if recompute_counts:
+        manifest["counts"] = {
+            "added_owners": dict(Counter(row.get("user_id") for row in rows)),
+            "added_slots": dict(Counter(row.get("slot") for row in rows)),
+            "added_owner_slots": _owner_slot_counts(rows),
+            "final_owners": dict(Counter(row.get("user_id") for row in combined)),
+            "final_slots": dict(Counter(row.get("slot") for row in combined)),
+            "final_owner_slots": _owner_slot_counts(combined),
+            "total_added": len(rows),
+            "total_garments": len(combined),
+        }
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
 
 
 def _extension_rows(project_root: Path) -> list[dict[str, object]]:
@@ -439,7 +512,15 @@ def test_every_extension_row_has_coherent_declarative_semantics(
         search_text = str(row["search_text"])
         assert f"季节：{'、'.join(SEASON_LABELS[item] for item in row['seasons'])}" in search_text
         assert f"材质：{MATERIAL_LABELS[str(row['material'])]}" in search_text
-        assert f"版型：{FIT_LABELS[str(row['fit'])]}" in search_text
+        if row["slot"] in {"top", "bottom", "dress", "outer"}:
+            assert f"服装版型：{FIT_LABELS[str(row['fit'])]}" in search_text
+        elif row["slot"] == "shoes":
+            shoe_fit = "贴合鞋型" if row["fit"] == "slim" else "常规鞋型"
+            assert f"鞋型：{shoe_fit}" in search_text
+        elif row["slot"] == "bag":
+            assert "携带规格：标准" in search_text
+        else:
+            assert "佩戴规格：标准" in search_text
         assert f"风格：{'、'.join(STYLE_LABELS[item] for item in row['styles'])}" in search_text
         assert f"场景：{'、'.join(OCCASION_LABELS[item] for item in row['occasions'])}" in search_text
         assert f"正式度：{row['formal']}/4" in search_text
@@ -493,8 +574,7 @@ def test_every_extension_row_has_coherent_declarative_semantics(
         ):
             assert comfort_claim == SHOE_SHORT_ACTIVITY_CLAIM
         if comfort_claim == SHOE_LONG_WALK_CLAIM:
-            assert row["slot"] == "shoes"
-            assert any(token in name for token in ("平底", "运动鞋", "缓震"))
+            assert row["slot"] == "shoes" and "缓震" in name
 
     assert {
         key: by_id["g051"][key]
@@ -526,6 +606,64 @@ def test_every_extension_row_has_coherent_declarative_semantics(
     assert by_id["g086"]["search_text"].endswith(
         f"舒适说明：{SHOE_SHORT_ACTIVITY_CLAIM}"
     )
+
+
+def test_all_extension_names_and_copy_are_slot_appropriate_and_evidence_honest(
+    project_root: Path,
+) -> None:
+    rows = _extension_rows(project_root)
+    by_id = {str(row["garment_id"]): row for row in rows}
+    for row in rows:
+        slot = str(row["slot"])
+        name = str(row["name"])
+        search_text = str(row["search_text"])
+        claim = search_text.split("舒适说明：", 1)[1]
+        assert any(marker in name for marker in SLOT_NAME_MARKERS[slot]), (
+            f"{row['garment_id']} name does not identify its declared slot"
+        )
+
+        if slot in {"top", "bottom", "dress", "outer"}:
+            assert "服装版型：" in search_text
+            assert "鞋型：" not in search_text
+        elif slot == "shoes":
+            assert "鞋型：" in search_text
+            assert "服装版型：" not in search_text
+            if "缓震" in name:
+                assert claim == SHOE_LONG_WALK_CLAIM
+            else:
+                assert claim != SHOE_LONG_WALK_CLAIM
+                assert "适合久走" not in claim
+            if "平底" in name and "缓震" not in name:
+                assert claim == SHOE_UNVERIFIED_SUPPORT_CLAIM
+        elif slot == "bag":
+            assert row["fit"] == "regular"
+            assert "携带规格：标准" in search_text
+            assert claim in {BAG_CARRY_CLAIM, BAG_HAND_CARRY_CLAIM}
+            assert not any(token in search_text for token in ("版型", "贴合身体", "修身", "宽松"))
+        else:
+            assert row["fit"] == "regular"
+            assert "佩戴规格：标准" in search_text
+            assert claim == ACCESSORY_WEAR_CLAIM
+            assert not any(token in search_text for token in ("版型", "贴合身体", "修身", "宽松"))
+
+    assert by_id["g084"]["name"] == "舒适芭蕾平底鞋"
+    assert by_id["g084"]["search_text"].endswith(
+        f"舒适说明：{SHOE_UNVERIFIED_SUPPORT_CLAIM}"
+    )
+    assert by_id["g091"]["name"] == "宴会链条手拿包"
+    assert by_id["g091"]["fit"] == "regular"
+    assert by_id["g091"]["search_text"].endswith(
+        f"舒适说明：{BAG_HAND_CARRY_CLAIM}"
+    )
+    for garment_id in ("g083", "g086"):
+        assert by_id[garment_id]["search_text"].endswith(
+            f"舒适说明：{SHOE_SHORT_ACTIVITY_CLAIM}"
+        )
+    assert "缓震" in str(by_id["g085"]["name"])
+    assert by_id["g085"]["search_text"].endswith(
+        f"舒适说明：{SHOE_LONG_WALK_CLAIM}"
+    )
+    assert "服装版型：常规版型" in str(by_id["g051"]["search_text"])
 
 
 def test_extension_schema_is_closed_and_rejects_out_of_contract_rows(
@@ -739,5 +877,102 @@ def test_repository_rejects_entire_invalid_overlay_without_partial_exposure(
 
     repository_root = _copy_repository_root(project_root, tmp_path / case)
     _write_jsonl(repository_root / EXTENSION, invalid_rows)
+    _refresh_extension_manifest_receipts(
+        repository_root,
+        invalid_rows,
+        recompute_counts=False,
+    )
     with pytest.raises((RuntimeError, ValueError)):
         FixtureRepository(repository_root)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "data_version_const",
+        "source_id_const",
+        "synthetic_const",
+        "audience_enum",
+        "additional_property",
+        "required_and_properties",
+        "garment_id_pattern",
+    ],
+)
+def test_repository_rejects_coordinated_schema_row_and_receipt_drift(
+    project_root: Path,
+    tmp_path: Path,
+    case: str,
+) -> None:
+    repository_root = _copy_repository_root(project_root, tmp_path / case)
+    fixture_path = repository_root / EXTENSION
+    schema_path = repository_root / EXTENSION_SCHEMA
+    rows = _read_jsonl(fixture_path)
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    properties = schema["properties"]
+
+    if case == "data_version_const":
+        for row in rows:
+            row["data_version"] = "fixtures_s16_coordinated_drift"
+        properties["data_version"]["const"] = "fixtures_s16_coordinated_drift"
+    elif case == "source_id_const":
+        for row in rows:
+            row["source_id"] = "coordinated_source"
+        properties["source_id"]["const"] = "coordinated_source"
+    elif case == "synthetic_const":
+        for row in rows:
+            row["synthetic"] = False
+        properties["synthetic"]["const"] = False
+    elif case == "audience_enum":
+        rows[0]["audience"] = "menswear"
+        properties["audience"]["enum"].append("menswear")
+    elif case == "additional_property":
+        rows[0]["coordinated_extra"] = "schema-and-row-agree"
+        schema["additionalProperties"] = True
+    elif case == "required_and_properties":
+        for row in rows:
+            row.pop("name")
+        schema["required"].remove("name")
+        properties.pop("name")
+    else:
+        rows[0]["garment_id"] = "g999"
+        properties["garment_id"]["pattern"] = r"^g[0-9]{3}$"
+
+    _write_jsonl(fixture_path, rows)
+    schema_path.write_text(
+        json.dumps(schema, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _refresh_extension_manifest_receipts(repository_root, rows)
+
+    # Prove this is coordinated drift rather than a stale-receipt/schema failure.
+    rebound_schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    validator = Draft202012Validator(rebound_schema)
+    assert all(not list(validator.iter_errors(row)) for row in rows)
+    rebound_manifest = json.loads(
+        (repository_root / EXTENSION_MANIFEST).read_text(encoding="utf-8")
+    )
+    assert rebound_manifest["files"]["garments_extension"]["sha256"] == _sha256(
+        fixture_path
+    )
+    assert rebound_manifest["files"]["schema"]["sha256"] == _sha256(schema_path)
+    assert rebound_manifest["counts"] == {
+        "added_owners": ADDED_OWNER_COUNTS,
+        "added_slots": ADDED_SLOT_COUNTS,
+        "added_owner_slots": ADDED_OWNER_SLOT_COUNTS,
+        "final_owners": EXPECTED_OWNER_COUNTS,
+        "final_slots": EXPECTED_SLOT_COUNTS,
+        "final_owner_slots": EXPECTED_OWNER_SLOT_COUNTS,
+        "total_added": 70,
+        "total_garments": 120,
+    }
+
+    repository = FixtureRepository.__new__(FixtureRepository)
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "S16 garment overlay (?:schema contract|row identity) drifted"
+        ),
+    ):
+        repository.__init__(repository_root)
+    assert not hasattr(repository, "_garments")

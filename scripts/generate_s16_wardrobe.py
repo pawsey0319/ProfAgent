@@ -170,9 +170,14 @@ STYLE_LABELS = {
 COMFORT_LOOSE = "宽松版型便于活动，仍需按场景确认舒适度"
 COMFORT_SLIM = "修身版型活动前需确认贴合与舒适度"
 COMFORT_REGULAR = "常规活动前需确认穿着舒适度"
-COMFORT_WALK = "适合一般步行，长时间活动前需确认舒适度"
 COMFORT_LONG_WALK = "缓震平底结构，适合久走与长时间站立"
 COMFORT_SHORT_SHOE = "鞋跟或细带结构适合短时活动，长时间活动前需另行确认"
+COMFORT_UNVERIFIED_SHOE = (
+    "鞋底与支撑信息需实物确认，久走或长时间站立前需确认舒适度"
+)
+COMFORT_BAG = "容量、重量与携带舒适度需按实际装载确认"
+COMFORT_HAND_CARRY = "手拿方式与容量适合短时场景，长时间携带前需确认"
+COMFORT_ACCESSORY = "佩戴尺寸与接触舒适度需按实际情况确认"
 
 
 @dataclass(frozen=True)
@@ -250,29 +255,29 @@ GARMENT_PROFILES = {
         P("正式会议西装外套", "wool", ("all",), ("business", "formal"), ("meeting", "interview", "commute"), 4, 3, "regular", COMFORT_REGULAR),
     ),
     "shoes": (
-        P("低跟通勤乐福鞋", "leather", ("all",), ("business", "classic"), ("commute", "meeting"), 3, 1, "regular", COMFORT_WALK),
+        P("低跟通勤乐福鞋", "leather", ("all",), ("business", "classic"), ("commute", "meeting"), 3, 1, "regular", COMFORT_UNVERIFIED_SHOE),
         P("尖头中跟单鞋", "leather", ("spring", "autumn"), ("formal", "classic"), ("meeting", "date", "party"), 4, 1, "slim", COMFORT_SHORT_SHOE),
-        P("舒适芭蕾平底鞋", "leather", ("spring", "summer", "autumn"), ("soft", "classic"), ("daily", "date", "travel"), 1, 1, "regular", COMFORT_LONG_WALK),
-        P("轻量旅行运动鞋", "synthetic", ("all",), ("sporty", "simple"), ("travel", "sports", "outdoor"), 0, 1, "regular", COMFORT_LONG_WALK),
+        P("舒适芭蕾平底鞋", "leather", ("spring", "summer", "autumn"), ("soft", "classic"), ("daily", "date", "travel"), 1, 1, "regular", COMFORT_UNVERIFIED_SHOE),
+        P("轻量缓震旅行运动鞋", "synthetic", ("all",), ("sporty", "simple"), ("travel", "sports", "outdoor"), 0, 1, "regular", COMFORT_LONG_WALK),
         P("宴会细带凉鞋", "synthetic", ("spring", "summer"), ("formal", "soft"), ("party", "date"), 4, 1, "slim", COMFORT_SHORT_SHOE),
-        P("复古玛丽珍鞋", "leather", ("spring", "autumn"), ("vintage", "classic"), ("date", "daily"), 2, 1, "regular", COMFORT_WALK),
-        P("简洁短靴", "leather", ("autumn", "winter"), ("classic", "smart"), ("commute", "daily"), 3, 4, "regular", COMFORT_WALK),
+        P("复古玛丽珍鞋", "leather", ("spring", "autumn"), ("vintage", "classic"), ("date", "daily"), 2, 1, "regular", COMFORT_UNVERIFIED_SHOE),
+        P("简洁短靴", "leather", ("autumn", "winter"), ("classic", "smart"), ("commute", "daily"), 3, 4, "regular", COMFORT_UNVERIFIED_SHOE),
         P("运动缓震跑鞋", "synthetic", ("all",), ("sporty", "simple"), ("sports", "travel", "outdoor"), 0, 1, "regular", COMFORT_LONG_WALK),
-        P("方头低跟穆勒鞋", "leather", ("spring", "summer"), ("classic", "smart"), ("commute", "daily"), 2, 1, "regular", COMFORT_WALK),
-        P("商务皮质德比鞋", "leather", ("all",), ("business", "formal"), ("commute", "meeting", "interview"), 4, 2, "regular", COMFORT_WALK),
+        P("方头低跟穆勒鞋", "leather", ("spring", "summer"), ("classic", "smart"), ("commute", "daily"), 2, 1, "regular", COMFORT_SHORT_SHOE),
+        P("商务皮质德比鞋", "leather", ("all",), ("business", "formal"), ("commute", "meeting", "interview"), 4, 2, "regular", COMFORT_UNVERIFIED_SHOE),
     ),
     "bag": (
-        P("结构感通勤托特包", "leather", ("all",), ("business", "smart"), ("commute", "meeting"), 3, 2, "regular", COMFORT_REGULAR),
-        P("轻便旅行斜挎包", "synthetic", ("all",), ("simple", "sporty"), ("travel", "daily", "sports"), 0, 1, "regular", COMFORT_REGULAR),
-        P("宴会链条手拿包", "synthetic", ("all",), ("formal", "vintage"), ("party", "date"), 4, 1, "slim", COMFORT_SLIM),
-        P("日常软皮肩背包", "leather", ("all",), ("simple", "soft"), ("daily", "commute"), 1, 1, "regular", COMFORT_REGULAR),
+        P("结构感通勤托特包", "leather", ("all",), ("business", "smart"), ("commute", "meeting"), 3, 2, "regular", COMFORT_BAG),
+        P("轻便旅行斜挎包", "synthetic", ("all",), ("simple", "sporty"), ("travel", "daily", "sports"), 0, 1, "regular", COMFORT_BAG),
+        P("宴会链条手拿包", "synthetic", ("all",), ("formal", "vintage"), ("party", "date"), 4, 1, "regular", COMFORT_HAND_CARRY),
+        P("日常软皮肩背包", "leather", ("all",), ("simple", "soft"), ("daily", "commute"), 1, 1, "regular", COMFORT_BAG),
     ),
     "accessory": (
-        P("几何方巾", "synthetic", ("spring", "autumn"), ("smart", "vintage"), ("commute", "date"), 2, 1, "regular", COMFORT_REGULAR),
-        P("简约金属耳饰", "synthetic", ("all",), ("simple", "smart"), ("daily", "meeting"), 2, 1, "regular", COMFORT_REGULAR),
-        P("复古细腰带", "leather", ("all",), ("vintage", "classic"), ("daily", "date"), 2, 1, "slim", COMFORT_SLIM),
-        P("运动遮阳帽", "synthetic", ("spring", "summer"), ("sporty", "simple"), ("sports", "outdoor", "travel"), 0, 1, "regular", COMFORT_REGULAR),
-        P("宴会珍珠项链", "synthetic", ("all",), ("formal", "classic"), ("party", "date"), 4, 1, "regular", COMFORT_REGULAR),
+        P("几何方巾", "synthetic", ("spring", "autumn"), ("smart", "vintage"), ("commute", "date"), 2, 1, "regular", COMFORT_ACCESSORY),
+        P("简约金属耳饰", "synthetic", ("all",), ("simple", "smart"), ("daily", "meeting"), 2, 1, "regular", COMFORT_ACCESSORY),
+        P("复古细腰带", "leather", ("all",), ("vintage", "classic"), ("daily", "date"), 2, 1, "regular", COMFORT_ACCESSORY),
+        P("运动遮阳帽", "synthetic", ("spring", "summer"), ("sporty", "simple"), ("sports", "outdoor", "travel"), 0, 1, "regular", COMFORT_ACCESSORY),
+        P("宴会珍珠项链", "synthetic", ("all",), ("formal", "classic"), ("party", "date"), 4, 1, "regular", COMFORT_ACCESSORY),
     ),
 }
 
@@ -430,6 +435,16 @@ def _schema() -> dict[str, object]:
     }
 
 
+def _slot_fit_copy(slot: str, fit: str) -> str:
+    if slot in {"top", "bottom", "dress", "outer"}:
+        return f"服装版型：{FIT_LABELS[fit]}"
+    if slot == "shoes":
+        return f"鞋型：{'贴合鞋型' if fit == 'slim' else '常规鞋型'}"
+    if slot == "bag":
+        return "携带规格：标准"
+    return "佩戴规格：标准"
+
+
 def _build_rows() -> list[dict[str, object]]:
     profile_offsets = {slot: 0 for slot in GARMENT_PROFILES}
     rows: list[dict[str, object]] = []
@@ -485,7 +500,7 @@ def _build_rows() -> list[dict[str, object]]:
                         "search_text": (
                             f"{profile.name}；颜色：{COLOR_LABELS[color]}；"
                             f"季节：{season_text}；材质：{MATERIAL_LABELS[profile.material]}；"
-                            f"版型：{FIT_LABELS[profile.fit]}；风格：{style_text}；"
+                            f"{_slot_fit_copy(slot, profile.fit)}；风格：{style_text}；"
                             f"场景：{occasion_text}；正式度：{profile.formal}/4；"
                             f"保暖度：{profile.warmth}/5；舒适说明：{profile.comfort}"
                         ),

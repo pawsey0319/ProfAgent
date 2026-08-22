@@ -56,6 +56,122 @@ S16_FINAL_OWNER_SLOT_COUNTS = {
     "u02": {"top": 5, "bottom": 5, "dress": 3, "outer": 4, "shoes": 4, "bag": 2, "accessory": 1},
     "u03": {"top": 5, "bottom": 5, "dress": 3, "outer": 3, "shoes": 3, "bag": 2, "accessory": 3},
 }
+S16_ROW_KEYS = [
+    "schema_version",
+    "data_version",
+    "source_id",
+    "synthetic",
+    "garment_id",
+    "user_id",
+    "name",
+    "slot",
+    "color",
+    "seasons",
+    "styles",
+    "occasions",
+    "status",
+    "formal",
+    "warmth",
+    "material",
+    "fit",
+    "search_text",
+    "audience",
+]
+S16_EXPECTED_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "garment_s16.schema.json",
+    "title": "S16 Womenswear Garment Extension",
+    "type": "object",
+    "additionalProperties": False,
+    "required": S16_ROW_KEYS,
+    "properties": {
+        "schema_version": {"const": 1},
+        "data_version": {"const": S16_DATA_VERSION},
+        "source_id": {"const": S16_SOURCE_ID},
+        "synthetic": {"const": True},
+        "garment_id": {
+            "type": "string",
+            "pattern": r"^g(?:0(?:5[1-9]|[6-9][0-9])|1(?:0[0-9]|1[0-9]|20))$",
+        },
+        "user_id": {"enum": ["u01", "u02", "u03"]},
+        "name": {"type": "string", "minLength": 1, "maxLength": 30},
+        "slot": {
+            "enum": ["outer", "top", "bottom", "dress", "shoes", "bag", "accessory"]
+        },
+        "color": {
+            "enum": [
+                "black",
+                "white",
+                "gray",
+                "navy",
+                "beige",
+                "brown",
+                "khaki",
+                "red",
+                "pink",
+                "orange",
+                "yellow",
+                "green",
+                "blue",
+                "purple",
+                "multi",
+            ]
+        },
+        "seasons": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": True,
+            "items": {"enum": ["spring", "summer", "autumn", "winter", "all"]},
+        },
+        "styles": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": True,
+            "items": {
+                "enum": [
+                    "simple",
+                    "classic",
+                    "smart",
+                    "formal",
+                    "street",
+                    "sporty",
+                    "soft",
+                    "vintage",
+                    "business",
+                    "campus",
+                ]
+            },
+        },
+        "occasions": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": True,
+            "items": {
+                "enum": [
+                    "daily",
+                    "commute",
+                    "interview",
+                    "meeting",
+                    "date",
+                    "party",
+                    "travel",
+                    "outdoor",
+                    "home",
+                    "sports",
+                ]
+            },
+        },
+        "status": {"enum": ["available", "laundry", "reserved", "unavailable"]},
+        "formal": {"type": "integer", "minimum": 0, "maximum": 4},
+        "warmth": {"type": "integer", "minimum": 1, "maximum": 5},
+        "material": {
+            "enum": ["cotton", "knit", "denim", "wool", "linen", "leather", "synthetic"]
+        },
+        "fit": {"enum": ["slim", "regular", "loose", "straight"]},
+        "search_text": {"type": "string", "minLength": 2, "maxLength": 220},
+        "audience": {"enum": S16_AUDIENCES},
+    },
+}
 
 
 class FixtureRepository:
@@ -144,14 +260,17 @@ class FixtureRepository:
             schema_path=schema_path,
         )
         try:
-            schema = json.loads(schema_path.read_text(encoding="utf-8"))
+            schema = self._closed_schema_object(schema_path)
             Draft202012Validator.check_schema(schema)
         except (OSError, json.JSONDecodeError) as exc:
             raise RuntimeError("S16 garment overlay schema is invalid") from exc
+        if schema != S16_EXPECTED_SCHEMA:
+            raise RuntimeError("S16 garment overlay schema contract drifted")
         validator = Draft202012Validator(schema)
-        rows = list(self._read_jsonl(fixture_path))
+        rows = list(self._read_s16_jsonl(fixture_path))
         overlay: dict[str, Garment] = {}
         for line_number, raw in enumerate(rows, 1):
+            self._validate_s16_raw_row(raw, expected_index=line_number + 50)
             errors = sorted(validator.iter_errors(raw), key=lambda item: list(item.path))
             if errors:
                 raise RuntimeError(
@@ -167,6 +286,37 @@ class FixtureRepository:
             overlay[garment.garment_id] = garment
         self._validate_s16_overlay_contract(overlay)
         return overlay
+
+    @staticmethod
+    def _closed_schema_object(path: Path) -> dict[str, Any]:
+        def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            value: dict[str, Any] = {}
+            for key, item in pairs:
+                if key in value:
+                    raise RuntimeError("S16 garment overlay schema contract drifted")
+                value[key] = item
+            return value
+
+        payload = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=reject_duplicates,
+        )
+        if not isinstance(payload, dict):
+            raise RuntimeError("S16 garment overlay schema contract drifted")
+        return payload
+
+    @staticmethod
+    def _validate_s16_raw_row(raw: dict[str, Any], *, expected_index: int) -> None:
+        if (
+            set(raw) != set(S16_ROW_KEYS)
+            or raw.get("schema_version") != 1
+            or raw.get("data_version") != S16_DATA_VERSION
+            or raw.get("source_id") != S16_SOURCE_ID
+            or raw.get("synthetic") is not True
+            or raw.get("garment_id") != f"g{expected_index:03d}"
+            or raw.get("audience") not in S16_AUDIENCES
+        ):
+            raise RuntimeError("S16 garment overlay row identity drifted")
 
     @staticmethod
     def _sha256(path: Path) -> str:
@@ -344,6 +494,30 @@ class FixtureRepository:
                         yield json.loads(line)
                     except json.JSONDecodeError as exc:
                         raise RuntimeError(f"invalid JSONL: {path}:{line_number}") from exc
+
+    @staticmethod
+    def _read_s16_jsonl(path: Path) -> Iterable[dict[str, Any]]:
+        def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            value: dict[str, Any] = {}
+            for key, item in pairs:
+                if key in value:
+                    raise RuntimeError("S16 garment overlay row identity drifted")
+                value[key] = item
+            return value
+
+        with path.open("r", encoding="utf-8") as stream:
+            for line_number, line in enumerate(stream, 1):
+                if not line.strip():
+                    continue
+                try:
+                    value = json.loads(line, object_pairs_hook=reject_duplicates)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError(
+                        f"invalid JSONL: {path}:{line_number}"
+                    ) from exc
+                if not isinstance(value, dict):
+                    raise RuntimeError("S16 garment overlay row identity drifted")
+                yield value
 
     def _validate_references(self) -> None:
         for garment in self._garments.values():
