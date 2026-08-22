@@ -354,7 +354,7 @@ S14 对 `action=recommend` 增加顺序约束：服务端必须先用权威 Scen
 
 ### POST `/memory/candidates/extract`
 
-S16A 自由文本候选提取入口；当前合同已冻结但尚未实现。请求只能包含：
+S16A 自由文本候选提取入口；已实现并通过验收门禁。请求采用 exact-key、`extra=forbid` 合同，只能包含：
 
 - `user_id`；
 - 可选 `styling_session_id`；
@@ -362,18 +362,20 @@ S16A 自由文本候选提取入口；当前合同已冻结但尚未实现。请
 - `text`；
 - `request_id`。
 
-不接受客户端提交 canonical 类型、值、适用标签、敏感度、来源、确认次数、排序特征或作用域。响应使用 `memory_candidates` 返回服务端签发的候选卡；候选卡仅含服务端生成的脱敏闭集字段，不得回显原始自由文本、原始对话、模型推理/正文、敏感值或直接标识符，也不得将这些内容写入长期 Memory、RRF、outbox、Trace、Debug DOM 或 browser storage。每项 `candidate_id` 只能用于下面的决定端点。自由文本不能直接 commit，长期保存仍须执行受控 `propose→confirm→commit`。
+不接受客户端提交 canonical 类型、值、适用标签、敏感度、来源、确认次数、排序特征或作用域。响应 exact keys 为 `request_id/status/candidates/trace_id`，其中 `status=ready|needs_rephrase|blocked`；每张候选卡只含 `candidate_id/confirmation_copy/confidence_band/conflict_copy/allowed_actions`，`allowed_actions` 是服务端签发的 `remember|session_only|reject|rephrase` 子集，无 active owner-bound session 时不包含 `session_only`。单次最多返回 5 张候选卡。
+
+候选卡仅含服务端生成的脱敏闭集字段，不得回显原始自由文本、原始对话、模型推理/正文、敏感值或直接标识符，也不得将这些内容写入长期 Memory、RRF、outbox、Trace、Debug DOM 或 browser storage。每项 opaque、owner-bound `candidate_id` 只能用于下面的决定端点。自由文本不能直接 commit，长期保存仍须执行受控 `propose→confirm→commit`。敏感内容与直接标识符在 Provider 前阻断；安全偏好文本仅可瞬时发送给已验证 CPA 提取路径。
 
 ### POST `/memory/candidates/{candidate_id}/decide`
 
-S16A 单候选决定入口；当前合同已冻结但尚未实现。请求只能包含：
+S16A 单候选决定入口；已实现并通过验收门禁。请求采用 exact-key、`extra=forbid` 合同，只能包含：
 
 - `user_id`；
 - 可选 `styling_session_id`；
 - `decision=remember|session_only|reject|rephrase`；
 - `idempotency_key`。
 
-`remember` 仍受敏感门控并进入 S15 `propose→confirm→commit`；`session_only` 只写入 session-bound TTL working context，不进入长期 `GET /memory`、outbox 或 RRF；`reject` 在本会话不得换说法重复；`rephrase` 只回到重新提取流程，不允许直接编辑数据库字段。candidate、owner、namespace、session 和幂等 receipt 的绑定全部由服务端复验。
+响应 exact keys 为 `candidate_id/decision/status/record_id/trace_id`，其中 `status=committed|session_only|rejected`。`remember` 仍受敏感门控并复用 S15 `propose→confirm→commit`；`session_only` 要求 active owner-bound `styling_session_id`，只写入 session-bound TTL working context，不进入长期 `GET /memory`、outbox 或 RRF；`reject` 在本会话不得换说法重复；`rephrase` 只回到重新提取流程，不允许直接编辑数据库字段。candidate、owner、namespace、session 和幂等 receipt 的绑定全部由服务端复验；unknown 与 cross-owner 统一返回 404，同一幂等键不得重复 commit 或写 outbox。
 
 ### GET `/memory?user_id=...&namespace=...`
 

@@ -1,6 +1,6 @@
 # ProfAgent R1 Demo BUILD LOG
 
-> 唯一需求权威：`docs/PRD.md`（v1.16）。
+> 唯一需求权威：`docs/PRD.md`（v1.17）。
 > 当前状态：**R1 DoD Demo 子集及 S6–S15 实现与验收已关闭。S16A 功能实现已完成，但 Task8 报告权威性修复与后续只读 reviewer 尚在验收，当前不得关闭 S16A；旧 JSON/MD projection 未经 canonical bundle 与双 hash 校验不构成 authoritative PASS。S16B、S16C、S16R 均未完成；LangMem、Mem0、Graphiti 与学习型 reranker 移至 S17+ 且未上线。**
 > 目标：交付可运行的 R1 Stylist MVP Demo，并通过 PRD 23.1 的 Demo 子集验收。
 
