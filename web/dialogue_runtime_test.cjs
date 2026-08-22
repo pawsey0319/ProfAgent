@@ -5,6 +5,7 @@ const {
   createInFlightGuard,
   hasExactCpaModel,
   isStrictCpaReply,
+  normalizeComposerMessage,
   selectAssistantText,
   shouldSubmitComposerKey
 } = require("./dialogue_runtime.js");
@@ -15,6 +16,8 @@ async function run() {
   assert.equal(shouldSubmitComposerKey({ key: "Enter", shiftKey: false, isComposing: true }), false, "IME composition Enter must not submit");
   assert.equal(shouldSubmitComposerKey({ key: "Enter", shiftKey: false, isComposing: false, keyCode: 229 }), false, "IME keyCode 229 must not submit");
   assert.equal(shouldSubmitComposerKey({ key: "a", shiftKey: false, isComposing: false }), false);
+  assert.equal(normalizeComposerMessage("  藏青色  "), "藏青色");
+  assert.equal(normalizeComposerMessage(null), "");
 
   const guard = createInFlightGuard();
   let posts = 0;

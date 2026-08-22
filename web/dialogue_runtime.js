@@ -73,10 +73,15 @@
       && event.keyCode !== 229;
   }
 
+  function normalizeComposerMessage(value) {
+    return typeof value === "string" ? value.trim() : "";
+  }
+
   return Object.freeze({
     createInFlightGuard,
     hasExactCpaModel,
     isStrictCpaReply,
+    normalizeComposerMessage,
     selectAssistantText,
     shouldSubmitComposerKey
   });

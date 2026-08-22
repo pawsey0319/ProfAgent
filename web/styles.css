@@ -671,6 +671,54 @@ h1 {
   font-size: 0.68rem;
 }
 
+.preference-clarification-card,
+.dialogue-memory-candidate-card {
+  display: grid;
+  gap: 8px;
+  margin-top: 11px;
+  padding: 11px;
+  border: 1px solid #b7cbbf;
+  border-radius: 11px;
+  color: var(--ink);
+  background: #f4f8f5;
+}
+
+.preference-clarification-label,
+.dialogue-memory-candidate-title {
+  color: var(--forest);
+  font-size: 0.74rem;
+}
+
+.preference-option-list,
+.dialogue-memory-candidate-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.preference-clarification-status,
+.dialogue-memory-candidate-status {
+  color: var(--ink-soft);
+  font-size: 0.68rem;
+  line-height: 1.45;
+}
+
+.dialogue-memory-candidate-card {
+  border-color: #d2c29e;
+  background: #fffaf0;
+}
+
+.dialogue-memory-candidate-copy,
+.dialogue-memory-candidate-conflict {
+  margin: 0 !important;
+  font-size: 0.76rem;
+  line-height: 1.5;
+}
+
+.dialogue-memory-candidate-conflict {
+  color: var(--ink-soft);
+}
+
 .origin-badge {
   display: inline-flex;
   align-items: center;

@@ -219,7 +219,7 @@ if (typeof module === "object" && module.exports) {
   module.exports = Object.freeze({ createMemoryCandidateFlowController });
 }
 
-(function startProfAgentDemo() {
+(async function startProfAgentDemo() {
   "use strict";
 
   if (typeof module === "object" && module.exports) return;
@@ -230,11 +230,16 @@ if (typeof module === "object" && module.exports) {
   const recommendationPreviewRuntime = window.PROFAGENT_RECOMMENDATION_PREVIEW_RUNTIME;
   const memoryRuntime = window.PROFAGENT_MEMORY_RUNTIME;
   const memoryCandidateRuntime = window.PROFAGENT_MEMORY_CANDIDATE_RUNTIME;
+  if (!window.PROFAGENT_PREFERENCE_CLARIFICATION_RUNTIME) {
+    await import("./preference_clarification_runtime.js");
+  }
+  const preferenceClarificationRuntime = window.PROFAGENT_PREFERENCE_CLARIFICATION_RUNTIME;
   if (!dialogueRuntime) throw new Error("Dialogue runtime 未加载");
   if (!imageAssetRuntime) throw new Error("Image asset runtime 未加载");
   if (!recommendationPreviewRuntime) throw new Error("Recommendation preview runtime 未加载");
   if (!memoryRuntime) throw new Error("Memory runtime 未加载");
   if (!memoryCandidateRuntime) throw new Error("Memory candidate runtime 未加载");
+  if (!preferenceClarificationRuntime) throw new Error("偏好追问 runtime 未加载");
   const dialogueGuard = dialogueRuntime.createInFlightGuard();
   const dialogueTraceGuard = dialogueRuntime.createInFlightGuard();
   const recommendationPreviewGuard = dialogueRuntime.createInFlightGuard();
@@ -294,6 +299,9 @@ if (typeof module === "object" && module.exports) {
     memorySessionOnlyCount: 0,
     memoryCandidateWriteStatus: "",
     memoryCandidateExtracting: false,
+    preferenceClarification: null,
+    preferenceOptionViews: [],
+    dialogueMemoryCandidateViews: [],
     traceHistory: []
   };
   let dialogueWaitTimer = null;
@@ -738,6 +746,92 @@ if (typeof module === "object" && module.exports) {
     return isCpaDialogueReply(provider) ? "CPA 生成" : "本地回复";
   }
 
+  function syncPreferenceOptionViews() {
+    const active = state.preferenceClarification;
+    state.preferenceOptionViews.forEach((view) => {
+      const remainsActive = active?.question_id === view.questionId;
+      view.buttons.forEach((button) => {
+        button.disabled = !remainsActive || dialogueGuard.inFlight || state.conversationMode === "task_closed";
+      });
+      if (!remainsActive) view.status.textContent = "本轮偏好问题已结束。";
+    });
+  }
+
+  function renderPreferenceClarification(message, clarification) {
+    if (!clarification) return;
+    const card = make("section", "preference-clarification-card");
+    card.setAttribute("aria-label", "Stylist 偏好追问选项");
+    card.append(make("strong", "preference-clarification-label", "选择更接近你的偏好"));
+    const options = make("div", "preference-option-list");
+    const status = make("span", "preference-clarification-status",
+      clarification.urgency_budget === "last" ? "这是本次高急任务最后一次偏好追问；也可直接输入。" : "也可在输入框直接输入选项。"
+    );
+    const buttons = clarification.options.map((option) => {
+      const button = make("button", "text-chip preference-option", option.label);
+      button.type = "button";
+      button.disabled = dialogueGuard.inFlight || state.conversationMode === "task_closed";
+      button.addEventListener("click", () => {
+        if (dialogueGuard.inFlight) return;
+        void preferenceClarificationFlow.submitOption(option.option_id);
+      });
+      options.append(button);
+      return button;
+    });
+    card.append(options, status);
+    message.append(card);
+    state.preferenceOptionViews.push({ questionId: clarification.question_id, buttons, status });
+    syncPreferenceOptionViews();
+  }
+
+  function syncDialogueMemoryCandidateViews() {
+    state.dialogueMemoryCandidateViews.forEach((view) => {
+      const remainsPending = state.memoryCandidates.some((candidate) => candidate.candidate_id === view.candidateId);
+      const requestPending = state.memoryCandidatePendingIds.has(view.candidateId);
+      view.buttons.forEach((button) => {
+        button.disabled = !state.memoryAvailable || !remainsPending || requestPending;
+      });
+      if (!remainsPending) view.status.textContent = "该候选已由服务端处理；本次推荐不受影响。";
+      else if (requestPending) view.status.textContent = "正在等待服务端确认；本次推荐仍可继续查看。";
+      else view.status.textContent = "是否记住由你决定；不影响本次推荐。";
+    });
+  }
+
+  function renderDialogueMemoryCandidates(message, candidates) {
+    candidates.forEach((candidate) => {
+      const card = make("section", "dialogue-memory-candidate-card");
+      card.setAttribute("aria-label", "独立的记忆确认卡");
+      card.append(
+        make("strong", "dialogue-memory-candidate-title", "记忆确认（不影响本次推荐）"),
+        make("p", "dialogue-memory-candidate-copy", candidate.confirmation_copy)
+      );
+      if (candidate.conflict_copy) {
+        card.append(make("p", "dialogue-memory-candidate-conflict", candidate.conflict_copy));
+      }
+      const actions = make("div", "dialogue-memory-candidate-actions");
+      const labels = { remember: "长期记住", session_only: "仅本次", reject: "不要记", rephrase: "重新描述" };
+      const buttons = memoryCandidateRuntime.candidateActions(candidate).map((action) => {
+        const className = action === "remember" ? "button button-primary button-small"
+          : action === "reject" ? "button button-danger button-small" : "button button-secondary button-small";
+        const button = make("button", className, labels[action]);
+        button.type = "button";
+        button.addEventListener("click", async () => {
+          const applied = await decideMemoryCandidate(candidate, action);
+          syncDialogueMemoryCandidateViews();
+          if (!applied && state.memoryCandidates.some((item) => item.candidate_id === candidate.candidate_id)) {
+            showToast("记忆决定未完成；本次推荐不受影响");
+          }
+        });
+        actions.append(button);
+        return button;
+      });
+      const status = make("span", "dialogue-memory-candidate-status", "是否记住由你决定；不影响本次推荐。");
+      card.append(actions, status);
+      message.append(card);
+      state.dialogueMemoryCandidateViews.push({ candidateId: candidate.candidate_id, buttons, status });
+    });
+    syncDialogueMemoryCandidateViews();
+  }
+
   function appendMessage(author, text, user = false, meta = null) {
     const message = make("article", `message ${user ? "message-user" : "message-assistant"}`);
     message.append(make("span", "message-author", author), make("p", "", text));
@@ -751,6 +845,10 @@ if (typeof module === "object" && module.exports) {
       if (Number.isInteger(meta.turnIndex)) footer.append(make("span", "turn-label", `第 ${meta.turnIndex} 轮`));
       message.append(footer);
     }
+    if (!user) {
+      renderPreferenceClarification(message, meta?.preferenceClarification || null);
+      renderDialogueMemoryCandidates(message, meta?.memoryCandidates || []);
+    }
     byId("conversation").append(message);
     message.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }
@@ -759,9 +857,10 @@ if (typeof module === "object" && module.exports) {
     const closed = state.conversationMode === "task_closed";
     byId("scene-input").disabled = locked || closed;
     byId("scene-submit").disabled = locked || closed;
-    document.querySelectorAll("[data-example], #suggested-replies button").forEach((control) => {
+    document.querySelectorAll("[data-example], #suggested-replies button, .preference-option").forEach((control) => {
       control.disabled = locked || closed;
     });
+    syncPreferenceOptionViews();
   }
 
   const dialogueModes = new Set(["stylist_chat", "styling_active", "support_pause", "safety_response", "task_closed"]);
@@ -1318,6 +1417,7 @@ if (typeof module === "object" && module.exports) {
     clearDialogueWaitTimer();
     recommendationPreviewGuard.cancel();
     memoryCandidateFlow.reset();
+    preferenceClarificationFlow.reset();
     clearAssetPreview();
     showAssetOperation("");
     state.stylingSessionId = stylingSessionId;
@@ -1354,6 +1454,9 @@ if (typeof module === "object" && module.exports) {
     state.memorySessionOnlyCount = 0;
     state.memoryCandidateWriteStatus = "";
     state.memoryCandidateExtracting = false;
+    state.preferenceClarification = null;
+    state.preferenceOptionViews = [];
+    state.dialogueMemoryCandidateViews = [];
     renderMemory();
     state.traceHistory = [];
     setDialogueInFlightControls(false);
@@ -3383,7 +3486,38 @@ if (typeof module === "object" && module.exports) {
       if (raw.recommendation.request_id !== raw.request_id) throw new Error("recommendation request_id 与权威回合不匹配");
     }
 
-    const suggestedReplies = Array.isArray(raw.suggested_replies)
+    const preferenceClarification = raw.preference_clarification === undefined
+      ? null
+      : preferenceClarificationRuntime.normalizePreferenceClarification(raw.preference_clarification);
+    const memoryCandidates = preferenceClarificationRuntime.normalizeDialogueMemoryCandidates(
+      raw.memory_candidates === undefined ? [] : raw.memory_candidates
+    );
+    if (preferenceClarification && raw.action !== "recommend") {
+      throw new Error("偏好追问不得替代合法推荐");
+    }
+    if (memoryCandidates.length && raw.action !== "recommend") {
+      throw new Error("对话记忆候选只能附着于合法推荐回合");
+    }
+    if (preferenceClarification && memoryCandidates.length) {
+      throw new Error("同一回合不得把记忆确认变成第二个追问");
+    }
+    if (memoryCandidates.some((candidate) => state.memoryCandidates.some((current) => current.candidate_id === candidate.candidate_id))) {
+      throw new Error("对话记忆候选回执重复");
+    }
+    const questionCount = (raw.assistant_message.match(/[?？]/g) || []).length;
+    if (questionCount > 1 || (preferenceClarification && questionCount !== 1)) {
+      throw new Error("每轮最多显示一个服务端追问");
+    }
+    if (preferenceClarification) {
+      const optionLabels = preferenceClarification.options.map((option) => option.label);
+      if (!Array.isArray(raw.suggested_replies)
+        || raw.suggested_replies.length !== optionLabels.length
+        || raw.suggested_replies.some((reply, index) => reply !== optionLabels[index])) {
+        throw new Error("偏好追问选项与服务端回复闭集不一致");
+      }
+    }
+
+    const suggestedReplies = preferenceClarification ? [] : Array.isArray(raw.suggested_replies)
       ? [...new Set(raw.suggested_replies.map((reply) => suggestedReplyAliases[reply]).filter((reply) => controlledSuggestedReplies.has(reply)))]
       : [];
     const assistantMessage = dialogueRuntime.selectAssistantText(
@@ -3391,7 +3525,15 @@ if (typeof module === "object" && module.exports) {
       provider,
       (message) => safeStylingText(message, "我会按安全边界继续陪你处理这次任务。")
     );
-    return { ...raw, scene, provider, suggested_replies: suggestedReplies, assistant_message: assistantMessage };
+    return {
+      ...raw,
+      scene,
+      provider,
+      preference_clarification: preferenceClarification,
+      memory_candidates: memoryCandidates,
+      suggested_replies: suggestedReplies,
+      assistant_message: assistantMessage
+    };
   }
 
   function applyDialogueTurn(response) {
@@ -3402,12 +3544,23 @@ if (typeof module === "object" && module.exports) {
     state.turnIndex = response.turn_index;
     state.historyVersion = response.history_version;
     state.dialogueProvider = response.provider;
+    state.preferenceClarification = response.preference_clarification;
+    if (response.memory_candidates.length) {
+      state.memoryCandidates = [...state.memoryCandidates, ...response.memory_candidates];
+      state.memoryCandidateResultStatus = "ready";
+      state.memoryCandidateWriteStatus = "Stylist 提出了独立记忆候选；未确认前不会写入。";
+      renderMemory();
+    }
     setDialogueMode(response.conversation_mode);
     appendMessage("Stylist", response.assistant_message, false, {
       provider: response.provider,
       conversationMode: response.conversation_mode,
-      turnIndex: response.turn_index
+      turnIndex: response.turn_index,
+      preferenceClarification: response.preference_clarification,
+      memoryCandidates: response.memory_candidates
     });
+    syncPreferenceOptionViews();
+    syncDialogueMemoryCandidateViews();
 
     if (response.scene) state.scene = response.scene;
     if (response.action === "recommend") {
@@ -3462,33 +3615,36 @@ if (typeof module === "object" && module.exports) {
     appendMessage("系统", detail);
   }
 
-  async function handleSceneSubmit(event) {
+  async function handleSceneSubmit(event, preferenceTurn = null) {
     event.preventDefault();
     if (dialogueGuard.inFlight) return;
     dialogueTraceGuard.cancel();
     const sceneInput = byId("scene-input");
-    const typedQuery = sceneInput.value.trim();
+    const typedQuery = dialogueRuntime.normalizeComposerMessage(sceneInput.value);
     const retry = state.pendingDialogueRetry;
-    const message = typedQuery || retry?.message || "";
+    const message = preferenceTurn?.message || typedQuery || retry?.message || "";
     if (!message) return;
     const submit = byId("scene-submit");
     const submitLabel = submit.querySelector("span");
-    const isSafeRetry = !typedQuery
+    const isSafeRetry = preferenceTurn === null
+      && !typedQuery
       && Boolean(retry?.message && retry?.requestId)
       && retry.message === message
       && retry.stylingSessionId === state.stylingSessionId;
     const stylingSessionId = isSafeRetry ? retry.stylingSessionId : state.stylingSessionId;
     const requestId = isSafeRetry ? retry.requestId : createDialogueRequestId();
-    const retryBinding = { message, requestId, stylingSessionId };
+    const boundPreferenceTurn = preferenceTurn || (isSafeRetry ? retry.preferenceTurn || null : null);
+    const retryBinding = { message, requestId, stylingSessionId, preferenceTurn: boundPreferenceTurn };
     const requestController = new AbortController();
     const requestToken = dialogueGuard.begin(requestId, requestController);
     if (!requestToken) return;
+    const preferenceOrigin = preferenceClarificationFlow.captureTurn();
     let requestReleased = false;
     setDialogueInFlightControls(true);
     if (submitLabel) submitLabel.textContent = "正在等待 CPA";
     if (!isSafeRetry) {
       appendMessage("你", message, true);
-      sceneInput.value = "";
+      if (!preferenceTurn || typedQuery === preferenceTurn.message) sceneInput.value = "";
     }
     startDialogueWaitTimer();
     try {
@@ -3500,6 +3656,10 @@ if (typeof module === "object" && module.exports) {
       state.pendingDialogueRetry = null;
       const payload = { user_id: userId, message, request_id: requestId };
       if (stylingSessionId) payload.styling_session_id = stylingSessionId;
+      if (boundPreferenceTurn) {
+        payload.preference_question_id = boundPreferenceTurn.preference_question_id;
+        payload.preference_option_id = boundPreferenceTurn.preference_option_id;
+      }
       const rawResponse = await api("/dialogue/turn", {
         method: "POST",
         body: JSON.stringify(payload),
@@ -3509,20 +3669,41 @@ if (typeof module === "object" && module.exports) {
       if (!dialogueGuard.isCurrent(requestToken)) return;
       const response = validateDialogueTurn(rawResponse, retryBinding);
       if (!dialogueGuard.isCurrent(requestToken)) return;
+      response.preference_clarification = preferenceClarificationFlow.acceptResponse(
+        preferenceOrigin,
+        response.preference_clarification,
+        {
+          userId,
+          sessionId: response.styling_session_id,
+          urgency: response.scene?.urgency || state.scene?.urgency || "low"
+        }
+      );
+      if (!dialogueGuard.isCurrent(requestToken)) return;
       applyDialogueTurn(response);
       requestReleased = releaseDialogueRequestUi(requestToken, sceneInput, submitLabel);
       if (!requestReleased) return;
       loadDialogueTraceBestEffort(response, requestToken);
+      return true;
     } catch (error) {
       if (!dialogueGuard.isCurrent(requestToken)) return;
       showDialogueFailure(error, retryBinding);
       showToast("本次回应未完成，可安全重试");
       requestReleased = releaseDialogueRequestUi(requestToken, sceneInput, submitLabel);
+      return;
     } finally {
       if (!requestReleased && dialogueGuard.isCurrent(requestToken)) {
         requestReleased = releaseDialogueRequestUi(requestToken, sceneInput, submitLabel);
       }
     }
+  }
+
+  async function routeDialogueSubmit(event) {
+    event.preventDefault();
+    if (dialogueGuard.inFlight) return false;
+    const typedQuery = dialogueRuntime.normalizeComposerMessage(byId("scene-input").value);
+    const option = preferenceClarificationFlow.findTypedOption(typedQuery);
+    if (option) return preferenceClarificationFlow.submitOption(option.option_id);
+    return handleSceneSubmit(event);
   }
 
   function startNewTask() {
@@ -3578,6 +3759,7 @@ if (typeof module === "object" && module.exports) {
     const status = byId("memory-write-status");
     status.hidden = !view.writeStatus;
     status.textContent = view.writeStatus || "";
+    syncDialogueMemoryCandidateViews();
   }
 
   function restoreMemoryCandidateView(view) {
@@ -3586,6 +3768,7 @@ if (typeof module === "object" && module.exports) {
     const status = byId("memory-write-status");
     status.hidden = !view.writeStatus;
     status.textContent = view.writeStatus || "";
+    syncDialogueMemoryCandidateViews();
   }
 
   function clearMemoryCandidatePending(candidateIds) {
@@ -3594,6 +3777,7 @@ if (typeof module === "object" && module.exports) {
     if (nextPending.size === state.memoryCandidatePendingIds.size) return;
     state.memoryCandidatePendingIds = nextPending;
     renderMemory();
+    syncDialogueMemoryCandidateViews();
   }
 
   const memoryCandidateFlow = createMemoryCandidateFlowController({
@@ -3632,8 +3816,14 @@ if (typeof module === "object" && module.exports) {
     onRemember: async (isStillCurrent) => loadMemory(isStillCurrent)
   });
 
+  const preferenceClarificationFlow = preferenceClarificationRuntime.createPreferenceClarificationController({
+    getContext: () => ({ userId, sessionId: state.stylingSessionId }),
+    shouldSubmitKey: dialogueRuntime.shouldSubmitComposerKey,
+    submitTurn: (turn) => handleSceneSubmit({ preventDefault() {} }, turn)
+  });
+
   function bindEvents() {
-    byId("scene-form").addEventListener("submit", handleSceneSubmit);
+    byId("scene-form").addEventListener("submit", routeDialogueSubmit);
     byId("new-task").addEventListener("click", startNewTask);
     byId("preview2d-generate").addEventListener("click", generateStatic2dPreview);
     byId("preview2d-delete").addEventListener("click", deleteStatic2dPreview);
@@ -3678,10 +3868,13 @@ if (typeof module === "object" && module.exports) {
       clearDialogueWaitTimer();
       recommendationPreviewGuard.cancel();
       memoryCandidateFlow.reset();
+      preferenceClarificationFlow.reset();
       if (state.assetPreviewUrl) URL.revokeObjectURL(state.assetPreviewUrl);
     });
   }
 
   bindEvents();
   connect();
-}());
+}()).catch(() => {
+  console.error("ProfAgent 前端启动失败");
+});

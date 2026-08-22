@@ -8,6 +8,7 @@ const app = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
 const html = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
 const css = fs.readFileSync(path.join(__dirname, "styles.css"), "utf8");
 const runtime = fs.readFileSync(path.join(__dirname, "memory_candidate_runtime.js"), "utf8");
+const preferenceRuntime = fs.readFileSync(path.join(__dirname, "preference_clarification_runtime.js"), "utf8");
 
 assert.match(html, /<textarea id="memory-free-text"[^>]*><\/textarea>/);
 assert.doesNotMatch(html, /id="memory-type"|id="memory-content"|受控模板/);
@@ -68,5 +69,29 @@ assert.match(app, /memoryCandidateFlow\.handleComposerKey\(event, byId\("memory-
 assert.match(css, /\.memory-candidate-card/);
 assert.match(css, /\.memory-candidate-actions/);
 assert.doesNotMatch(app, /memoryTemplatesFor|renderMemoryTemplateOptions|isApprovedMemoryTemplate/);
+
+assert.match(app, /await import\("\.\/preference_clarification_runtime\.js"\)/);
+assert.match(app, /preferenceClarificationRuntime\.normalizePreferenceClarification\(raw\.preference_clarification\)/);
+assert.match(app, /preferenceClarificationRuntime\.normalizeDialogueMemoryCandidates/);
+assert.match(app, /preferenceClarificationFlow\.acceptResponse\([\s\S]*?applyDialogueTurn\(response\)/);
+assert.match(app, /dialogueRuntime\.shouldSubmitComposerKey\(event\)[\s\S]*?if \(!dialogueGuard\.inFlight\) byId\("scene-form"\)\.requestSubmit\(\)/);
+assert.match(app, /preference_question_id = boundPreferenceTurn\.preference_question_id/);
+assert.match(app, /preference_option_id = boundPreferenceTurn\.preference_option_id/);
+assert.match(app, /function resetSessionScopedState\(stylingSessionId\) \{[\s\S]*?preferenceClarificationFlow\.reset\(\)/);
+assert.match(app, /"dialogue-memory-candidate-title", "记忆确认（不影响本次推荐）"/);
+assert.match(app, /state\.memoryCandidates = \[\.\.\.state\.memoryCandidates, \.\.\.response\.memory_candidates\]/);
+assert.match(css, /\.preference-clarification-card/);
+assert.match(css, /\.dialogue-memory-candidate-card/);
+
+assert.match(preferenceRuntime, /\["question_id", "gap_code", "status", "options", "urgency_budget"\]/);
+assert.match(preferenceRuntime, /\["option_id", "label"\]/);
+assert.match(preferenceRuntime, /questionByGapCode/);
+assert.match(preferenceRuntime, /gapByQuestionId/);
+assert.match(preferenceRuntime, /responseContext\.urgency === "high" \? "last" : "normal"/);
+assert.match(preferenceRuntime, /preference_question_id: normalizedQuestion\.question_id/);
+assert.match(preferenceRuntime, /preference_option_id: authoritativeOption\.option_id/);
+assert.doesNotMatch(preferenceRuntime, /localStorage|sessionStorage|server_ranking_score|shopping_suggestions|\/memory\//);
+assert.doesNotMatch(preferenceRuntime, /canonical_kind|canonical_value|provider_reasoning|provider_body/);
+assert.doesNotMatch(app, /preferenceClarification[^\n]*\.sort\(|preferenceClarification[^\n]*server_ranking_score/);
 
 console.log("web S16 free-text memory UI/static contract: PASS");
