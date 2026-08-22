@@ -5,11 +5,11 @@
   "overall_status": "PASS",
   "report_command": "conda run --no-capture-output -n torch128 python scripts/tester_s16a_report.py",
   "provenance": {
-    "source_revision": "8a694bdd4919c9c185eb0be31b4167caa2990bcf",
-    "git_tree": "d7d50cd73524addbbd68d013c0823f00fc10bd31",
-    "reviewed_head": "8a694bdd4919c9c185eb0be31b4167caa2990bcf",
-    "reviewed_git_tree": "d7d50cd73524addbbd68d013c0823f00fc10bd31",
-    "command_plan_sha256": "1d495ae0f13a7b9d9daf2bb0c9fcdcc2034401750547883c067037dfe5dd3af6",
+    "source_revision": "f17bcfec941411fbc0ab5bb5ea95c02627b418a2",
+    "git_tree": "79730af1f9fbe8465fcccf1d4ac19f81f8b5dfca",
+    "reviewed_head": "f17bcfec941411fbc0ab5bb5ea95c02627b418a2",
+    "reviewed_git_tree": "79730af1f9fbe8465fcccf1d4ac19f81f8b5dfca",
+    "command_plan_sha256": "9bda89b134f7160aa3d284b1d205d76346ee110aa4b99d9f0b87b545b67364bd",
     "conda_environment": "torch128",
     "python": {
       "version": "3.10.19",
@@ -73,8 +73,13 @@
       "exit_status": 0
     },
     {
+      "label": "CPA closed-envelope collection",
+      "command": "conda[resolved] run --no-capture-output -n torch128 python -m pytest --collect-only -q tests/test_cpa_response_contracts.py",
+      "exit_status": 0
+    },
+    {
       "label": "CPA closed-envelope pytest",
-      "command": "conda[resolved] run --no-capture-output -n torch128 python -m pytest -q tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing",
+      "command": "conda[resolved] run --no-capture-output -n torch128 python -m pytest -q tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak[outer_duplicate] tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak[outer_extra] tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak[choice_duplicate] tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak[choice_extra] tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak[message_duplicate] tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak[message_extra] tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak[outer_missing] tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak[choices_wrong_type] tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak[choices_multiple] tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak[inner_duplicate] tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak[inner_extra] tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak[inner_missing] tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak[inner_wrong_type] tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[outer_duplicate] tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[outer_extra] tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[choice_duplicate] tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[choice_extra] tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[message_duplicate] tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[message_extra] tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[outer_missing] tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[choices_wrong_type] tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[choices_multiple] tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[inner_duplicate] tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[inner_extra] tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[inner_missing] tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[inner_wrong_type] tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[nested_duplicate] tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[nested_extra] tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[outer_duplicate] tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[outer_extra] tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[choice_duplicate] tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[choice_extra] tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[message_duplicate] tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[message_extra] tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[outer_missing] tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[choices_wrong_type] tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[choices_multiple] tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[inner_duplicate] tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[inner_extra] tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[inner_missing] tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[inner_wrong_type] tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[nested_duplicate] tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[nested_extra]",
       "exit_status": 0
     },
     {
@@ -317,7 +322,58 @@
     "image_cpa_calls": 0,
     "closed_envelope_contracts": {
       "status": "PASS",
+      "collected": 43,
       "passed": 43,
+      "failed": 0,
+      "skipped": 0,
+      "xfailed": 0,
+      "errors": 0,
+      "manifest_nodeids": [
+        "tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak[outer_duplicate]",
+        "tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak[outer_extra]",
+        "tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak[choice_duplicate]",
+        "tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak[choice_extra]",
+        "tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak[message_duplicate]",
+        "tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak[message_extra]",
+        "tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak[outer_missing]",
+        "tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak[choices_wrong_type]",
+        "tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak[choices_multiple]",
+        "tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak[inner_duplicate]",
+        "tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak[inner_extra]",
+        "tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak[inner_missing]",
+        "tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak[inner_wrong_type]",
+        "tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[outer_duplicate]",
+        "tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[outer_extra]",
+        "tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[choice_duplicate]",
+        "tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[choice_extra]",
+        "tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[message_duplicate]",
+        "tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[message_extra]",
+        "tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[outer_missing]",
+        "tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[choices_wrong_type]",
+        "tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[choices_multiple]",
+        "tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[inner_duplicate]",
+        "tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[inner_extra]",
+        "tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[inner_missing]",
+        "tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[inner_wrong_type]",
+        "tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[nested_duplicate]",
+        "tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak[nested_extra]",
+        "tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[outer_duplicate]",
+        "tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[outer_extra]",
+        "tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[choice_duplicate]",
+        "tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[choice_extra]",
+        "tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[message_duplicate]",
+        "tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[message_extra]",
+        "tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[outer_missing]",
+        "tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[choices_wrong_type]",
+        "tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[choices_multiple]",
+        "tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[inner_duplicate]",
+        "tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[inner_extra]",
+        "tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[inner_missing]",
+        "tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[inner_wrong_type]",
+        "tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[nested_duplicate]",
+        "tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing[nested_extra]"
+      ],
+      "manifest_sha256": "929d26f81c58d537e38e88c894f870e9fa828cce6771b7e01d7a798780a90d5b",
       "paths": {
         "scene": {
           "invalid_envelope_degraded": true,
@@ -354,7 +410,7 @@
     },
     "full": {
       "status": "PASS",
-      "passed": 435
+      "passed": 445
     }
   },
   "node": {
