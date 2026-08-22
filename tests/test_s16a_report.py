@@ -54,11 +54,25 @@ def _passing_report() -> dict:
         "provider_determinism": {
             "status": "PASS",
             "external_calls": 0,
+            "closed_envelope_contracts": {
+                "status": "PASS",
+                "passed": 3,
+                "paths": {
+                    "scene": {"invalid_envelope_degraded": True, "raw_leakage": 0},
+                    "dialogue": {"invalid_envelope_degraded": True, "raw_leakage": 0},
+                    "memory": {
+                        "invalid_envelope_degraded": True,
+                        "raw_leakage": 0,
+                        "writes": 0,
+                    },
+                },
+            },
         },
         "pytest": {
             "focused": {"status": "PASS", "passed": 1},
             "memory": {"status": "PASS", "passed": 1},
             "dialogue": {"status": "PASS", "passed": 1},
+            "cpa_closed_envelopes": {"status": "PASS", "passed": 3},
             "full": {"status": "PASS", "passed": 1},
         },
         "node": {"status": "PASS", "passed": 1},
@@ -128,12 +142,28 @@ def test_s16a_report_contract_covers_required_gates() -> None:
         "catalog_actual_calls": 0,
     }
     assert report["provider_determinism"]["external_calls"] == 0
+    assert report["pytest"]["cpa_closed_envelopes"]["passed"] == 3
     assert report["pytest"]["full"]["status"] == "PASS"
     assert report["node"]["status"] == "PASS"
     assert report["reviewer_gate"] == {
         "status": "PENDING",
         "findings": {"P0": None, "P1": None, "P2": None},
     }
+
+
+def test_s16a_report_requires_explicit_cpa_closed_envelope_evidence() -> None:
+    expected = (
+        "tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak",
+        "tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak",
+        "tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing",
+    )
+    assert report_module.CPA_CLOSED_ENVELOPE_TESTS == expected
+
+    report = _passing_report()
+    report_module._validate_report_contract(report)
+    del report["provider_determinism"]["closed_envelope_contracts"]
+    with pytest.raises(report_module.GateFailure, match="CPA closed-envelope"):
+        report_module._validate_report_contract(report)
 
 
 def test_s16a_report_contract_rejects_threshold_drift() -> None:
@@ -472,6 +502,8 @@ def _fake_execute_gate(root: Path, temp_root: Path):
             stdout = _git_text("rev-parse", "HEAD", cwd=root).strip() + "\n"
         elif label == "current HEAD tree":
             stdout = _git_text("rev-parse", "HEAD^{tree}", cwd=root).strip() + "\n"
+        elif label == "CPA closed-envelope pytest":
+            stdout = "3 passed in 0.01s\n"
         elif "pytest" in label:
             stdout = "1 passed in 0.01s\n"
         elif label == "fixture validation":
@@ -698,6 +730,12 @@ def test_s16a_execute_publication_preserve_and_drift_fail_closed(
     assert first["reviewer_gate"]["review_output_sha256"] == report_module._sha256(
         review_path.read_bytes()
     )
+    assert first["provider_determinism"]["closed_envelope_contracts"]["passed"] == 3
+    cpa_commands = [
+        entry for entry in first["commands"] if entry["label"] == "CPA closed-envelope pytest"
+    ]
+    assert len(cpa_commands) == 1
+    assert all(test_id in cpa_commands[0]["command"] for test_id in report_module.CPA_CLOSED_ENVELOPE_TESTS)
 
     assert report_module.main(run_gate=fake_gate_run) == 0
     preserved = report_module._load_authoritative_report()

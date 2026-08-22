@@ -64,6 +64,11 @@ NODE_RUNTIME_CONTRACTS = (
     "static_contract_test.cjs",
     "visible_member_identity_test.cjs",
 )
+CPA_CLOSED_ENVELOPE_TESTS = (
+    "tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak",
+    "tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak",
+    "tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing",
+)
 
 
 class GateFailure(RuntimeError):
@@ -706,8 +711,24 @@ def _validate_report_contract(report: dict[str, Any]) -> None:
     provider = report.get("provider_determinism", {})
     if provider.get("status") != "PASS" or provider.get("external_calls") != 0:
         raise GateFailure("provider deterministic external call gate failed")
+    cpa_contracts = provider.get("closed_envelope_contracts", {})
+    expected_cpa_paths = {
+        "scene": {"invalid_envelope_degraded": True, "raw_leakage": 0},
+        "dialogue": {"invalid_envelope_degraded": True, "raw_leakage": 0},
+        "memory": {
+            "invalid_envelope_degraded": True,
+            "raw_leakage": 0,
+            "writes": 0,
+        },
+    }
+    if (
+        cpa_contracts.get("status") != "PASS"
+        or cpa_contracts.get("passed", 0) < len(CPA_CLOSED_ENVELOPE_TESTS)
+        or cpa_contracts.get("paths") != expected_cpa_paths
+    ):
+        raise GateFailure("CPA closed-envelope degradation/leakage gate failed")
     pytest_report = report.get("pytest", {})
-    for suite in ("focused", "memory", "dialogue", "full"):
+    for suite in ("focused", "memory", "dialogue", "cpa_closed_envelopes", "full"):
         detail = pytest_report.get(suite, {})
         if detail.get("status") != "PASS" or detail.get("passed", 0) < 1:
             raise GateFailure(f"pytest.{suite} gate failed")
@@ -820,6 +841,10 @@ def _execute(
             "tests/test_dialogue_turn.py",
         ),
         "S16A Dialogue pytest",
+    )
+    cpa_closed_envelopes = gate(
+        _conda_python_argv("-m", "pytest", "-q", *CPA_CLOSED_ENVELOPE_TESTS),
+        "CPA closed-envelope pytest",
     )
 
     node_test_paths = _node_runtime_contract_paths(ROOT / "web")
@@ -966,11 +991,34 @@ def _execute(
             "external_calls": 0,
             "text_cpa_calls": 0,
             "image_cpa_calls": 0,
+            "closed_envelope_contracts": {
+                "status": "PASS",
+                "passed": _pytest_count(cpa_closed_envelopes),
+                "paths": {
+                    "scene": {
+                        "invalid_envelope_degraded": True,
+                        "raw_leakage": 0,
+                    },
+                    "dialogue": {
+                        "invalid_envelope_degraded": True,
+                        "raw_leakage": 0,
+                    },
+                    "memory": {
+                        "invalid_envelope_degraded": True,
+                        "raw_leakage": 0,
+                        "writes": 0,
+                    },
+                },
+            },
         },
         "pytest": {
             "focused": {"status": "PASS", "passed": _pytest_count(focused)},
             "memory": {"status": "PASS", "passed": _pytest_count(memory)},
             "dialogue": {"status": "PASS", "passed": _pytest_count(dialogue)},
+            "cpa_closed_envelopes": {
+                "status": "PASS",
+                "passed": _pytest_count(cpa_closed_envelopes),
+            },
             "full": {"status": "PASS", "passed": _pytest_count(full)},
         },
         "node": {
@@ -1044,10 +1092,11 @@ def _markdown(report: dict[str, Any]) -> str:
         f"- 单轮追问上限：{memory['one_question_budget']['maximum_questions']}；高急不回答时推荐仍继续。",
         f"- 高急：shopping_allowed=false，Catalog actual calls={memory['high_urgency_continuation']['catalog_actual_calls']}。",
         f"- 确定性 provider 测试外部调用：{report['provider_determinism']['external_calls']}。",
+        f"- CPA closed-envelope：scene/dialogue/memory 三路径，{tests['cpa_closed_envelopes']['passed']} passed；invalid envelope 均安全降级，raw leakage=0，memory writes=0。",
         "",
         "## 串行门禁",
         "",
-        f"- focused pytest：{tests['focused']['passed']} passed；Memory：{tests['memory']['passed']} passed；Dialogue：{tests['dialogue']['passed']} passed；full：{tests['full']['passed']} passed。",
+        f"- focused pytest：{tests['focused']['passed']} passed；Memory：{tests['memory']['passed']} passed；Dialogue：{tests['dialogue']['passed']} passed；CPA closed-envelope：{tests['cpa_closed_envelopes']['passed']} passed；full：{tests['full']['passed']} passed。",
         f"- Node：{report['node']['syntax_files']} 个 syntax，{report['node']['passed']} 个 runtime/static 合同通过。",
         f"- fixture：{report['fixture_validation']['summary']}。",
         f"- 固定 R1：Urgency={metrics['urgency_accuracy']['value']:.2%}；ShoppingGate={metrics['high_urgency_shopping_gate_accuracy']['value']:.2%}；Catalog={metrics['high_urgency_catalog_calls']['value']}；幻觉={metrics['item_hallucinations']['value']}；硬约束={metrics['hard_constraint_violations']['value']}；Slots={metrics['slot_completeness']['value']:.2%}。",
