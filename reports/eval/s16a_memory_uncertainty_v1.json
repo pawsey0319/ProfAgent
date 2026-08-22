@@ -5,9 +5,11 @@
   "overall_status": "PASS",
   "report_command": "conda run --no-capture-output -n torch128 python scripts/tester_s16a_report.py",
   "provenance": {
-    "source_revision": "00f9f8871c8a3d8da8195cb35ff2c32a9e5a6436",
-    "git_tree": "f1ed3b67dd6d5f559094e6e6c5b7cb8a604c0cce",
-    "command_plan_sha256": "ca78516d2899239d9fba2d087c265c3fd770070f7a99a194ffe8321462570865",
+    "source_revision": "13f6d73d501d719c5b4de1bce758b0c84fe74f29",
+    "git_tree": "64a0090a8a5ff30724f07866ac3da98c85593b28",
+    "reviewed_head": "13f6d73d501d719c5b4de1bce758b0c84fe74f29",
+    "reviewed_git_tree": "64a0090a8a5ff30724f07866ac3da98c85593b28",
+    "command_plan_sha256": "9612ddd9ed8f69e8e36ab7639477dcceb7d6329bf5fc5b9146dc979a8c7441c0",
     "conda_environment": "torch128",
     "python": {
       "version": "3.10.19",
@@ -41,17 +43,17 @@
       "exit_status": 0
     },
     {
-      "label": "clean source status",
+      "label": "clean current HEAD status",
       "command": "git status --porcelain",
       "exit_status": 0
     },
     {
-      "label": "source revision",
+      "label": "current HEAD revision",
       "command": "git rev-parse HEAD",
       "exit_status": 0
     },
     {
-      "label": "source tree",
+      "label": "current HEAD tree",
       "command": "git rev-parse HEAD^{tree}",
       "exit_status": 0
     },
@@ -314,7 +316,7 @@
     },
     "full": {
       "status": "PASS",
-      "passed": 385
+      "passed": 387
     }
   },
   "node": {
