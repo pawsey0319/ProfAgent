@@ -1,5 +1,205 @@
+function createMemoryCandidateFlowController(dependencies) {
+  "use strict";
+
+  let generation = 0;
+  let extraction = null;
+  const decisions = new Map();
+  const decisionKeys = new Map();
+
+  function sameContext(left, right) {
+    return left.userId === right.userId
+      && left.sessionId === right.sessionId
+      && left.namespace === right.namespace;
+  }
+
+  function isCurrent(origin) {
+    return origin.generation === generation && sameContext(origin.context, dependencies.getContext());
+  }
+
+  function atomicApply(next) {
+    const previous = dependencies.snapshotView();
+    try {
+      dependencies.applyView(next);
+    } catch (error) {
+      dependencies.restoreView(previous);
+      throw error;
+    }
+  }
+
+  function reportFailure(message) {
+    dependencies.reportFailure?.(message);
+    dependencies.input.focus();
+  }
+
+  async function submit(event) {
+    event?.preventDefault?.();
+    if (extraction !== null) return false;
+    const sourceText = dependencies.input.value.trim();
+    if (!sourceText) {
+      dependencies.input.focus();
+      return false;
+    }
+    const context = Object.freeze({ ...dependencies.getContext() });
+    const requestId = dependencies.createId("memory_extract");
+    const controller = new AbortController();
+    const origin = Object.freeze({ generation, context, requestId, controller });
+    extraction = origin;
+    dependencies.setExtracting?.(true);
+    try {
+      const response = await dependencies.request("/memory/candidates/extract", {
+        method: "POST",
+        body: JSON.stringify({
+          user_id: context.userId,
+          styling_session_id: context.sessionId || null,
+          namespace: context.namespace,
+          text: sourceText,
+          request_id: requestId
+        }),
+        signal: controller.signal
+      });
+      if (extraction !== origin || !isCurrent(origin)) return false;
+      const normalized = dependencies.normalizeExtraction(response, requestId);
+      if (extraction !== origin || !isCurrent(origin)) return false;
+      const current = dependencies.snapshotView();
+      const next = {
+        ...current,
+        candidates: [...normalized.candidates],
+        resultStatus: normalized.status,
+        pendingIds: new Set(),
+        writeStatus: normalized.status === "ready"
+          ? `已拆成 ${normalized.candidates.length} 条；请逐条决定，不会自动写入。`
+          : normalized.status === "needs_rephrase"
+            ? "服务端需要更明确的描述，请换一种说法。"
+            : "服务端未返回可安全确认的记忆；没有写入任何内容。"
+      };
+      atomicApply(next);
+      if (extraction !== origin || !isCurrent(origin)) return false;
+      if (normalized.status === "ready" && normalized.candidates.length > 0) {
+        if (dependencies.input.value.trim() === sourceText) dependencies.input.value = "";
+      } else {
+        dependencies.setExtracting?.(false);
+        dependencies.input.focus();
+      }
+      return true;
+    } catch (_error) {
+      if (extraction !== origin || !isCurrent(origin)) return false;
+      dependencies.setExtracting?.(false);
+      reportFailure("候选记忆提取未完成；你的输入仍保留，可直接修改后重试。");
+      return false;
+    } finally {
+      if (extraction === origin) extraction = null;
+      if (isCurrent(origin)) dependencies.setExtracting?.(false);
+    }
+  }
+
+  async function decide(candidate, action) {
+    const current = dependencies.snapshotView();
+    const currentCandidate = current.candidates.find((item) => item.candidate_id === candidate?.candidate_id);
+    if (!currentCandidate || decisions.has(currentCandidate.candidate_id)) return false;
+    const allowed = dependencies.candidateActions(currentCandidate);
+    if (!allowed.includes(action)) return false;
+    const context = Object.freeze({ ...dependencies.getContext() });
+    const controller = new AbortController();
+    const origin = Object.freeze({
+      generation,
+      context,
+      candidateId: currentCandidate.candidate_id,
+      action,
+      controller
+    });
+    decisions.set(origin.candidateId, origin);
+    try {
+      atomicApply({ ...current, pendingIds: new Set([...current.pendingIds, origin.candidateId]) });
+    } catch (_error) {
+      decisions.delete(origin.candidateId);
+      reportFailure("候选记忆暂时无法显示，请重试。");
+      return false;
+    }
+    const decisionKey = `${origin.candidateId}:${action}`;
+    const idempotencyKey = decisionKeys.get(decisionKey) || dependencies.createId("memory_decision");
+    decisionKeys.set(decisionKey, idempotencyKey);
+    try {
+      const response = await dependencies.request(`/memory/candidates/${encodeURIComponent(origin.candidateId)}/decide`, {
+        method: "POST",
+        body: JSON.stringify({
+          user_id: context.userId,
+          styling_session_id: context.sessionId || null,
+          decision: action,
+          idempotency_key: idempotencyKey
+        }),
+        signal: controller.signal
+      });
+      if (decisions.get(origin.candidateId) !== origin || !isCurrent(origin)) return false;
+      const receipt = dependencies.normalizeDecision(response, origin.candidateId);
+      if (receipt.decision !== action || decisions.get(origin.candidateId) !== origin || !isCurrent(origin)) return false;
+      if (action === "remember") {
+        await dependencies.onRemember?.(() => decisions.get(origin.candidateId) === origin && isCurrent(origin));
+        if (decisions.get(origin.candidateId) !== origin || !isCurrent(origin)) return false;
+      }
+      const latest = dependencies.snapshotView();
+      if (!latest.candidates.some((item) => item.candidate_id === origin.candidateId)) return false;
+      const nextPending = new Set(latest.pendingIds);
+      nextPending.delete(origin.candidateId);
+      atomicApply({
+        ...latest,
+        candidates: latest.candidates.filter((item) => item.candidate_id !== origin.candidateId),
+        pendingIds: nextPending,
+        sessionOnlyCount: latest.sessionOnlyCount + (action === "session_only" ? 1 : 0),
+        writeStatus: action === "remember" ? "长期记忆已由服务端提交。"
+          : action === "session_only" ? "仅本次偏好已由服务端绑定当前会话。"
+            : action === "rephrase" ? "这条候选没有写入；请在输入框换一种说法。" : "这条候选已拒绝，不会写入。"
+      });
+      if (decisions.get(origin.candidateId) !== origin || !isCurrent(origin)) return false;
+      if (action === "rephrase") dependencies.input.focus();
+      decisionKeys.delete(decisionKey);
+      return true;
+    } catch (_error) {
+      if (decisions.get(origin.candidateId) !== origin || !isCurrent(origin)) return false;
+      const latest = dependencies.snapshotView();
+      const nextPending = new Set(latest.pendingIds);
+      nextPending.delete(origin.candidateId);
+      try {
+        atomicApply({ ...latest, pendingIds: nextPending });
+      } catch (_renderError) {
+        // atomicApply already restored the previously rendered state.
+      }
+      dependencies.reportFailure?.("候选记忆决定未完成；未采用服务端回执。");
+      return false;
+    } finally {
+      if (decisions.get(origin.candidateId) === origin) decisions.delete(origin.candidateId);
+    }
+  }
+
+  function handleComposerKey(event, form) {
+    if (!dependencies.shouldSubmitKey(event)) return false;
+    event.preventDefault();
+    if (extraction === null) form.requestSubmit();
+    return true;
+  }
+
+  function reset() {
+    generation += 1;
+    if (extraction && !extraction.controller.signal.aborted) extraction.controller.abort();
+    extraction = null;
+    decisions.forEach((origin) => {
+      if (!origin.controller.signal.aborted) origin.controller.abort();
+    });
+    decisions.clear();
+    decisionKeys.clear();
+    dependencies.setExtracting?.(false);
+  }
+
+  return Object.freeze({ submit, decide, handleComposerKey, reset });
+}
+
+if (typeof module === "object" && module.exports) {
+  module.exports = Object.freeze({ createMemoryCandidateFlowController });
+}
+
 (function startProfAgentDemo() {
   "use strict";
+
+  if (typeof module === "object" && module.exports) return;
 
   const fixtures = window.PROFAGENT_FIXTURES;
   const dialogueRuntime = window.PROFAGENT_DIALOGUE_RUNTIME;
@@ -15,7 +215,6 @@
   const dialogueGuard = dialogueRuntime.createInFlightGuard();
   const dialogueTraceGuard = dialogueRuntime.createInFlightGuard();
   const recommendationPreviewGuard = dialogueRuntime.createInFlightGuard();
-  const memoryCandidateGuard = dialogueRuntime.createInFlightGuard();
   const userId = "u01";
   const UI_BUILD_VERSION = "s16-free-text-memory-20260821";
   const DEFAULT_REQUEST_TIMEOUT_MS = 12000;
@@ -69,8 +268,9 @@
     memoryCandidates: [],
     memoryCandidateResultStatus: "idle",
     memoryCandidatePendingIds: new Set(),
-    memoryCandidateDecisionKeys: new Map(),
     memorySessionOnlyCount: 0,
+    memoryCandidateWriteStatus: "",
+    memoryCandidateExtracting: false,
     traceHistory: []
   };
   let dialogueWaitTimer = null;
@@ -1094,7 +1294,7 @@
     dialogueGuard.cancel();
     clearDialogueWaitTimer();
     recommendationPreviewGuard.cancel();
-    memoryCandidateGuard.cancel();
+    memoryCandidateFlow.reset();
     clearAssetPreview();
     showAssetOperation("");
     state.stylingSessionId = stylingSessionId;
@@ -1128,8 +1328,9 @@
     state.memoryCandidates = [];
     state.memoryCandidateResultStatus = "idle";
     state.memoryCandidatePendingIds = new Set();
-    state.memoryCandidateDecisionKeys = new Map();
     state.memorySessionOnlyCount = 0;
+    state.memoryCandidateWriteStatus = "";
+    state.memoryCandidateExtracting = false;
     state.traceHistory = [];
     setDialogueInFlightControls(false);
     byId("cocreation").hidden = true;
@@ -2673,7 +2874,7 @@
     state.memoryAvailable = available;
     byId("memory-api-state").textContent = available ? "API 可用" : (detail || "暂不可用");
     ["memory-namespace", "memory-free-text", "memory-propose-submit"].forEach((id) => {
-      byId(id).disabled = !available || memoryCandidateGuard.inFlight;
+      byId(id).disabled = !available || state.memoryCandidateExtracting;
     });
     if (!available) {
       state.memoryProposals = [];
@@ -2705,18 +2906,22 @@
     };
   }
 
-  async function loadMemory() {
+  async function loadMemory(isStillCurrent = () => true) {
     try {
       const response = await api(`/memory?user_id=${encodeURIComponent(userId)}`);
       const normalized = memoryRuntime.normalizeList(response, memoryRuntimeConfig());
+      if (!isStillCurrent()) return false;
       state.memoryProposals = normalized.proposals;
       state.memoryRecords = normalized.records;
       setMemoryAvailability(true);
       renderMemory();
+      return true;
     } catch (error) {
+      if (!isStillCurrent()) return false;
       setMemoryAvailability(false, "Memory API 暂不可用");
       byId("memory-write-status").hidden = false;
       byId("memory-write-status").textContent = `未写入：${error.message}`;
+      return false;
     }
   }
 
@@ -2883,101 +3088,13 @@
   }
 
   async function handleMemoryCandidateExtract(event) {
-    event.preventDefault();
-    if (!state.memoryAvailable || memoryCandidateGuard.inFlight) return;
-    const input = byId("memory-free-text");
-    const sourceText = input.value.trim();
-    if (!sourceText) {
-      showToast("请先用自己的话写下想让 Stylist 记住的内容");
-      input.focus();
-      return;
-    }
-    const requestId = `memory_extract_${crypto.randomUUID().replaceAll("-", "")}`;
-    const controller = new AbortController();
-    const token = memoryCandidateGuard.begin(requestId, controller);
-    if (!token) return;
-    const status = byId("memory-write-status");
-    setMemoryAvailability(true);
-    status.hidden = false;
-    status.textContent = "正在由服务端拆分可确认的记忆；原话尚未保存。";
-    try {
-      const response = await api("/memory/candidates/extract", {
-        method: "POST",
-        body: JSON.stringify({
-          user_id: userId,
-          styling_session_id: state.stylingSessionId || null,
-          namespace: byId("memory-namespace").value,
-          text: sourceText,
-          request_id: requestId
-        }),
-        signal: controller.signal
-      });
-      if (!memoryCandidateGuard.isCurrent(token)) return;
-      const normalized = memoryCandidateRuntime.normalizeExtractionResponse(response, requestId);
-      if (!memoryCandidateGuard.isCurrent(token)) return;
-      state.memoryCandidates = [...normalized.candidates];
-      state.memoryCandidateResultStatus = normalized.status;
-      state.memoryCandidatePendingIds = new Set();
-      state.memoryCandidateDecisionKeys = new Map();
-      input.value = "";
-      status.textContent = normalized.status === "ready"
-        ? `已拆成 ${normalized.candidates.length} 条；请逐条决定，不会自动写入。`
-        : normalized.status === "needs_rephrase"
-          ? "服务端需要更明确的描述，请换一种说法。"
-          : "服务端未返回可安全确认的记忆；没有写入任何内容。";
-      renderMemory();
-      if (normalized.status === "needs_rephrase") input.focus();
-    } catch (error) {
-      if (!memoryCandidateGuard.isCurrent(token)) return;
-      status.textContent = `提取未完成：${error.message}；你的输入仍保留在本机输入框中。`;
-    } finally {
-      memoryCandidateGuard.finish(token);
-      setMemoryAvailability(state.memoryAvailable);
-    }
+    if (!state.memoryAvailable) return false;
+    return memoryCandidateFlow.submit(event);
   }
 
-  async function decideMemoryCandidate(candidate, action, button) {
-    if (!state.memoryAvailable || state.memoryCandidatePendingIds.has(candidate.candidate_id)) return;
-    const allowed = memoryCandidateRuntime.candidateActions(candidate);
-    if (!allowed.includes(action)) {
-      showToast("服务端未授权此记忆动作");
-      return;
-    }
-    const key = `${candidate.candidate_id}:${action}`;
-    const idempotencyKey = state.memoryCandidateDecisionKeys.get(key)
-      || `memory_decision_${crypto.randomUUID().replaceAll("-", "")}`;
-    state.memoryCandidateDecisionKeys.set(key, idempotencyKey);
-    state.memoryCandidatePendingIds.add(candidate.candidate_id);
-    button.disabled = true;
-    renderMemory();
-    try {
-      const response = await api(`/memory/candidates/${encodeURIComponent(candidate.candidate_id)}/decide`, {
-        method: "POST",
-        body: JSON.stringify({
-          user_id: userId,
-          styling_session_id: state.stylingSessionId || null,
-          decision: action,
-          idempotency_key: idempotencyKey
-        })
-      });
-      const receipt = memoryCandidateRuntime.normalizeCandidateDecision(response, candidate.candidate_id);
-      if (receipt.decision !== action) throw new Error("候选决定回执与当前动作不一致");
-      state.memoryCandidates = state.memoryCandidates.filter((item) => item.candidate_id !== candidate.candidate_id);
-      state.memoryCandidatePendingIds.delete(candidate.candidate_id);
-      state.memoryCandidateDecisionKeys.delete(key);
-      if (action === "remember") await loadMemory();
-      if (action === "session_only") state.memorySessionOnlyCount += 1;
-      if (action === "rephrase") byId("memory-free-text").focus();
-      byId("memory-write-status").hidden = false;
-      byId("memory-write-status").textContent = action === "remember" ? "长期记忆已由服务端提交。"
-        : action === "session_only" ? "仅本次偏好已由服务端绑定当前会话。"
-          : action === "rephrase" ? "这条候选没有写入；请在输入框换一种说法。" : "这条候选已拒绝，不会写入。";
-      renderMemory();
-    } catch (error) {
-      state.memoryCandidatePendingIds.delete(candidate.candidate_id);
-      showToast(`记忆决定未完成：${error.message}`);
-      renderMemory();
-    }
+  async function decideMemoryCandidate(candidate, action) {
+    if (!state.memoryAvailable) return false;
+    return memoryCandidateFlow.decide(candidate, action);
   }
 
   async function deleteMemory(item, button) {
@@ -3413,6 +3530,75 @@
     byId("scene-input").focus();
   }
 
+  function snapshotMemoryCandidateView() {
+    return {
+      candidates: [...state.memoryCandidates],
+      resultStatus: state.memoryCandidateResultStatus,
+      pendingIds: new Set(state.memoryCandidatePendingIds),
+      sessionOnlyCount: state.memorySessionOnlyCount,
+      writeStatus: state.memoryCandidateWriteStatus
+    };
+  }
+
+  function setMemoryCandidateView(view) {
+    state.memoryCandidates = [...view.candidates];
+    state.memoryCandidateResultStatus = view.resultStatus;
+    state.memoryCandidatePendingIds = new Set(view.pendingIds);
+    state.memorySessionOnlyCount = view.sessionOnlyCount;
+    state.memoryCandidateWriteStatus = view.writeStatus;
+  }
+
+  function applyMemoryCandidateView(view) {
+    setMemoryCandidateView(view);
+    renderMemory();
+    const status = byId("memory-write-status");
+    status.hidden = !view.writeStatus;
+    status.textContent = view.writeStatus || "";
+  }
+
+  function restoreMemoryCandidateView(view) {
+    setMemoryCandidateView(view);
+    renderMemory();
+    const status = byId("memory-write-status");
+    status.hidden = !view.writeStatus;
+    status.textContent = view.writeStatus || "";
+  }
+
+  const memoryCandidateFlow = createMemoryCandidateFlowController({
+    input: byId("memory-free-text"),
+    getContext: () => ({
+      userId,
+      sessionId: state.stylingSessionId,
+      namespace: byId("memory-namespace").value
+    }),
+    request: api,
+    normalizeExtraction: memoryCandidateRuntime.normalizeExtractionResponse,
+    normalizeDecision: memoryCandidateRuntime.normalizeCandidateDecision,
+    candidateActions: memoryCandidateRuntime.candidateActions,
+    shouldSubmitKey: dialogueRuntime.shouldSubmitComposerKey,
+    createId: (prefix) => `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`,
+    snapshotView: snapshotMemoryCandidateView,
+    applyView: applyMemoryCandidateView,
+    restoreView: restoreMemoryCandidateView,
+    reportFailure: (message) => {
+      const status = byId("memory-write-status");
+      status.hidden = false;
+      status.textContent = message;
+    },
+    setExtracting: (extracting) => {
+      state.memoryCandidateExtracting = extracting;
+      ["memory-namespace", "memory-free-text", "memory-propose-submit"].forEach((id) => {
+        byId(id).disabled = !state.memoryAvailable || extracting;
+      });
+      if (extracting) {
+        const status = byId("memory-write-status");
+        status.hidden = false;
+        status.textContent = "正在由服务端拆分可确认的记忆；原话尚未保存。";
+      }
+    },
+    onRemember: async (isStillCurrent) => loadMemory(isStillCurrent)
+  });
+
   function bindEvents() {
     byId("scene-form").addEventListener("submit", handleSceneSubmit);
     byId("new-task").addEventListener("click", startNewTask);
@@ -3428,9 +3614,7 @@
     byId("finalize-form").addEventListener("submit", handleFinalize);
     byId("memory-propose-form").addEventListener("submit", handleMemoryCandidateExtract);
     byId("memory-free-text").addEventListener("keydown", (event) => {
-      if (!dialogueRuntime.shouldSubmitComposerKey(event)) return;
-      event.preventDefault();
-      if (!memoryCandidateGuard.inFlight) byId("memory-propose-form").requestSubmit();
+      memoryCandidateFlow.handleComposerKey(event, byId("memory-propose-form"));
     });
     byId("compare-left").addEventListener("change", renderVersionComparison);
     byId("compare-right").addEventListener("change", renderVersionComparison);
@@ -3460,7 +3644,7 @@
       dialogueGuard.cancel();
       clearDialogueWaitTimer();
       recommendationPreviewGuard.cancel();
-      memoryCandidateGuard.cancel();
+      memoryCandidateFlow.reset();
       if (state.assetPreviewUrl) URL.revokeObjectURL(state.assetPreviewUrl);
     });
   }

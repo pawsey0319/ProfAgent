@@ -64,8 +64,8 @@ assert.ok(receiptCheck >= 0 && localRemoval > receiptCheck, "local record must r
 assert.match(deleteBlock, /catch \(error\)[\s\S]*button\.disabled = false/);
 
 assert.match(app, /memoryRuntime\.normalizeList\(response, memoryRuntimeConfig\(\)\)/);
-assert.match(app, /api\("\/memory\/candidates\/extract"/);
-assert.match(app, /styling_session_id: state\.stylingSessionId \|\| null,[\s\S]*text: sourceText,[\s\S]*request_id: requestId/);
+assert.match(app, /dependencies\.request\("\/memory\/candidates\/extract"/);
+assert.match(app, /styling_session_id: context\.sessionId \|\| null,[\s\S]*text: sourceText,[\s\S]*request_id: requestId/);
 assert.match(app, /proposalId: proposal\.proposal_id/);
 assert.match(runtime, /normalizedProposal\.record_id !== normalizedRecord\.memory_id/);
 assert.match(runtime, /normalizedRecord\.source_proposal_id !== normalizedProposal\.proposal_id/);

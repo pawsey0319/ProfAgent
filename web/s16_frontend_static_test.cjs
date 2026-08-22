@@ -25,22 +25,26 @@ assert.match(runtime, /assertExactKeys\(payload, \["candidate_id", "decision", "
 assert.match(runtime, /return Object\.freeze\(\[\.\.\.candidate\.allowed_actions\]\)/);
 assert.doesNotMatch(runtime, /localStorage|sessionStorage|canonical_kind|canonical_value|provider_reasoning|provider_body/);
 
-const formStart = app.indexOf("async function handleMemoryCandidateExtract");
-const decisionStart = app.indexOf("async function decideMemoryCandidate", formStart);
-const deleteStart = app.indexOf("async function deleteMemory", decisionStart);
-assert.ok(formStart >= 0 && decisionStart > formStart && deleteStart > decisionStart);
-const formSource = app.slice(formStart, decisionStart);
-const decisionSource = app.slice(decisionStart, deleteStart);
-assert.match(formSource, /const sourceText = input\.value\.trim\(\)/);
-assert.match(formSource, /api\("\/memory\/candidates\/extract"/);
-assert.match(formSource, /memoryCandidateRuntime\.normalizeExtractionResponse/);
+const flowStart = app.indexOf("function createMemoryCandidateFlowController");
+const flowEnd = app.indexOf('if (typeof module === "object" && module.exports)', flowStart);
+assert.ok(flowStart >= 0 && flowEnd > flowStart);
+const flowSource = app.slice(flowStart, flowEnd);
+const formStart = flowSource.indexOf("async function submit");
+const decisionStart = flowSource.indexOf("async function decide", formStart);
+const keyStart = flowSource.indexOf("function handleComposerKey", decisionStart);
+assert.ok(formStart >= 0 && decisionStart > formStart && keyStart > decisionStart);
+const formSource = flowSource.slice(formStart, decisionStart);
+const decisionSource = flowSource.slice(decisionStart, keyStart);
+assert.match(formSource, /const sourceText = dependencies\.input\.value\.trim\(\)/);
+assert.match(formSource, /dependencies\.request\("\/memory\/candidates\/extract"/);
+assert.match(formSource, /dependencies\.normalizeExtraction/);
 assert.ok(
-  formSource.indexOf("normalizeExtractionResponse") < formSource.indexOf('input.value = ""'),
+  formSource.indexOf("normalizeExtraction") < formSource.indexOf('dependencies.input.value = ""'),
   "the input must clear only after a bound response"
 );
-assert.match(formSource, /user_id: userId/);
-assert.match(formSource, /styling_session_id: state\.stylingSessionId \|\| null/);
-assert.match(formSource, /namespace: byId\("memory-namespace"\)\.value/);
+assert.match(formSource, /user_id: context\.userId/);
+assert.match(formSource, /styling_session_id: context\.sessionId \|\| null/);
+assert.match(formSource, /namespace: context\.namespace/);
 assert.match(formSource, /text: sourceText/);
 assert.match(formSource, /request_id: requestId/);
 assert.doesNotMatch(formSource, /state\.[A-Za-z0-9_]+\s*=\s*sourceText|localStorage|sessionStorage|fetchTrace\([^)]*sourceText/);
@@ -49,14 +53,18 @@ assert.match(app, /memoryCandidateRuntime\.candidateActions\(candidate\)/);
 assert.match(app, /candidate\.confirmation_copy/);
 assert.match(app, /candidate\.conflict_copy/);
 assert.doesNotMatch(app, /candidate\.canonical_kind|candidate\.canonical_value|candidate\.provider/);
-assert.match(decisionSource, /api\(`\/memory\/candidates\/\$\{encodeURIComponent\(candidate\.candidate_id\)\}\/decide`/);
-assert.match(decisionSource, /memoryCandidateRuntime\.normalizeCandidateDecision/);
+assert.match(decisionSource, /dependencies\.request\(`\/memory\/candidates\/\$\{encodeURIComponent\(origin\.candidateId\)\}\/decide`/);
+assert.match(decisionSource, /dependencies\.normalizeDecision/);
 assert.match(decisionSource, /receipt\.decision !== action/);
-assert.match(decisionSource, /byId\("memory-free-text"\)\.focus\(\)/);
+assert.match(decisionSource, /dependencies\.input\.focus\(\)/);
 assert.doesNotMatch(decisionSource, /canonical_kind|canonical_value|content|type|memory_class|supersedes/);
 
-assert.match(app, /dialogueRuntime\.shouldSubmitComposerKey\(event\)/);
-assert.match(app, /byId\("memory-propose-form"\)\.requestSubmit\(\)/);
+assert.match(flowSource, /dependencies\.shouldSubmitKey\(event\)/);
+assert.match(flowSource, /form\.requestSubmit\(\)/);
+assert.match(app, /normalizeExtraction: memoryCandidateRuntime\.normalizeExtractionResponse/);
+assert.match(app, /normalizeDecision: memoryCandidateRuntime\.normalizeCandidateDecision/);
+assert.match(app, /function resetSessionScopedState\(stylingSessionId\) \{[\s\S]*?memoryCandidateFlow\.reset\(\)/);
+assert.match(app, /memoryCandidateFlow\.handleComposerKey\(event, byId\("memory-propose-form"\)\)/);
 assert.match(css, /\.memory-candidate-card/);
 assert.match(css, /\.memory-candidate-actions/);
 assert.doesNotMatch(app, /memoryTemplatesFor|renderMemoryTemplateOptions|isApprovedMemoryTemplate/);
