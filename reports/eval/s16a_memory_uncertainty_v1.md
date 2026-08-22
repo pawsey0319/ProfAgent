@@ -21,7 +21,7 @@
 
 ## 串行门禁
 
-- focused pytest：5 passed；Memory：51 passed；Dialogue：128 passed；CPA closed-envelope：43 passed；full：445 passed。
+- focused pytest：5 passed；Memory：51 passed；Dialogue：128 passed；CPA closed-envelope：43 passed；full：450 passed。
 - Node：21 个 syntax，12 个 runtime/static 合同通过。
 - fixture：validation passed: users=3 garments=50 outfits=20 catalog=50 eval=30。
 - 固定 R1：Urgency=100.00%；ShoppingGate=100.00%；Catalog=0；幻觉=0；硬约束=0；Slots=100.00%。

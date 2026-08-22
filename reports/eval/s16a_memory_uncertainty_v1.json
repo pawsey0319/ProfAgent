@@ -5,11 +5,11 @@
   "overall_status": "PASS",
   "report_command": "conda run --no-capture-output -n torch128 python scripts/tester_s16a_report.py",
   "provenance": {
-    "source_revision": "cda4595d71db78ee86dfcc9980dc59070481a28d",
-    "git_tree": "37b84b4892e4d33ddcfa29892e3385bc25fc4ce2",
-    "reviewed_head": "cda4595d71db78ee86dfcc9980dc59070481a28d",
-    "reviewed_git_tree": "37b84b4892e4d33ddcfa29892e3385bc25fc4ce2",
-    "command_plan_sha256": "9bda89b134f7160aa3d284b1d205d76346ee110aa4b99d9f0b87b545b67364bd",
+    "source_revision": "72903b5f953dc4aabd825b27f9ea31a282708ad5",
+    "git_tree": "69c1cf4e6b235b9a3cde14a8ac69007063a2e1a3",
+    "reviewed_head": "72903b5f953dc4aabd825b27f9ea31a282708ad5",
+    "reviewed_git_tree": "69c1cf4e6b235b9a3cde14a8ac69007063a2e1a3",
+    "command_plan_sha256": "2cc17dc1cb37cd3971244c34e4a5b9299e82b15fadc37cf1716b9be45aaef369",
     "conda_environment": "torch128",
     "python": {
       "version": "3.10.19",
@@ -44,7 +44,7 @@
     },
     {
       "label": "clean current HEAD status",
-      "command": "git status --porcelain",
+      "command": "git status --porcelain=v1 --untracked-files=all",
       "exit_status": 0
     },
     {
@@ -410,7 +410,7 @@
     },
     "full": {
       "status": "PASS",
-      "passed": 445
+      "passed": 450
     }
   },
   "node": {
