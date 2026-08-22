@@ -612,12 +612,16 @@ def _selected_metric(metric: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _execute(review_evidence: dict[str, Any] | None = None) -> dict[str, Any]:
+def _execute(
+    review_evidence: dict[str, Any] | None = None,
+    run_gate=None,
+) -> dict[str, Any]:
     _assert_runtime()
     commands: list[dict[str, Any]] = []
+    runner = run_gate or _run
 
     def gate(command: list[str], label: str) -> subprocess.CompletedProcess[str]:
-        completed = _run(command, label)
+        completed = runner(command, label)
         commands.append(
             {
                 "label": label,
@@ -903,9 +907,9 @@ def _markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def main(review_evidence: dict[str, Any] | None = None) -> int:
+def main(review_evidence: dict[str, Any] | None = None, run_gate=None) -> int:
     try:
-        report = _execute(review_evidence)
+        report = _execute(review_evidence, run_gate=run_gate)
         _validate_report_contract(report)
         markdown_content = _markdown(report)
         _publish_authoritative_bundle(report, markdown_content)

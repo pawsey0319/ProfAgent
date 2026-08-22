@@ -425,7 +425,7 @@ def test_s16a_review_output_rejects_ambiguous_blocks_and_finding_count_mismatch(
     assert report_module._review_gate_from_descriptor(source, descriptor)["status"] == "PENDING"
 
 
-def test_s16a_review_paths_reject_escape_dotdot_and_external_symlink(
+def test_s16a_review_paths_reject_escape_and_dotdot(
     monkeypatch, tmp_path: Path
 ) -> None:
     evidence_root = tmp_path / "inside"
@@ -443,23 +443,50 @@ def test_s16a_review_paths_reject_escape_dotdot_and_external_symlink(
     )
     assert report_module._review_gate_from_descriptor(source, dotdot)["status"] == "PENDING"
 
+
+def test_s16a_review_path_rejects_external_symlink(monkeypatch, tmp_path: Path) -> None:
+    evidence_root = tmp_path / "inside"
+    evidence_root.mkdir()
+    monkeypatch.setattr(report_module, "REVIEW_EVIDENCE_ROOT", evidence_root.resolve())
+    source, descriptor, _package_path, review_path = _real_review_fixture(evidence_root)
+    outside = tmp_path / "outside-review.md"
+    outside.write_bytes(review_path.read_bytes())
     link = evidence_root / "external-review-link.md"
     try:
         os.symlink(outside, link)
-    except OSError:
-        outside_directory = tmp_path / "outside-directory"
-        outside_directory.mkdir()
-        outside_in_directory = outside_directory / "review-output.md"
-        outside_in_directory.write_bytes(outside.read_bytes())
-        junction = evidence_root / "external-review-junction"
-        subprocess.run(
-            ["cmd", "/c", "mklink", "/J", str(junction), str(outside_directory)],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        link = junction / outside_in_directory.name
+    except OSError as exc:
+        pytest.skip(f"host does not permit file symlink creation: {exc}")
     linked = dict(descriptor, review_output_path=str(link.absolute()))
+    assert report_module._review_gate_from_descriptor(source, linked)["status"] == "PENDING"
+
+
+def test_s16a_review_path_rejects_external_windows_junction(
+    monkeypatch, tmp_path: Path
+) -> None:
+    evidence_root = tmp_path / "inside"
+    evidence_root.mkdir()
+    outside_directory = tmp_path / "outside-directory"
+    outside_directory.mkdir()
+    monkeypatch.setattr(report_module, "REVIEW_EVIDENCE_ROOT", evidence_root.resolve())
+    source, descriptor, _package_path, review_path = _real_review_fixture(evidence_root)
+    outside_review = outside_directory / "review-output.md"
+    outside_review.write_bytes(review_path.read_bytes())
+    junction = evidence_root / "external-review-junction"
+    created = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction), str(outside_directory)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if created.returncode != 0:
+        pytest.skip(
+            "host cannot create Windows junction: "
+            + (created.stderr or created.stdout).strip()
+        )
+    linked = dict(
+        descriptor,
+        review_output_path=str((junction / outside_review.name).absolute()),
+    )
     assert report_module._review_gate_from_descriptor(source, linked)["status"] == "PENDING"
 
 
@@ -481,6 +508,69 @@ def test_s16a_same_source_bundle_preserves_evidence_and_source_drift_clears_it(
         "findings": {"P0": None, "P1": None, "P2": None},
         "note": "no valid hash-bound reviewer evidence for current source revision",
     }
+
+
+def test_s16a_execute_publication_preserve_and_drift_fail_closed(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(report_module, "REVIEW_EVIDENCE_ROOT", tmp_path.resolve())
+    source, descriptor, package_path, review_path = _real_review_fixture(tmp_path)
+    _redirect_reports(monkeypatch, tmp_path)
+    real_run = report_module._run
+    provenance = {"source": source, "tree": _git_text("rev-parse", "HEAD^{tree}").strip()}
+
+    def fake_gate_run(command: list[str], label: str) -> subprocess.CompletedProcess[str]:
+        if label in {"review package commit list", "review package diff truth"}:
+            return real_run(command, label)
+        stdout = ""
+        if label == "torch128 Python process.execPath":
+            stdout = report_module.PYTHON + "\n"
+        elif label == "torch128 Node process.execPath":
+            stdout = str((tmp_path / "node.exe").absolute()) + "\n"
+        elif label == "torch128 Node version":
+            stdout = "v22.0.0\n"
+        elif label == "source revision":
+            stdout = provenance["source"] + "\n"
+        elif label == "source tree":
+            stdout = provenance["tree"] + "\n"
+        elif "pytest" in label:
+            stdout = "1 passed in 0.01s\n"
+        elif label == "fixture validation":
+            stdout = "fixtures_v1.0: PASS\n"
+        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+    assert report_module.main(descriptor, run_gate=fake_gate_run) == 0
+    first = report_module._load_authoritative_report()
+    assert first["reviewer_gate"]["status"] == "PASS"
+    assert first["reviewer_gate"]["fixed_package_sha256"] == report_module._sha256(
+        package_path.read_bytes()
+    )
+    assert first["reviewer_gate"]["review_output_sha256"] == report_module._sha256(
+        review_path.read_bytes()
+    )
+
+    assert report_module.main(run_gate=fake_gate_run) == 0
+    preserved = report_module._load_authoritative_report()
+    assert preserved["reviewer_gate"] == first["reviewer_gate"]
+
+    review_path.write_bytes(review_path.read_bytes() + b"changed after review\n")
+    assert report_module.main(run_gate=fake_gate_run) == 0
+    changed = report_module._load_authoritative_report()["reviewer_gate"]
+    assert changed == {
+        "status": "PENDING",
+        "findings": {"P0": None, "P1": None, "P2": None},
+        "note": "no valid hash-bound reviewer evidence for current source revision",
+    }
+
+    source, descriptor, _package_path, _review_path = _real_review_fixture(tmp_path)
+    assert report_module.main(descriptor, run_gate=fake_gate_run) == 0
+    assert report_module._load_authoritative_report()["reviewer_gate"]["status"] == "PASS"
+    provenance["source"] = "f" * 40
+    provenance["tree"] = "e" * 40
+    assert report_module.main(run_gate=fake_gate_run) == 0
+    drifted = report_module._load_authoritative_report()["reviewer_gate"]
+    assert drifted["status"] == "PENDING"
+    assert drifted["findings"] == {"P0": None, "P1": None, "P2": None}
 
 
 def test_s16a_clean_source_provenance_and_command_plan_hash(monkeypatch) -> None:
