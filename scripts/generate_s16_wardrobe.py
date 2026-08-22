@@ -248,16 +248,16 @@ GARMENT_PROFILES = {
         P("经典收腰风衣", "cotton", ("spring", "autumn"), ("classic", "smart"), ("commute", "travel"), 3, 2, "slim", COMFORT_SLIM),
         P("羊毛廓形大衣", "wool", ("winter",), ("classic", "formal"), ("commute", "meeting"), 4, 5, "loose", COMFORT_LOOSE),
         P("运动连帽外套", "synthetic", ("all",), ("sporty", "simple"), ("sports", "daily", "travel"), 0, 2, "loose", COMFORT_LOOSE),
-        P("宴会短款披肩", "synthetic", ("autumn", "winter"), ("formal", "soft"), ("party", "date"), 4, 4, "regular", COMFORT_REGULAR),
+        P("宴会保暖短款披肩", "synthetic", ("autumn", "winter"), ("formal", "soft"), ("party", "date"), 4, 4, "regular", COMFORT_REGULAR),
         P("亚麻单排扣西装", "linen", ("spring", "summer"), ("business", "smart"), ("commute", "meeting"), 3, 1, "regular", COMFORT_REGULAR),
         P("复古牛仔夹克", "denim", ("all",), ("vintage", "street"), ("daily", "travel"), 1, 2, "loose", COMFORT_LOOSE),
         P("简约针织长开衫", "knit", ("autumn", "winter"), ("simple", "soft"), ("daily", "home"), 1, 3, "loose", COMFORT_LOOSE),
         P("正式会议西装外套", "wool", ("all",), ("business", "formal"), ("meeting", "interview", "commute"), 4, 3, "regular", COMFORT_REGULAR),
     ),
     "shoes": (
-        P("低跟通勤乐福鞋", "leather", ("all",), ("business", "classic"), ("commute", "meeting"), 3, 1, "regular", COMFORT_UNVERIFIED_SHOE),
+        P("低跟通勤乐福鞋", "leather", ("all",), ("business", "classic"), ("commute", "meeting"), 3, 1, "regular", COMFORT_SHORT_SHOE),
         P("尖头中跟单鞋", "leather", ("spring", "autumn"), ("formal", "classic"), ("meeting", "date", "party"), 4, 1, "slim", COMFORT_SHORT_SHOE),
-        P("舒适芭蕾平底鞋", "leather", ("spring", "summer", "autumn"), ("soft", "classic"), ("daily", "date", "travel"), 1, 1, "regular", COMFORT_UNVERIFIED_SHOE),
+        P("经典芭蕾平底鞋", "leather", ("spring", "summer", "autumn"), ("soft", "classic"), ("daily", "date", "travel"), 1, 1, "regular", COMFORT_UNVERIFIED_SHOE),
         P("轻量缓震旅行运动鞋", "synthetic", ("all",), ("sporty", "simple"), ("travel", "sports", "outdoor"), 0, 1, "regular", COMFORT_LONG_WALK),
         P("宴会细带凉鞋", "synthetic", ("spring", "summer"), ("formal", "soft"), ("party", "date"), 4, 1, "slim", COMFORT_SHORT_SHOE),
         P("复古玛丽珍鞋", "leather", ("spring", "autumn"), ("vintage", "classic"), ("date", "daily"), 2, 1, "regular", COMFORT_UNVERIFIED_SHOE),
@@ -274,10 +274,10 @@ GARMENT_PROFILES = {
     ),
     "accessory": (
         P("几何方巾", "synthetic", ("spring", "autumn"), ("smart", "vintage"), ("commute", "date"), 2, 1, "regular", COMFORT_ACCESSORY),
-        P("简约金属耳饰", "synthetic", ("all",), ("simple", "smart"), ("daily", "meeting"), 2, 1, "regular", COMFORT_ACCESSORY),
+        P("简约树脂耳饰", "synthetic", ("all",), ("simple", "smart"), ("daily", "meeting"), 2, 1, "regular", COMFORT_ACCESSORY),
         P("复古细腰带", "leather", ("all",), ("vintage", "classic"), ("daily", "date"), 2, 1, "regular", COMFORT_ACCESSORY),
         P("运动遮阳帽", "synthetic", ("spring", "summer"), ("sporty", "simple"), ("sports", "outdoor", "travel"), 0, 1, "regular", COMFORT_ACCESSORY),
-        P("宴会珍珠项链", "synthetic", ("all",), ("formal", "classic"), ("party", "date"), 4, 1, "regular", COMFORT_ACCESSORY),
+        P("宴会仿珍珠项链", "synthetic", ("all",), ("formal", "classic"), ("party", "date"), 4, 1, "regular", COMFORT_ACCESSORY),
     ),
 }
 
@@ -445,6 +445,38 @@ def _slot_fit_copy(slot: str, fit: str) -> str:
     return "佩戴规格：标准"
 
 
+def _profile_search_text(
+    *,
+    profile: GarmentProfile,
+    slot: str,
+    color: str,
+    season_text: str,
+    style_text: str,
+    occasion_text: str,
+) -> str:
+    identity = (
+        f"{profile.name}；颜色：{COLOR_LABELS[color]}；"
+        f"材质：{MATERIAL_LABELS[profile.material]}；"
+    )
+    if slot == "bag":
+        return (
+            f"{identity}携带规格：标准；用途场景：{occasion_text}；"
+            f"携带说明：{profile.comfort}"
+        )
+    if slot == "accessory":
+        return (
+            f"{identity}佩戴规格：标准；用途场景：{occasion_text}；"
+            f"佩戴说明：{profile.comfort}"
+        )
+    return (
+        f"{profile.name}；颜色：{COLOR_LABELS[color]}；"
+        f"季节：{season_text}；材质：{MATERIAL_LABELS[profile.material]}；"
+        f"{_slot_fit_copy(slot, profile.fit)}；风格：{style_text}；"
+        f"场景：{occasion_text}；正式度：{profile.formal}/4；"
+        f"保暖度：{profile.warmth}/5；舒适说明：{profile.comfort}"
+    )
+
+
 def _build_rows() -> list[dict[str, object]]:
     profile_offsets = {slot: 0 for slot in GARMENT_PROFILES}
     rows: list[dict[str, object]] = []
@@ -497,12 +529,13 @@ def _build_rows() -> list[dict[str, object]]:
                         "warmth": profile.warmth,
                         "material": profile.material,
                         "fit": profile.fit,
-                        "search_text": (
-                            f"{profile.name}；颜色：{COLOR_LABELS[color]}；"
-                            f"季节：{season_text}；材质：{MATERIAL_LABELS[profile.material]}；"
-                            f"{_slot_fit_copy(slot, profile.fit)}；风格：{style_text}；"
-                            f"场景：{occasion_text}；正式度：{profile.formal}/4；"
-                            f"保暖度：{profile.warmth}/5；舒适说明：{profile.comfort}"
+                        "search_text": _profile_search_text(
+                            profile=profile,
+                            slot=slot,
+                            color=color,
+                            season_text=season_text,
+                            style_text=style_text,
+                            occasion_text=occasion_text,
                         ),
                         "audience": audience,
                     }

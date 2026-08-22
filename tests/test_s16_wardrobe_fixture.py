@@ -224,6 +224,93 @@ SLOT_NAME_MARKERS = {
     "accessory": ("方巾", "耳饰", "腰带", "帽", "项链"),
 }
 
+# Independent test oracle: deliberately duplicated here rather than imported
+# from the generator so any profile drift must be reviewed ID by ID.
+EXPECTED_PROFILE_ORACLE = {
+    "g051": ("飘带衬衫", "top", "synthetic", ("spring", "summer"), ("soft", "smart"), ("date", "meeting"), 2, 1, "regular", "apparel_regular"),
+    "g052": ("细针织方领上衣", "top", "knit", ("autumn", "winter"), ("soft", "classic"), ("date", "daily"), 2, 3, "slim", "apparel_slim"),
+    "g053": ("垂感通勤衬衣", "top", "cotton", ("all",), ("smart", "business"), ("commute", "meeting"), 3, 2, "regular", "apparel_regular"),
+    "g054": ("柔棉修身打底衫", "top", "cotton", ("autumn", "winter"), ("simple", "soft"), ("daily", "home"), 1, 3, "slim", "apparel_slim"),
+    "g055": ("泡泡袖约会上衣", "top", "cotton", ("spring", "summer"), ("soft", "vintage"), ("date", "party"), 2, 1, "regular", "apparel_regular"),
+    "g056": ("简约无袖针织背心", "top", "knit", ("spring", "summer"), ("simple", "soft"), ("daily", "travel"), 1, 1, "regular", "apparel_regular"),
+    "g057": ("商务翻领衬衫", "top", "cotton", ("all",), ("business", "smart"), ("commute", "meeting", "interview"), 4, 2, "regular", "apparel_regular"),
+    "g058": ("轻盈亚麻衬衣", "top", "linen", ("spring", "summer"), ("simple", "smart"), ("travel", "daily"), 1, 1, "loose", "apparel_loose"),
+    "g059": ("高腰直筒西装裤", "bottom", "wool", ("all",), ("business", "formal"), ("commute", "meeting", "interview"), 4, 2, "straight", "apparel_regular"),
+    "g060": ("垂感阔腿通勤裤", "bottom", "synthetic", ("all",), ("smart", "business"), ("commute", "meeting"), 3, 2, "loose", "apparel_loose"),
+    "g061": ("中长百褶半身裙", "bottom", "synthetic", ("spring", "autumn"), ("classic", "soft"), ("commute", "date"), 2, 2, "regular", "apparel_regular"),
+    "g062": ("简洁铅笔半身裙", "bottom", "wool", ("autumn", "winter"), ("business", "formal"), ("meeting", "interview"), 4, 4, "slim", "apparel_slim"),
+    "g063": ("复古牛仔直筒裤", "bottom", "denim", ("all",), ("vintage", "street"), ("daily", "travel"), 1, 2, "straight", "apparel_regular"),
+    "g064": ("柔软针织半身裙", "bottom", "knit", ("autumn", "winter"), ("soft", "simple"), ("daily", "date"), 1, 3, "regular", "apparel_regular"),
+    "g065": ("轻量旅行束脚裤", "bottom", "synthetic", ("spring", "summer", "autumn"), ("sporty", "simple"), ("travel", "outdoor", "sports"), 0, 1, "regular", "apparel_regular"),
+    "g066": ("运动弹力长裤", "bottom", "synthetic", ("all",), ("sporty", "simple"), ("sports", "daily"), 0, 1, "slim", "apparel_slim"),
+    "g067": ("高腰伞摆半身裙", "bottom", "cotton", ("spring", "summer"), ("soft", "vintage"), ("date", "daily"), 2, 1, "regular", "apparel_regular"),
+    "g068": ("收腰通勤连衣裙", "dress", "wool", ("all",), ("business", "smart"), ("commute", "meeting"), 3, 2, "slim", "apparel_slim"),
+    "g069": ("简洁衬衫连衣裙", "dress", "cotton", ("spring", "summer"), ("smart", "simple"), ("commute", "daily"), 2, 1, "straight", "apparel_regular"),
+    "g070": ("法式约会茶歇裙", "dress", "synthetic", ("spring", "summer"), ("soft", "vintage"), ("date", "party"), 2, 1, "slim", "apparel_slim"),
+    "g071": ("商务直筒连衣裙", "dress", "wool", ("autumn", "winter"), ("business", "formal"), ("meeting", "interview", "commute"), 4, 4, "straight", "apparel_regular"),
+    "g072": ("旅行亚麻连衣裙", "dress", "linen", ("spring", "summer"), ("simple", "soft"), ("travel", "daily"), 1, 1, "loose", "apparel_loose"),
+    "g073": ("柔软针织连衣裙", "dress", "knit", ("autumn", "winter"), ("soft", "simple"), ("daily", "date"), 1, 3, "regular", "apparel_regular"),
+    "g074": ("宴会缎面长裙", "dress", "synthetic", ("spring", "autumn"), ("formal", "soft"), ("party", "date"), 4, 2, "slim", "apparel_slim"),
+    "g075": ("双排扣通勤西装", "outer", "wool", ("autumn", "winter"), ("business", "formal"), ("commute", "meeting", "interview"), 4, 4, "regular", "apparel_regular"),
+    "g076": ("轻量防风旅行外套", "outer", "synthetic", ("spring", "summer", "autumn"), ("sporty", "simple"), ("travel", "outdoor", "sports"), 0, 1, "loose", "apparel_loose"),
+    "g077": ("短款软呢夹克", "outer", "wool", ("autumn", "winter"), ("classic", "smart"), ("commute", "daily"), 2, 4, "regular", "apparel_regular"),
+    "g078": ("经典收腰风衣", "outer", "cotton", ("spring", "autumn"), ("classic", "smart"), ("commute", "travel"), 3, 2, "slim", "apparel_slim"),
+    "g079": ("羊毛廓形大衣", "outer", "wool", ("winter",), ("classic", "formal"), ("commute", "meeting"), 4, 5, "loose", "apparel_loose"),
+    "g080": ("运动连帽外套", "outer", "synthetic", ("all",), ("sporty", "simple"), ("sports", "daily", "travel"), 0, 2, "loose", "apparel_loose"),
+    "g081": ("宴会保暖短款披肩", "outer", "synthetic", ("autumn", "winter"), ("formal", "soft"), ("party", "date"), 4, 4, "regular", "apparel_regular"),
+    "g082": ("低跟通勤乐福鞋", "shoes", "leather", ("all",), ("business", "classic"), ("commute", "meeting"), 3, 1, "regular", "shoe_short"),
+    "g083": ("尖头中跟单鞋", "shoes", "leather", ("spring", "autumn"), ("formal", "classic"), ("meeting", "date", "party"), 4, 1, "slim", "shoe_short"),
+    "g084": ("经典芭蕾平底鞋", "shoes", "leather", ("spring", "summer", "autumn"), ("soft", "classic"), ("daily", "date", "travel"), 1, 1, "regular", "shoe_unverified"),
+    "g085": ("轻量缓震旅行运动鞋", "shoes", "synthetic", ("all",), ("sporty", "simple"), ("travel", "sports", "outdoor"), 0, 1, "regular", "shoe_evidenced"),
+    "g086": ("宴会细带凉鞋", "shoes", "synthetic", ("spring", "summer"), ("formal", "soft"), ("party", "date"), 4, 1, "slim", "shoe_short"),
+    "g087": ("复古玛丽珍鞋", "shoes", "leather", ("spring", "autumn"), ("vintage", "classic"), ("date", "daily"), 2, 1, "regular", "shoe_unverified"),
+    "g088": ("简洁短靴", "shoes", "leather", ("autumn", "winter"), ("classic", "smart"), ("commute", "daily"), 3, 4, "regular", "shoe_unverified"),
+    "g089": ("结构感通勤托特包", "bag", "leather", ("all",), ("business", "smart"), ("commute", "meeting"), 3, 2, "regular", "bag_carry"),
+    "g090": ("轻便旅行斜挎包", "bag", "synthetic", ("all",), ("simple", "sporty"), ("travel", "daily", "sports"), 0, 1, "regular", "bag_carry"),
+    "g091": ("宴会链条手拿包", "bag", "synthetic", ("all",), ("formal", "vintage"), ("party", "date"), 4, 1, "regular", "bag_hand"),
+    "g092": ("几何方巾", "accessory", "synthetic", ("spring", "autumn"), ("smart", "vintage"), ("commute", "date"), 2, 1, "regular", "accessory_wear"),
+    "g093": ("简约树脂耳饰", "accessory", "synthetic", ("all",), ("simple", "smart"), ("daily", "meeting"), 2, 1, "regular", "accessory_wear"),
+    "g094": ("复古细腰带", "accessory", "leather", ("all",), ("vintage", "classic"), ("daily", "date"), 2, 1, "regular", "accessory_wear"),
+    "g095": ("运动拉链短上衣", "top", "synthetic", ("all",), ("sporty", "simple"), ("sports", "daily", "travel"), 0, 1, "regular", "apparel_regular"),
+    "g096": ("复古圆领开衫", "top", "knit", ("autumn", "winter"), ("vintage", "soft"), ("date", "daily"), 2, 3, "regular", "apparel_regular"),
+    "g097": ("宴会光泽上衣", "top", "synthetic", ("all",), ("formal", "soft"), ("party", "date"), 4, 2, "slim", "apparel_slim"),
+    "g098": ("九分烟管西装裤", "bottom", "wool", ("all",), ("business", "smart"), ("commute", "meeting", "interview"), 4, 2, "straight", "apparel_regular"),
+    "g099": ("亚麻宽腿长裤", "bottom", "linen", ("spring", "summer"), ("simple", "soft"), ("travel", "daily"), 1, 1, "loose", "apparel_loose"),
+    "g100": ("宴会缎面半身裙", "bottom", "synthetic", ("spring", "summer", "autumn"), ("formal", "soft"), ("party", "date"), 4, 1, "regular", "apparel_regular"),
+    "g101": ("复古方领连衣裙", "dress", "cotton", ("spring", "summer"), ("vintage", "soft"), ("date", "party"), 2, 1, "regular", "apparel_regular"),
+    "g102": ("运动翻领连衣裙", "dress", "synthetic", ("spring", "summer"), ("sporty", "simple"), ("sports", "daily"), 0, 1, "regular", "apparel_regular"),
+    "g103": ("亚麻单排扣西装", "outer", "linen", ("spring", "summer"), ("business", "smart"), ("commute", "meeting"), 3, 1, "regular", "apparel_regular"),
+    "g104": ("复古牛仔夹克", "outer", "denim", ("all",), ("vintage", "street"), ("daily", "travel"), 1, 2, "loose", "apparel_loose"),
+    "g105": ("运动缓震跑鞋", "shoes", "synthetic", ("all",), ("sporty", "simple"), ("sports", "travel", "outdoor"), 0, 1, "regular", "shoe_evidenced"),
+    "g106": ("方头低跟穆勒鞋", "shoes", "leather", ("spring", "summer"), ("classic", "smart"), ("commute", "daily"), 2, 1, "regular", "shoe_short"),
+    "g107": ("旅行防晒衬衫", "top", "synthetic", ("spring", "summer"), ("sporty", "simple"), ("travel", "outdoor", "sports"), 0, 1, "loose", "apparel_loose"),
+    "g108": ("法式领口针织衫", "top", "knit", ("spring", "autumn"), ("soft", "classic"), ("date", "daily"), 2, 2, "regular", "apparel_regular"),
+    "g109": ("利落半高领上衣", "top", "knit", ("autumn", "winter"), ("smart", "business"), ("commute", "meeting"), 3, 3, "slim", "apparel_slim"),
+    "g110": ("工装直筒长裤", "bottom", "cotton", ("all",), ("street", "simple"), ("daily", "outdoor", "travel"), 1, 2, "straight", "apparel_regular"),
+    "g111": ("通勤开衩半身裙", "bottom", "wool", ("autumn", "winter"), ("business", "smart"), ("commute", "meeting"), 3, 4, "slim", "apparel_slim"),
+    "g112": ("日常锥形休闲裤", "bottom", "cotton", ("all",), ("simple", "smart"), ("daily", "commute"), 1, 2, "regular", "apparel_regular"),
+    "g113": ("日常伞摆连衣裙", "dress", "cotton", ("spring", "summer"), ("soft", "simple"), ("daily", "date"), 1, 1, "regular", "apparel_regular"),
+    "g114": ("会议西装连衣裙", "dress", "wool", ("autumn", "winter"), ("business", "formal"), ("meeting", "interview"), 4, 4, "straight", "apparel_regular"),
+    "g115": ("简约针织长开衫", "outer", "knit", ("autumn", "winter"), ("simple", "soft"), ("daily", "home"), 1, 3, "loose", "apparel_loose"),
+    "g116": ("正式会议西装外套", "outer", "wool", ("all",), ("business", "formal"), ("meeting", "interview", "commute"), 4, 3, "regular", "apparel_regular"),
+    "g117": ("商务皮质德比鞋", "shoes", "leather", ("all",), ("business", "formal"), ("commute", "meeting", "interview"), 4, 2, "regular", "shoe_unverified"),
+    "g118": ("日常软皮肩背包", "bag", "leather", ("all",), ("simple", "soft"), ("daily", "commute"), 1, 1, "regular", "bag_carry"),
+    "g119": ("运动遮阳帽", "accessory", "synthetic", ("spring", "summer"), ("sporty", "simple"), ("sports", "outdoor", "travel"), 0, 1, "regular", "accessory_wear"),
+    "g120": ("宴会仿珍珠项链", "accessory", "synthetic", ("all",), ("formal", "classic"), ("party", "date"), 4, 1, "regular", "accessory_wear"),
+}
+
+COMFORT_BY_CATEGORY = {
+    "apparel_regular": "常规活动前需确认穿着舒适度",
+    "apparel_slim": "修身版型活动前需确认贴合与舒适度",
+    "apparel_loose": "宽松版型便于活动，仍需按场景确认舒适度",
+    "shoe_evidenced": SHOE_LONG_WALK_CLAIM,
+    "shoe_short": SHOE_SHORT_ACTIVITY_CLAIM,
+    "shoe_unverified": SHOE_UNVERIFIED_SUPPORT_CLAIM,
+    "bag_carry": BAG_CARRY_CLAIM,
+    "bag_hand": BAG_HAND_CARRY_CLAIM,
+    "accessory_wear": ACCESSORY_WEAR_CLAIM,
+}
+
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -249,6 +336,16 @@ def _write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
         json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in rows
     )
     path.write_text(payload, encoding="utf-8", newline="\n")
+
+
+def _controlled_copy_claim(row: dict[str, object]) -> str:
+    search_text = str(row["search_text"])
+    marker = {
+        "bag": "携带说明：",
+        "accessory": "佩戴说明：",
+    }.get(str(row["slot"]), "舒适说明：")
+    assert search_text.count(marker) == 1
+    return search_text.split(marker, 1)[1]
 
 
 def _owner_slot_counts(rows: list[dict[str, object]]) -> dict[str, dict[str, int]]:
@@ -510,7 +607,6 @@ def test_every_extension_row_has_coherent_declarative_semantics(
     for row in rows:
         name = str(row["name"])
         search_text = str(row["search_text"])
-        assert f"季节：{'、'.join(SEASON_LABELS[item] for item in row['seasons'])}" in search_text
         assert f"材质：{MATERIAL_LABELS[str(row['material'])]}" in search_text
         if row["slot"] in {"top", "bottom", "dress", "outer"}:
             assert f"服装版型：{FIT_LABELS[str(row['fit'])]}" in search_text
@@ -521,13 +617,15 @@ def test_every_extension_row_has_coherent_declarative_semantics(
             assert "携带规格：标准" in search_text
         else:
             assert "佩戴规格：标准" in search_text
-        assert f"风格：{'、'.join(STYLE_LABELS[item] for item in row['styles'])}" in search_text
-        assert f"场景：{'、'.join(OCCASION_LABELS[item] for item in row['occasions'])}" in search_text
-        assert f"正式度：{row['formal']}/4" in search_text
-        assert f"保暖度：{row['warmth']}/5" in search_text
-        marker = "舒适说明："
-        assert search_text.count(marker) == 1
-        comfort_claim = search_text.split(marker, 1)[1]
+        if row["slot"] in {"bag", "accessory"}:
+            assert f"用途场景：{'、'.join(OCCASION_LABELS[item] for item in row['occasions'])}" in search_text
+        else:
+            assert f"季节：{'、'.join(SEASON_LABELS[item] for item in row['seasons'])}" in search_text
+            assert f"风格：{'、'.join(STYLE_LABELS[item] for item in row['styles'])}" in search_text
+            assert f"场景：{'、'.join(OCCASION_LABELS[item] for item in row['occasions'])}" in search_text
+            assert f"正式度：{row['formal']}/4" in search_text
+            assert f"保暖度：{row['warmth']}/5" in search_text
+        comfort_claim = _controlled_copy_claim(row)
         assert comfort_claim in ALLOWED_COMFORT_CLAIMS
 
         token_contracts = {
@@ -617,7 +715,7 @@ def test_all_extension_names_and_copy_are_slot_appropriate_and_evidence_honest(
         slot = str(row["slot"])
         name = str(row["name"])
         search_text = str(row["search_text"])
-        claim = search_text.split("舒适说明：", 1)[1]
+        claim = _controlled_copy_claim(row)
         assert any(marker in name for marker in SLOT_NAME_MARKERS[slot]), (
             f"{row['garment_id']} name does not identify its declared slot"
         )
@@ -639,21 +737,21 @@ def test_all_extension_names_and_copy_are_slot_appropriate_and_evidence_honest(
             assert row["fit"] == "regular"
             assert "携带规格：标准" in search_text
             assert claim in {BAG_CARRY_CLAIM, BAG_HAND_CARRY_CLAIM}
-            assert not any(token in search_text for token in ("版型", "贴合身体", "修身", "宽松"))
+            assert not any(token in search_text for token in ("版型", "保暖度", "贴合身体", "修身", "宽松"))
         else:
             assert row["fit"] == "regular"
             assert "佩戴规格：标准" in search_text
             assert claim == ACCESSORY_WEAR_CLAIM
-            assert not any(token in search_text for token in ("版型", "贴合身体", "修身", "宽松"))
+            assert not any(token in search_text for token in ("版型", "保暖度", "贴合身体", "修身", "宽松"))
 
-    assert by_id["g084"]["name"] == "舒适芭蕾平底鞋"
+    assert by_id["g084"]["name"] == "经典芭蕾平底鞋"
     assert by_id["g084"]["search_text"].endswith(
         f"舒适说明：{SHOE_UNVERIFIED_SUPPORT_CLAIM}"
     )
     assert by_id["g091"]["name"] == "宴会链条手拿包"
     assert by_id["g091"]["fit"] == "regular"
     assert by_id["g091"]["search_text"].endswith(
-        f"舒适说明：{BAG_HAND_CARRY_CLAIM}"
+        f"携带说明：{BAG_HAND_CARRY_CLAIM}"
     )
     for garment_id in ("g083", "g086"):
         assert by_id[garment_id]["search_text"].endswith(
@@ -664,6 +762,121 @@ def test_all_extension_names_and_copy_are_slot_appropriate_and_evidence_honest(
         f"舒适说明：{SHOE_LONG_WALK_CLAIM}"
     )
     assert "服装版型：常规版型" in str(by_id["g051"]["search_text"])
+
+
+def test_complete_independent_profile_oracle_and_name_token_rules(
+    project_root: Path,
+) -> None:
+    rows = _extension_rows(project_root)
+    assert set(EXPECTED_PROFILE_ORACLE) == {
+        f"g{index:03d}" for index in range(51, 121)
+    }
+    assert len(EXPECTED_PROFILE_ORACLE) == 70
+    category_by_claim = {value: key for key, value in COMFORT_BY_CATEGORY.items()}
+    assert len(category_by_claim) == len(COMFORT_BY_CATEGORY)
+
+    slot_token_rules = {
+        "衬衫": {"top", "dress"},
+        "衬衣": {"top"},
+        "上衣": {"top"},
+        "打底衫": {"top"},
+        "背心": {"top"},
+        "半身裙": {"bottom"},
+        "裤": {"bottom"},
+        "连衣裙": {"dress"},
+        "茶歇裙": {"dress"},
+        "外套": {"outer"},
+        "夹克": {"outer"},
+        "风衣": {"outer"},
+        "大衣": {"outer"},
+        "披肩": {"outer"},
+        "鞋": {"shoes"},
+        "靴": {"shoes"},
+        "包": {"bag"},
+        "方巾": {"accessory"},
+        "耳饰": {"accessory"},
+        "腰带": {"accessory"},
+        "帽": {"accessory", "outer"},  # 连帽外套 is an outerwear feature.
+        "项链": {"accessory"},
+    }
+    material_token_rules = {
+        "针织": "knit",
+        "牛仔": "denim",
+        "羊毛": "wool",
+        "软呢": "wool",
+        "亚麻": "linen",
+        "柔棉": "cotton",
+        "皮质": "leather",
+        "软皮": "leather",
+        "树脂": "synthetic",
+        "仿珍珠": "synthetic",
+        "缎面": "synthetic",
+    }
+
+    for row in rows:
+        garment_id = str(row["garment_id"])
+        claim = _controlled_copy_claim(row)
+        assert claim in category_by_claim, f"{garment_id} has uncontrolled copy"
+        observed = (
+            row["name"],
+            row["slot"],
+            row["material"],
+            tuple(row["seasons"]),
+            tuple(row["styles"]),
+            tuple(row["occasions"]),
+            row["formal"],
+            row["warmth"],
+            row["fit"],
+            category_by_claim[claim],
+        )
+        assert observed == EXPECTED_PROFILE_ORACLE[garment_id]
+
+        name = str(row["name"])
+        for token, allowed_slots in slot_token_rules.items():
+            if token in name:
+                assert row["slot"] in allowed_slots, f"{garment_id} {token} slot drift"
+        for token, expected_material in material_token_rules.items():
+            if token in name:
+                assert row["material"] == expected_material, (
+                    f"{garment_id} {token} material drift"
+                )
+
+
+def test_accessory_names_do_not_claim_unsupported_materials(project_root: Path) -> None:
+    by_id = {
+        str(row["garment_id"]): row for row in _extension_rows(project_root)
+    }
+    assert by_id["g093"]["name"] == "简约树脂耳饰"
+    assert by_id["g093"]["material"] == "synthetic"
+    assert by_id["g120"]["name"] == "宴会仿珍珠项链"
+    assert by_id["g120"]["material"] == "synthetic"
+
+
+def test_every_bag_and_accessory_uses_only_purpose_relevant_copy(
+    project_root: Path,
+) -> None:
+    rows = [
+        row
+        for row in _extension_rows(project_root)
+        if row["slot"] in {"bag", "accessory"}
+    ]
+    assert len(rows) == 9
+    forbidden = (
+        "版型",
+        "保暖度",
+        "贴合身体",
+        "修身",
+        "宽松",
+        "缓震",
+        "久走",
+        "长时间站立",
+    )
+    for row in rows:
+        search_text = str(row["search_text"])
+        assert not any(token in search_text for token in forbidden)
+        assert "用途场景：" in search_text
+        expected_marker = "携带说明：" if row["slot"] == "bag" else "佩戴说明："
+        assert search_text.count(expected_marker) == 1
 
 
 def test_extension_schema_is_closed_and_rejects_out_of_contract_rows(
