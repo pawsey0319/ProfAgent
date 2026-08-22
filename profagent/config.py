@@ -16,6 +16,11 @@ DIALOGUE_TTL_MAX_SECONDS = 1800.0
 PREVIEW_2D_BUDGET_MAX_SECONDS = 45.0
 CPA_IMAGE_TIMEOUT_MAX_SECONDS = 45.0
 CPA_IMAGE_MODEL = "grok-imagine-image-quality"
+LICENSED_ASSET_MAX_RESPONSE_BYTES = 10 * 1024 * 1024
+LICENSED_ASSET_MAX_PIXELS = 20_000_000
+LICENSED_ASSET_MIN_DIMENSION = 1
+LICENSED_ASSET_MAX_DIMENSION = 4096
+LICENSED_ASSET_MAX_REDIRECTS = 3
 
 
 def _as_bool(value: str | None, default: bool) -> bool:
@@ -40,6 +45,22 @@ def _bounded_positive_float(
     except (TypeError, ValueError):
         return default
     if not math.isfinite(parsed) or parsed <= 0:
+        return default
+    return min(parsed, maximum)
+
+
+def _bounded_int(
+    value: str | int | None,
+    *,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    try:
+        parsed = int(value) if value is not None else default
+    except (TypeError, ValueError):
+        return default
+    if parsed < minimum:
         return default
     return min(parsed, maximum)
 
@@ -89,6 +110,11 @@ class Settings:
     vision_interaction_budget_seconds: float = VISION_INTERACTION_BUDGET_MAX_SECONDS
     dialogue_ttl_seconds: float = DIALOGUE_TTL_MAX_SECONDS
     preview_2d_budget_seconds: float = PREVIEW_2D_BUDGET_MAX_SECONDS
+    licensed_asset_max_response_bytes: int = LICENSED_ASSET_MAX_RESPONSE_BYTES
+    licensed_asset_max_pixels: int = LICENSED_ASSET_MAX_PIXELS
+    licensed_asset_min_dimension: int = LICENSED_ASSET_MIN_DIMENSION
+    licensed_asset_max_dimension: int = LICENSED_ASSET_MAX_DIMENSION
+    licensed_asset_max_redirects: int = LICENSED_ASSET_MAX_REDIRECTS
     database_url: str | None = field(default=None, repr=False)
     wardrobe_catalog_manifest: Path | None = None
     dense_enabled: bool = False
@@ -153,6 +179,52 @@ class Settings:
             self.cpa_image_timeout_seconds,
             default=CPA_IMAGE_TIMEOUT_MAX_SECONDS,
             maximum=CPA_IMAGE_TIMEOUT_MAX_SECONDS,
+        )
+
+    @property
+    def effective_licensed_asset_max_response_bytes(self) -> int:
+        return _bounded_int(
+            self.licensed_asset_max_response_bytes,
+            default=LICENSED_ASSET_MAX_RESPONSE_BYTES,
+            minimum=1,
+            maximum=25 * 1024 * 1024,
+        )
+
+    @property
+    def effective_licensed_asset_max_pixels(self) -> int:
+        return _bounded_int(
+            self.licensed_asset_max_pixels,
+            default=LICENSED_ASSET_MAX_PIXELS,
+            minimum=1,
+            maximum=40_000_000,
+        )
+
+    @property
+    def effective_licensed_asset_min_dimension(self) -> int:
+        minimum = _bounded_int(
+            self.licensed_asset_min_dimension,
+            default=LICENSED_ASSET_MIN_DIMENSION,
+            minimum=1,
+            maximum=8192,
+        )
+        return min(minimum, self.effective_licensed_asset_max_dimension)
+
+    @property
+    def effective_licensed_asset_max_dimension(self) -> int:
+        return _bounded_int(
+            self.licensed_asset_max_dimension,
+            default=LICENSED_ASSET_MAX_DIMENSION,
+            minimum=1,
+            maximum=8192,
+        )
+
+    @property
+    def effective_licensed_asset_max_redirects(self) -> int:
+        return _bounded_int(
+            self.licensed_asset_max_redirects,
+            default=LICENSED_ASSET_MAX_REDIRECTS,
+            minimum=0,
+            maximum=5,
         )
 
     @classmethod
@@ -254,6 +326,36 @@ class Settings:
                 os.getenv("PROFAGENT_PREVIEW_2D_BUDGET_SECONDS"),
                 default=PREVIEW_2D_BUDGET_MAX_SECONDS,
                 maximum=PREVIEW_2D_BUDGET_MAX_SECONDS,
+            ),
+            licensed_asset_max_response_bytes=_bounded_int(
+                os.getenv("PROFAGENT_LICENSED_ASSET_MAX_RESPONSE_BYTES"),
+                default=LICENSED_ASSET_MAX_RESPONSE_BYTES,
+                minimum=1,
+                maximum=25 * 1024 * 1024,
+            ),
+            licensed_asset_max_pixels=_bounded_int(
+                os.getenv("PROFAGENT_LICENSED_ASSET_MAX_PIXELS"),
+                default=LICENSED_ASSET_MAX_PIXELS,
+                minimum=1,
+                maximum=40_000_000,
+            ),
+            licensed_asset_min_dimension=_bounded_int(
+                os.getenv("PROFAGENT_LICENSED_ASSET_MIN_DIMENSION"),
+                default=LICENSED_ASSET_MIN_DIMENSION,
+                minimum=1,
+                maximum=8192,
+            ),
+            licensed_asset_max_dimension=_bounded_int(
+                os.getenv("PROFAGENT_LICENSED_ASSET_MAX_DIMENSION"),
+                default=LICENSED_ASSET_MAX_DIMENSION,
+                minimum=1,
+                maximum=8192,
+            ),
+            licensed_asset_max_redirects=_bounded_int(
+                os.getenv("PROFAGENT_LICENSED_ASSET_MAX_REDIRECTS"),
+                default=LICENSED_ASSET_MAX_REDIRECTS,
+                minimum=0,
+                maximum=5,
             ),
             database_url=database_url.strip(),
             wardrobe_catalog_manifest=(

@@ -683,7 +683,8 @@ def test_ssrf_private_reserved_and_non_global_addresses_never_reach_transport(
     tmp_path: Path,
     address: str,
 ) -> None:
-    assert not ipaddress.ip_address(address).is_global
+    parsed_address = ipaddress.ip_address(address)
+    assert not parsed_address.is_global or parsed_address.is_multicast
     url = "https://private.example/a.png"
     resolver = ResolverSpy({"private.example": (address,)})
     transport = TransportSpy({})
