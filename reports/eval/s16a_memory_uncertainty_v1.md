@@ -17,10 +17,11 @@
 - 单轮追问上限：1；高急不回答时推荐仍继续。
 - 高急：shopping_allowed=false，Catalog actual calls=0。
 - 确定性 provider 测试外部调用：0。
+- CPA closed-envelope：scene/dialogue/memory 三路径，43 passed；invalid envelope 均安全降级，raw leakage=0，memory writes=0。
 
 ## 串行门禁
 
-- focused pytest：5 passed；Memory：51 passed；Dialogue：128 passed；full：391 passed。
+- focused pytest：5 passed；Memory：51 passed；Dialogue：128 passed；CPA closed-envelope：43 passed；full：435 passed。
 - Node：21 个 syntax，12 个 runtime/static 合同通过。
 - fixture：validation passed: users=3 garments=50 outfits=20 catalog=50 eval=30。
 - 固定 R1：Urgency=100.00%；ShoppingGate=100.00%；Catalog=0；幻觉=0；硬约束=0；Slots=100.00%。

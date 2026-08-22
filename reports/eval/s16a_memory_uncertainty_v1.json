@@ -5,11 +5,11 @@
   "overall_status": "PASS",
   "report_command": "conda run --no-capture-output -n torch128 python scripts/tester_s16a_report.py",
   "provenance": {
-    "source_revision": "1f33cf938182470f7cb1e802eb3ddaf6bf9ce288",
-    "git_tree": "09165c2de54e04b92cc82f7721ad433718102c63",
-    "reviewed_head": "1f33cf938182470f7cb1e802eb3ddaf6bf9ce288",
-    "reviewed_git_tree": "09165c2de54e04b92cc82f7721ad433718102c63",
-    "command_plan_sha256": "c87d09ba8b199ec3e76c230a846073ec2264e8183d37e9a8a94a14ee56e69fc3",
+    "source_revision": "8a694bdd4919c9c185eb0be31b4167caa2990bcf",
+    "git_tree": "d7d50cd73524addbbd68d013c0823f00fc10bd31",
+    "reviewed_head": "8a694bdd4919c9c185eb0be31b4167caa2990bcf",
+    "reviewed_git_tree": "d7d50cd73524addbbd68d013c0823f00fc10bd31",
+    "command_plan_sha256": "1d495ae0f13a7b9d9daf2bb0c9fcdcc2034401750547883c067037dfe5dd3af6",
     "conda_environment": "torch128",
     "python": {
       "version": "3.10.19",
@@ -70,6 +70,11 @@
     {
       "label": "S16A Dialogue pytest",
       "command": "conda[resolved] run --no-capture-output -n torch128 python -m pytest -q tests/test_s16_preference_uncertainty.py tests/test_dialogue_turn.py",
+      "exit_status": 0
+    },
+    {
+      "label": "CPA closed-envelope pytest",
+      "command": "conda[resolved] run --no-capture-output -n torch128 python -m pytest -q tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing",
       "exit_status": 0
     },
     {
@@ -309,7 +314,26 @@
     "mode": "offline fixtures and injected deterministic provider transports",
     "external_calls": 0,
     "text_cpa_calls": 0,
-    "image_cpa_calls": 0
+    "image_cpa_calls": 0,
+    "closed_envelope_contracts": {
+      "status": "PASS",
+      "passed": 43,
+      "paths": {
+        "scene": {
+          "invalid_envelope_degraded": true,
+          "raw_leakage": 0
+        },
+        "dialogue": {
+          "invalid_envelope_degraded": true,
+          "raw_leakage": 0
+        },
+        "memory": {
+          "invalid_envelope_degraded": true,
+          "raw_leakage": 0,
+          "writes": 0
+        }
+      }
+    }
   },
   "pytest": {
     "focused": {
@@ -324,9 +348,13 @@
       "status": "PASS",
       "passed": 128
     },
+    "cpa_closed_envelopes": {
+      "status": "PASS",
+      "passed": 43
+    },
     "full": {
       "status": "PASS",
-      "passed": 391
+      "passed": 435
     }
   },
   "node": {
