@@ -20,13 +20,13 @@
 
 ## 串行门禁
 
-- focused pytest：5 passed；Memory：51 passed；Dialogue：125 passed；full：379 passed。
+- focused pytest：5 passed；Memory：51 passed；Dialogue：125 passed；full：383 passed。
 - Node：20 个 syntax，11 个 runtime/static 合同通过。
 - fixture：validation passed: users=3 garments=50 outfits=20 catalog=50 eval=30。
 - 固定 R1：Urgency=100.00%；ShoppingGate=100.00%；Catalog=0；幻觉=0；硬约束=0；Slots=100.00%。
 
 ## 审查边界
 
-本报告只证明 tester 技术门禁。当前 reviewer=PENDING；只有 source revision、fixed package SHA-256 与 review output SHA-256 全部有效且绑定当前 source 时才保留 reviewer evidence。S16B、S16C、S16R 均未关闭。
+本报告只证明 tester 技术门禁。当前 reviewer=PENDING；调用方只提供仓库允许根内的 fixed package/review output 绝对路径与预期 source/head，runner 从安全读取的同一份 bytes 自行解析并计算 SHA-256；只有内容、路径与当前 source 持续匹配时才保留 reviewer evidence。S16B、S16C、S16R 均未关闭。
 
 报告不包含原始对话、敏感值、直接标识符、模型推理或外部 Provider 正文。
