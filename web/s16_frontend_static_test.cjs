@@ -94,4 +94,21 @@ assert.doesNotMatch(preferenceRuntime, /localStorage|sessionStorage|server_ranki
 assert.doesNotMatch(preferenceRuntime, /canonical_kind|canonical_value|provider_reasoning|provider_body/);
 assert.doesNotMatch(app, /preferenceClarification[^\n]*\.sort\(|preferenceClarification[^\n]*server_ranking_score/);
 
+assert.match(html, /<h2 id="member-name">私人 Stylist<\/h2>/);
+assert.match(html, /id="member-status"[^>]*>[^<]*<span aria-hidden="true">●<\/span> 正在确认<\/span>/);
+assert.match(html, /aria-label="私人 Stylist 能力"/);
+assert.match(html, /<strong>私人 Stylist<\/strong>/);
+assert.match(html, /aria-label="私人 Stylist 对话"/);
+assert.match(html, /<span class="message-author">私人 Stylist<\/span>/);
+assert.match(html, /<label for="scene-input">和私人 Stylist 说点什么<\/label>/);
+assert.match(html, /<span>发送给私人 Stylist<\/span>/);
+assert.match(html, /<option value="stylist">仅私人 Stylist<\/option>/);
+assert.match(app, /const PRIVATE_STYLIST_LABEL = "私人 Stylist"/);
+assert.match(app, /createVisibleMemberIdentityBinding\(team\)/);
+assert.match(app, /member\?\.member_id === "stylist" && member\?\.persona_id === "stylist"/);
+assert.match(app, /const available = memberBinding\.trusted && member\.status === "available"/);
+assert.doesNotMatch(app, /byId\("member-name"\)\.textContent = member\.name/);
+assert.doesNotMatch(app, /appendMessage\("Stylist"|"正在和 Stylist 聊天"|"发送给 Stylist"|`Stylist 会话|"Stylist 理解为"|"仅 Stylist"/);
+assert.doesNotMatch(html, /aria-label="Stylist (?:能力|对话)"|>Stylist<|和 Stylist 说点什么|发送给 Stylist|仅 Stylist/);
+
 console.log("web S16 free-text memory UI/static contract: PASS");

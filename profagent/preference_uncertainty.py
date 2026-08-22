@@ -170,9 +170,10 @@ class PreferenceUncertaintyPolicy:
         confirmed = self._has_applicable_preference(
             (left, right), confirmed_signals, session_preferences
         )
-        already_asked = gap_code in asked_gap_codes or (
-            scene.urgency == "high" and bool(asked_gap_codes)
-        )
+        # The budget belongs to the server-owned styling task/session, not to a
+        # particular gap or urgency class. Once any preference question was
+        # shown, changing the gap or wording cannot reopen the budget.
+        already_asked = bool(asked_gap_codes)
         return PreferenceUncertaintyEvidence(
             gap_code=gap_code,
             neutral_margin=margin,

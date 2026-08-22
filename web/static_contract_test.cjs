@@ -265,8 +265,8 @@ assert.match(dialogueRuntimeTestSource, /selectAssistantText\(legalMessage, stri
 
 const applySource = functionSource("applyDialogueTurn", "showDialogueFailure");
 assert.match(applySource, /^function applyDialogueTurn\(response\) \{\s*clearDialogueWaitTimer\(\);/);
-assert.match(applySource, /setDialogueMode\(response\.conversation_mode\);[\s\S]*appendMessage\("Stylist", response\.assistant_message, false, \{/);
-assert.equal((applySource.match(/appendMessage\("Stylist"/g) || []).length, 1, "a completed turn must insert one formal Stylist reply");
+assert.match(applySource, /setDialogueMode\(response\.conversation_mode\);[\s\S]*appendMessage\(PRIVATE_STYLIST_LABEL, response\.assistant_message, false, \{/);
+assert.equal((applySource.match(/appendMessage\(PRIVATE_STYLIST_LABEL/g) || []).length, 1, "a completed turn must insert one formal private Stylist reply");
 assert.match(applySource, /provider: response\.provider,[\s\S]*conversationMode: response\.conversation_mode,[\s\S]*turnIndex: response\.turn_index/);
 assert.match(applySource, /if \(response\.action === "recommend"\)/);
 assert.match(applySource, /sanitizeRecommendation\(state\.scene, response\.recommendation\)/);
@@ -286,7 +286,7 @@ assert.match(failureSource, /byId\("conversation-origin"\)\.textContent = "本�
 assert.doesNotMatch(failureSource, /resetSessionScopedState|fixtures\.|error\.message/);
 assert.doesNotMatch(failureSource, /setSource\(|showOfflineBrowseOnly\(|state\.source\s*=/);
 assert.doesNotMatch(failureSource, /已安全降级|安全降级|用户输入|违规|不合规/);
-assert.match(source, /Stylist 这次回应时间较长；会话仍保留，可以安全重试。/);
+assert.match(source, /PRIVATE_STYLIST_LABEL} 这次回应时间较长；会话仍保留，可以安全重试。/);
 
 const debugSource = functionSource("renderDebug", "showOfflineBrowseOnly");
 assert.match(debugSource, /\["回复来源", replySource\]/);
@@ -346,7 +346,7 @@ assert.match(submitSource, /applyDialogueTurn\(response\);\s*requestReleased = r
 assert.match(submitSource, /startDialogueWaitTimer\(\)/);
 assert.match(submitSource, /finally \{\s*if \(!requestReleased && dialogueGuard\.isCurrent\(requestToken\)\) \{\s*requestReleased = releaseDialogueRequestUi/);
 assert.doesNotMatch(submitSource, /finally \{[\s\S]*dialogueGuard\.finish\(requestToken\)/);
-assert.doesNotMatch(submitSource, /appendMessage\("Stylist"|appendMessage\("系统"/);
+assert.doesNotMatch(submitSource, /appendMessage\(PRIVATE_STYLIST_LABEL|appendMessage\("系统"/);
 const appendUserIndex = submitSource.indexOf('appendMessage("你", message, true);');
 const clearInputIndex = submitSource.indexOf('sceneInput.value = "";', appendUserIndex);
 const waitingTimerIndex = submitSource.indexOf('startDialogueWaitTimer();', clearInputIndex);

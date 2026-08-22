@@ -409,7 +409,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 TeamMember(
                     member_id="stylist",
                     persona_id="stylist",
-                    name="Stylist",
+                    name="私人 Stylist",
                     status="available",
                     boundary="只处理穿搭、衣橱与造型共创；不诊断、不评价人的身体或价值。",
                     capabilities=[

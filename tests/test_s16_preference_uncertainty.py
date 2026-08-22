@@ -575,6 +575,11 @@ def test_explicit_answer_reorders_same_grounded_sets_and_emits_one_decidable_car
         assert len(body["memory_candidates"]) == 1
         assert body["preference_clarification"] is None
         assert len(calls) == 2
+        answered_envelope = app.state.services.dialogue.state.session(
+            first["styling_session_id"], "u01"
+        )
+        assert answered_envelope.asked_preference_gap_codes
+        assert answered_envelope.pending_preference_question_id is None
         answer_trace = app.state.services.traces.get(body["trace_id"])
         assert answer_trace is not None
         preference_trace = answer_trace.dialogue["preference_uncertainty"]
@@ -647,6 +652,27 @@ def test_neutral_answer_and_unanswered_followup_do_not_ask_or_write_memory(
         assert body["memory_candidates"] == []
         assert body["preference_clarification"] is None
         assert _outfit_item_sets(body) == _outfit_item_sets(first)
+        neutral_envelope = app.state.services.dialogue.state.session(
+            first["styling_session_id"], "u01"
+        )
+        assert neutral_envelope.asked_preference_gap_codes
+        assert neutral_envelope.pending_preference_question_id is None
+        first_sets = [
+            frozenset(outfit["items"])
+            for outfit in first["recommendation"]["outfits"][:2]
+        ]
+        policy = app.state.services.dialogue.preference_policy
+        original_colors = policy._colors
+
+        def changed_gap_colors(item_ids):
+            item_set = frozenset(item_ids)
+            if item_set == first_sets[0]:
+                return frozenset({"black"})
+            if item_set == first_sets[1]:
+                return frozenset({"red"})
+            return original_colors(item_ids)
+
+        policy._colors = changed_gap_colors
         followup = _turn(
             client,
             message="还是按刚才的场景继续",
@@ -731,3 +757,118 @@ def test_high_urgency_question_budget_and_retry_do_not_duplicate_cpa_or_candidat
         assert trace is not None
         assert trace.catalog["attempted"] is False
         assert trace.catalog["call_count"] == 0
+
+
+def test_normal_task_budget_blocks_every_later_gap_and_new_task_can_ask() -> None:
+    policy = _color_policy()
+    recommendation = SimpleNamespace(
+        outfits=[
+            _scored_outfit("outfit_navy", "navy", 0.75),
+            _scored_outfit("outfit_beige", "beige", 0.70),
+        ]
+    )
+    # Once any question was shown, every terminal disposition of that question
+    # (skip, neutral, refuse, or no answer) retains the same task-level budget.
+    for urgency in ("low", "medium", "high"):
+        scene = SimpleNamespace(urgency=urgency)
+        for disposition in (
+            "answered",
+            "skip",
+            "neutral",
+            "refuse",
+            "no_answer",
+        ):
+            decision = policy.evaluate(
+                scene=scene,
+                recommendation=recommendation,
+                confirmed_signals=(),
+                session_preferences=(),
+                # A different prior gap proves the budget is task-wide rather
+                # than a same-gap suppression trick. The disposition is server
+                # state metadata here; none may reopen the task budget.
+                asked_gap_codes=frozenset({"color:black_vs_red"}),
+            )
+            assert decision.clarification is None, disposition
+            assert decision.reason_code == "QUESTION_BUDGET_SPENT", disposition
+
+        new_task = policy.evaluate(
+            scene=scene,
+            recommendation=recommendation,
+            confirmed_signals=(),
+            session_preferences=(),
+            asked_gap_codes=frozenset(),
+        )
+        assert new_task.clarification is not None
+        assert new_task.reason_code == "MATERIAL_PREFERENCE_GAP"
+
+
+def test_team_home_uses_private_stylist_display_name_without_changing_ids(
+    offline_settings,
+) -> None:
+    app = create_app(offline_settings)
+    with TestClient(app) as client:
+        response = client.get("/team/home", params={"user_id": "u01"})
+    assert response.status_code == 200
+    member = response.json()["members"][0]
+    assert member["name"] == "私人 Stylist"
+    assert member["member_id"] == "stylist"
+    assert member["persona_id"] == "stylist"
+
+
+def test_unanswered_normal_task_cannot_switch_gap_but_new_session_can_ask(
+    tmp_path, offline_settings
+) -> None:
+    path = tmp_path / "preference_task_budget.sqlite3"
+    app = create_app(
+        offline_settings.__class__(
+            **{
+                **offline_settings.__dict__,
+                "database_url": f"sqlite:///{path.as_posix()}",
+            }
+        )
+    )
+    _install_dialogue_provider(app)
+    policy = app.state.services.dialogue.preference_policy
+    with TestClient(app) as client:
+        first = _turn(
+            client,
+            message="下周通勤帮我搭两套",
+            request_id="pref_task_budget_01",
+        ).json()
+        assert first["preference_clarification"] is not None
+        first_sets = [
+            frozenset(outfit["items"])
+            for outfit in first["recommendation"]["outfits"][:2]
+        ]
+        original_colors = policy._colors
+
+        def changed_gap_colors(item_ids):
+            item_set = frozenset(item_ids)
+            if item_set == first_sets[0]:
+                return frozenset({"black"})
+            if item_set == first_sets[1]:
+                return frozenset({"red"})
+            return original_colors(item_ids)
+
+        policy._colors = changed_gap_colors
+        skipped = _turn(
+            client,
+            message="不想回答，直接按这个场景再给我两套",
+            request_id="pref_task_budget_02",
+            session_id=first["styling_session_id"],
+        )
+        assert skipped.status_code == 200, skipped.text
+        skipped_body = skipped.json()
+        assert skipped_body["action"] == "recommend"
+        assert skipped_body["recommendation_paused"] is False
+        assert skipped_body["recommendation"] is not None
+        assert skipped_body["preference_clarification"] is None
+
+        new_task = _turn(
+            client,
+            message="下周通勤帮我搭两套",
+            request_id="pref_task_budget_03",
+        )
+        assert new_task.status_code == 200, new_task.text
+        assert new_task.json()["styling_session_id"] != first["styling_session_id"]
+        assert new_task.json()["preference_clarification"] is not None

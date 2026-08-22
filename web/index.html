@@ -15,7 +15,7 @@
   <script defer src="./app.js?v=s16-free-text-memory-20260821"></script>
 </head>
 <body>
-  <a class="skip-link" href="#studio">跳到 Stylist Studio</a>
+  <a class="skip-link" href="#studio">跳到私人 Stylist 工作台</a>
 
   <header class="site-header">
     <a class="brand" href="#team-home" aria-label="ProfAgent 首页">
@@ -42,7 +42,7 @@
 
   <div id="source-notice" class="source-notice" role="status" aria-live="polite">
     <div>
-      <strong id="source-title">正在联系 Stylist</strong>
+      <strong id="source-title">正在联系私人 Stylist</strong>
       <span id="source-detail">连接状态确认后即可开始对话。</span>
     </div>
     <button id="retry-api" class="button button-quiet button-small" type="button" hidden>重试 API</button>
@@ -76,12 +76,12 @@
             <div class="avatar" aria-hidden="true">S</div>
             <div>
               <p class="eyebrow">首位专业成员</p>
-              <h2 id="member-name">你的私人明星穿搭师</h2>
+              <h2 id="member-name">私人 Stylist</h2>
             </div>
-            <span class="status-pill status-ready"><span aria-hidden="true">●</span> 已上线</span>
+            <span id="member-status" class="status-pill status-neutral"><span aria-hidden="true">●</span> 正在确认</span>
           </div>
           <p id="member-boundary" class="member-boundary">负责穿搭场景理解、衣橱组合和可解释建议；不是销售、治疗师或真人造型师。</p>
-          <div id="member-capabilities" class="chip-list" aria-label="Stylist 能力"></div>
+          <div id="member-capabilities" class="chip-list" aria-label="私人 Stylist 能力"></div>
           <p class="contract-note"><strong>会话归属：</strong><span class="mono">personal_team · stylist</span></p>
         </article>
 
@@ -91,7 +91,7 @@
             <span id="task-index" class="task-index" aria-hidden="true">01</span>
             <div>
               <h2 id="current-task-title">等待你的场景</h2>
-              <p id="current-task-detail">告诉 Stylist 场合、时间和希望表达的感觉。</p>
+              <p id="current-task-detail">告诉私人 Stylist 场合、时间和希望表达的感觉。</p>
             </div>
           </div>
           <div class="progress-track" aria-label="任务进度">
@@ -126,7 +126,7 @@
           <div class="conversation-heading">
             <div>
               <p class="eyebrow">当前成员</p>
-              <strong>Stylist</strong>
+              <strong>私人 Stylist</strong>
               <span id="conversation-origin" class="conversation-origin">正在确认 CPA 状态</span>
             </div>
             <div class="conversation-actions">
@@ -134,9 +134,9 @@
               <button id="new-task" class="button button-quiet button-small" type="button">开始新任务</button>
             </div>
           </div>
-          <div id="conversation" class="conversation" aria-live="polite" aria-label="Stylist 对话">
+          <div id="conversation" class="conversation" aria-live="polite" aria-label="私人 Stylist 对话">
             <article class="message message-assistant">
-              <span class="message-author">Stylist</span>
+              <span class="message-author">私人 Stylist</span>
               <p>嗨，我在。我们可以先随便聊聊；你想开始搭配时，再告诉我场合、时间或今天最在意的感觉。</p>
             </article>
           </div>
@@ -144,7 +144,7 @@
           <div id="suggested-replies" class="suggested-replies" aria-label="建议回复" hidden></div>
 
           <form id="scene-form" class="composer chat-composer">
-            <label for="scene-input">和 Stylist 说点什么</label>
+            <label for="scene-input">和私人 Stylist 说点什么</label>
             <textarea id="scene-input" name="message" rows="4" maxlength="500" placeholder="可以先聊聊天，也可以直接说：我今天下午要面试……" required></textarea>
             <div class="example-row" aria-label="对话快捷输入">
               <button class="text-chip" type="button" data-example="先聊聊天">先聊聊天</button>
@@ -154,7 +154,7 @@
             <div class="composer-footer">
               <span id="composer-hint">Enter 发送 · Shift + Enter 换行</span>
               <button id="scene-submit" class="button button-primary" type="submit">
-                <span>发送给 Stylist</span><span aria-hidden="true">→</span>
+                <span>发送给私人 Stylist</span><span aria-hidden="true">→</span>
               </button>
             </div>
           </form>
@@ -388,7 +388,7 @@
       <div class="section-heading-row">
         <div>
           <h2 id="memory-heading">由你决定什么值得记住</h2>
-          <p>所有长期记忆先提议、再确认、最后提交；Shared 与 Stylist 命名空间明确分开。</p>
+          <p>所有长期记忆先提议、再确认、最后提交；Shared 与私人 Stylist 命名空间明确分开。</p>
         </div>
         <span id="memory-api-state" class="status-pill status-neutral" role="status">等待 API</span>
       </div>
@@ -397,10 +397,10 @@
           <div class="work-card-heading"><div><p class="eyebrow">PROPOSE</p><h3>用自己的话告诉我</h3></div></div>
           <form id="memory-propose-form" class="stack-form">
             <label for="memory-namespace">可见范围</label>
-            <select id="memory-namespace" disabled><option value="stylist">仅 Stylist</option><option value="shared">团队共享</option></select>
-            <label for="memory-free-text">想让 Stylist 记住什么？</label>
+            <select id="memory-namespace" disabled><option value="stylist">仅私人 Stylist</option><option value="shared">团队共享</option></select>
+            <label for="memory-free-text">想让私人 Stylist 记住什么？</label>
             <textarea id="memory-free-text" class="memory-free-text" maxlength="1000" rows="5" placeholder="例如：我平时更喜欢藏青色，约会时不想穿高跟鞋。" disabled></textarea>
-            <p class="form-help">原话只用于本次提取，不进入浏览器持久状态；Stylist 会把可记忆内容拆开，请你逐条决定。</p>
+            <p class="form-help">原话只用于本次提取，不进入浏览器持久状态；私人 Stylist 会把可记忆内容拆开，请你逐条决定。</p>
             <button id="memory-propose-submit" class="button button-primary" type="submit" disabled>拆成待确认记忆</button>
           </form>
           <p id="memory-write-status" class="guard-note compact" role="status" hidden></p>

@@ -1,3 +1,18 @@
+const PRIVATE_STYLIST_LABEL = "私人 Stylist";
+
+function createVisibleMemberIdentityBinding(team) {
+  "use strict";
+
+  const members = Array.isArray(team?.members) ? team.members : [];
+  const matches = members.filter((member) => member?.member_id === "stylist" && member?.persona_id === "stylist");
+  const trusted = matches.length === 1;
+  return Object.freeze({
+    visibleLabel: PRIVATE_STYLIST_LABEL,
+    trusted,
+    member: trusted ? matches[0] : null
+  });
+}
+
 function createMemoryCandidateFlowController(dependencies) {
   "use strict";
 
@@ -216,7 +231,10 @@ function createMemoryCandidateFlowController(dependencies) {
 }
 
 if (typeof module === "object" && module.exports) {
-  module.exports = Object.freeze({ createMemoryCandidateFlowController });
+  module.exports = Object.freeze({
+    createMemoryCandidateFlowController,
+    createVisibleMemberIdentityBinding
+  });
 }
 
 (async function startProfAgentDemo() {
@@ -467,17 +485,17 @@ if (typeof module === "object" && module.exports) {
     badge.dataset.state = source;
     if (source === "api") {
       badge.textContent = "服务在线";
-      title.textContent = "Stylist 已准备好";
+      title.textContent = `${PRIVATE_STYLIST_LABEL} 已准备好`;
       description.textContent = detail || "每轮回复都会标明是 CPA 生成还是本地回复。";
       retry.hidden = true;
     } else if (source === "fixture") {
       badge.textContent = "仅浏览";
-      title.textContent = "Stylist 暂时无法回应";
+      title.textContent = `${PRIVATE_STYLIST_LABEL} 暂时无法回应`;
       description.textContent = detail || "衣橱演示仍可浏览；恢复服务后可继续同一任务。";
       retry.hidden = false;
     } else {
       badge.textContent = "正在连接";
-      title.textContent = "正在联系 Stylist";
+      title.textContent = `正在联系${PRIVATE_STYLIST_LABEL}`;
       description.textContent = "连接状态确认后即可开始对话。";
       retry.hidden = true;
     }
@@ -552,14 +570,23 @@ if (typeof module === "object" && module.exports) {
 
   function renderTeam() {
     const team = state.team || fixtures.teamHome;
-    const member = team.members?.[0] || {};
+    const memberBinding = createVisibleMemberIdentityBinding(team);
+    const member = memberBinding.member;
+    const available = memberBinding.trusted && member.status === "available";
     byId("team-name").textContent = team.team?.name || team.team?.team_id || "personal_team";
     byId("team-description").textContent = team.team?.description || "围绕你的具体任务协作；R1 当前只上线一位专业成员。";
-    byId("team-member-count").textContent = `${(team.members || []).filter((item) => item.status === "available").length} 位已上线`;
-    byId("member-name").textContent = member.name || "你的私人明星穿搭师";
-    byId("member-boundary").textContent = member.boundary || "只处理穿搭、衣橱与造型共创。";
+    byId("team-member-count").textContent = available ? "1 位已上线" : "0 位已验证上线";
+    byId("member-name").textContent = memberBinding.visibleLabel;
+    byId("member-boundary").textContent = memberBinding.trusted && typeof member.boundary === "string"
+      ? member.boundary
+      : "成员身份尚未通过绑定验证；当前不会采用任意服务端名称或能力描述。";
+    const memberStatus = byId("member-status");
+    memberStatus.className = `status-pill ${available ? "status-ready" : "status-neutral"}`;
+    memberStatus.replaceChildren(make("span", "", "●"), document.createTextNode(available ? " 已上线" : memberBinding.trusted ? " 暂不可用" : " 身份待确认"));
+    memberStatus.firstElementChild.setAttribute("aria-hidden", "true");
     const capabilityList = byId("member-capabilities");
-    capabilityList.replaceChildren(...(member.capabilities || []).map((item) => make("span", "chip", item.replaceAll("_", " "))));
+    const capabilities = memberBinding.trusted && Array.isArray(member.capabilities) ? member.capabilities : [];
+    capabilityList.replaceChildren(...capabilities.map((item) => make("span", "chip", String(item).replaceAll("_", " "))));
     const boundary = byId("unavailable-capabilities");
     const unavailable = team.unavailable_capabilities || [];
     boundary.replaceChildren(...unavailable.map((item) => {
@@ -760,7 +787,7 @@ if (typeof module === "object" && module.exports) {
   function renderPreferenceClarification(message, clarification) {
     if (!clarification) return;
     const card = make("section", "preference-clarification-card");
-    card.setAttribute("aria-label", "Stylist 偏好追问选项");
+    card.setAttribute("aria-label", `${PRIVATE_STYLIST_LABEL} 偏好追问选项`);
     card.append(make("strong", "preference-clarification-label", "选择更接近你的偏好"));
     const options = make("div", "preference-option-list");
     const status = make("span", "preference-clarification-status",
@@ -928,7 +955,7 @@ if (typeof module === "object" && module.exports) {
 
   function setDialogueMode(mode) {
     const labels = {
-      stylist_chat: "正在和 Stylist 聊天",
+      stylist_chat: `正在和${PRIVATE_STYLIST_LABEL}聊天`,
       styling_active: "穿搭对话进行中",
       support_pause: "已暂停穿搭建议",
       safety_response: "安全回应 · 已暂停穿搭建议",
@@ -978,7 +1005,7 @@ if (typeof module === "object" && module.exports) {
     byId("session-state-label").textContent = guarded ? "高急切度 · 仅衣橱" : "场景已解析";
     byId("current-task-title").textContent = `${occasionLabels[scene.occasion] || "穿搭"} · ${urgencyLabels[scene.urgency] || scene.urgency}`;
     byId("current-task-detail").textContent = (scene.goals || []).length ? `目标：${scene.goals.join(" · ")}` : "目标待补充";
-    byId("session-ownership").textContent = `Stylist 会话 · 已连续 ${state.turnIndex || 1} 轮`;
+    byId("session-ownership").textContent = `${PRIVATE_STYLIST_LABEL} 会话 · 已连续 ${state.turnIndex || 1} 轮`;
     byId("task-progress").style.width = "52%";
   }
 
@@ -1050,7 +1077,7 @@ if (typeof module === "object" && module.exports) {
     };
     state.recommendation = sanitizeRecommendation(state.scene, updatedRecommendation);
     state.localReplacements.push({ outfit_id: outfitId, from_id: fromId, to_id: toId, source: "server_alternative_client_validated" });
-    appendMessage("Stylist", `已在方向预览中选择：${from.name}改为${to.name}。选定方向时才会由服务端写入新的 Look 版本；其余单品保持不变。`);
+    appendMessage(PRIVATE_STYLIST_LABEL, `已在方向预览中选择：${from.name}改为${to.name}。选定方向时才会由服务端写入新的 Look 版本；其余单品保持不变。`);
     renderRecommendations();
   }
 
@@ -1562,7 +1589,7 @@ if (typeof module === "object" && module.exports) {
       renderActiveLook();
       renderCocreation();
       await fetchTrace(look.trace_id || response.trace_id);
-      appendMessage("Stylist", replacementWarning
+      appendMessage(PRIVATE_STYLIST_LABEL, replacementWarning
         ? `原方向 ${versionLabel(initialLook)} 已建立，但衣橱替换未绑定：${replacementWarning}。界面没有假装替换成功，可在共创区再次修改。`
         : look === initialLook
           ? `已建立 ${versionLabel(look)}，接下来只围绕这一套穿搭共创。`
@@ -2072,7 +2099,7 @@ if (typeof module === "object" && module.exports) {
       state.adjustments = [];
       await refreshLooks();
       renderCocreation();
-      appendMessage("Stylist", `已从 ${versionLabel(target)} 创建新的 ${versionLabel(look)}；历史版本保持不变。`);
+      appendMessage(PRIVATE_STYLIST_LABEL, `已从 ${versionLabel(target)} 创建新的 ${versionLabel(look)}；历史版本保持不变。`);
       if (availableLookAssetIds().length) await requestScorecard();
       await fetchTrace(look.trace_id || response.trace_id);
     } catch (error) {
@@ -2572,7 +2599,7 @@ if (typeof module === "object" && module.exports) {
       renderCocreation();
       await fetchTrace(look.trace_id || revisionResponse.trace_id);
       await requestScorecard();
-      appendMessage("Stylist", `静态图已绑定到 ${versionLabel(look)}；旧版本保持不变，评分只针对新版本。`);
+      appendMessage(PRIVATE_STYLIST_LABEL, `静态图已绑定到 ${versionLabel(look)}；旧版本保持不变，评分只针对新版本。`);
     } catch (error) {
       if (uploadedAsset && !assetBound) {
         try {
@@ -2835,7 +2862,7 @@ if (typeof module === "object" && module.exports) {
       renderCocreation();
       if (responseLook && !returnedScorecard) await requestScorecard();
       await fetchTrace(response.trace_id || responseLook?.trace_id || returnedScorecard?.trace_id);
-      appendMessage("Stylist", decision === "reject" ? "已记录拒绝；本会话不会换一种说法重复这项建议。" : `已记录${decision === "accept" ? "接受" : "部分接受"}，并刷新当前版本。`);
+      appendMessage(PRIVATE_STYLIST_LABEL, decision === "reject" ? "已记录拒绝；本会话不会换一种说法重复这项建议。" : `已记录${decision === "accept" ? "接受" : "部分接受"}，并刷新当前版本。`);
     } catch (error) {
       showToast(`调整记录未完成：${error.message}`);
       if (decision === "reject") {
@@ -2917,7 +2944,7 @@ if (typeof module === "object" && module.exports) {
       renderCocreation();
       if (!state.scorecard) await requestScorecard();
       await fetchTrace(response.trace_id || look.trace_id);
-      appendMessage("Stylist", `已按你选择的衣橱单品建立 ${versionLabel(look)}，未要求变化的部分保持不变。`);
+      appendMessage(PRIVATE_STYLIST_LABEL, `已按你选择的衣橱单品建立 ${versionLabel(look)}，未要求变化的部分保持不变。`);
     } catch (error) {
       showToast(`用户修改未完成：${error.message}`);
     } finally {
@@ -2978,7 +3005,7 @@ if (typeof module === "object" && module.exports) {
       renderActiveLook();
       renderCocreation();
       await fetchTrace(response.trace_id || finalLook.trace_id || record.trace_id);
-      appendMessage("Stylist", "已按你的满意决定保存 Final Look。我们停在这里，不再继续挑问题。" );
+      appendMessage(PRIVATE_STYLIST_LABEL, "已按你的满意决定保存 Final Look。我们停在这里，不再继续挑问题。" );
     } catch (error) {
       showToast(`定稿未完成：${error.message}`);
       button.disabled = false;
@@ -3059,7 +3086,7 @@ if (typeof module === "object" && module.exports) {
       return meta;
     }
     meta.append(
-      make("span", "", item.namespace === "shared" ? "团队共享" : "仅 Stylist"),
+      make("span", "", item.namespace === "shared" ? "团队共享" : `仅${PRIVATE_STYLIST_LABEL}`),
       make("span", "", item.memory_class ? memoryClassLabels[item.memory_class] : "待确认后分类"),
       make("span", "", item.type || "受控类型"),
       make("span", "", item.status === "committed" ? "已提交" : "待确认")
@@ -3121,7 +3148,7 @@ if (typeof module === "object" && module.exports) {
     const candidateCards = candidates.map((candidate) => {
       const card = make("article", "memory-item memory-candidate-card");
       card.dataset.state = "proposed";
-      card.append(make("h4", "", "Stylist 理解为"), make("p", "memory-candidate-copy", candidate.confirmation_copy));
+      card.append(make("h4", "", `${PRIVATE_STYLIST_LABEL} 理解为`), make("p", "memory-candidate-copy", candidate.confirmation_copy));
       const meta = make("div", "memory-meta");
       const confidence = { high: "把握较高", medium: "需要你确认", low: "把握较低" }[candidate.confidence_band];
       meta.append(make("span", "", confidence));
@@ -3342,17 +3369,17 @@ if (typeof module === "object" && module.exports) {
     byId("task-progress").style.width = "16%";
     renderRecommendations();
     renderDebug();
-    appendMessage("系统", "Stylist 暂时无法回应；衣橱演示仍可浏览，恢复服务后可安全重试。");
+    appendMessage("系统", `${PRIVATE_STYLIST_LABEL} 暂时无法回应；衣橱演示仍可浏览，恢复服务后可安全重试。`);
   }
 
   function recommendationFailureCopy(error) {
     const timedOut = error?.code === "REQUEST_TIMEOUT";
     const aborted = error?.code === "REQUEST_ABORTED";
     const networkUnavailable = error?.code === "NETWORK_UNAVAILABLE";
-    if (timedOut) return "Stylist 这次回应时间较长；会话仍保留，可以安全重试。";
+    if (timedOut) return `${PRIVATE_STYLIST_LABEL} 这次回应时间较长；会话仍保留，可以安全重试。`;
     if (aborted) return "本次请求已中止；未采用任何未验证结果，可安全重试。";
     if (networkUnavailable) return "本次请求暂时未连通；保留上次成功连接状态，未生成方向，可安全重试。";
-    return "Stylist 这次没有完成回应；没有显示未验证内容，可以安全重试。";
+    return `${PRIVATE_STYLIST_LABEL} 这次没有完成回应；没有显示未验证内容，可以安全重试。`;
   }
 
   function clearDialogueWaitTimer() {
@@ -3382,7 +3409,7 @@ if (typeof module === "object" && module.exports) {
     const closed = state.conversationMode === "task_closed";
     setDialogueInFlightControls(false);
     sceneInput.required = !closed && !state.pendingDialogueRetry;
-    if (submitLabel) submitLabel.textContent = state.pendingDialogueRetry ? "安全重试" : "发送给 Stylist";
+    if (submitLabel) submitLabel.textContent = state.pendingDialogueRetry ? "安全重试" : `发送给${PRIVATE_STYLIST_LABEL}`;
     return true;
   }
 
@@ -3548,11 +3575,11 @@ if (typeof module === "object" && module.exports) {
     if (response.memory_candidates.length) {
       state.memoryCandidates = [...state.memoryCandidates, ...response.memory_candidates];
       state.memoryCandidateResultStatus = "ready";
-      state.memoryCandidateWriteStatus = "Stylist 提出了独立记忆候选；未确认前不会写入。";
+      state.memoryCandidateWriteStatus = `${PRIVATE_STYLIST_LABEL} 提出了独立记忆候选；未确认前不会写入。`;
       renderMemory();
     }
     setDialogueMode(response.conversation_mode);
-    appendMessage("Stylist", response.assistant_message, false, {
+    appendMessage(PRIVATE_STYLIST_LABEL, response.assistant_message, false, {
       provider: response.provider,
       conversationMode: response.conversation_mode,
       turnIndex: response.turn_index,
@@ -3583,9 +3610,9 @@ if (typeof module === "object" && module.exports) {
     renderSuggestedReplies();
     byId("conversation-origin").textContent = `本轮：${dialogueReplyLabel(response.provider, response.conversation_mode)}`;
     if (response.conversation_mode === "stylist_chat") {
-      byId("current-task-title").textContent = "正在和 Stylist 聊天";
+      byId("current-task-title").textContent = `正在和${PRIVATE_STYLIST_LABEL}聊天`;
       byId("current-task-detail").textContent = `同一会话已连续 ${response.turn_index} 轮；准备搭配时直接告诉我。`;
-      byId("session-ownership").textContent = `Stylist 会话 · 历史版本 ${response.history_version}`;
+      byId("session-ownership").textContent = `${PRIVATE_STYLIST_LABEL} 会话 · 历史版本 ${response.history_version}`;
       byId("task-progress").style.width = "18%";
     } else if (response.conversation_mode === "support_pause") {
       byId("current-task-detail").textContent = "已暂停穿搭建议；同一会话与已确认场景继续保留。";
@@ -3712,7 +3739,7 @@ if (typeof module === "object" && module.exports) {
     state.scene = null;
     state.trace = null;
     byId("conversation").replaceChildren();
-    appendMessage("Stylist", "新任务已开始。告诉我场合、时间和想呈现的感觉；是否开始搭配由你决定。");
+    appendMessage(PRIVATE_STYLIST_LABEL, "新任务已开始。告诉我场合、时间和想呈现的感觉；是否开始搭配由你决定。");
     byId("scene-summary").replaceChildren();
     byId("scene-panel").hidden = true;
     byId("scene-panel").closest(".studio-layout").classList.add("is-chat-only");
@@ -3727,7 +3754,7 @@ if (typeof module === "object" && module.exports) {
     byId("scene-input").required = true;
     byId("scene-input").value = "";
     byId("scene-submit").disabled = false;
-    byId("scene-submit").querySelector("span").textContent = "发送给 Stylist";
+    byId("scene-submit").querySelector("span").textContent = `发送给${PRIVATE_STYLIST_LABEL}`;
     renderSuggestedReplies();
     renderRecommendations();
     renderPreview2d();
