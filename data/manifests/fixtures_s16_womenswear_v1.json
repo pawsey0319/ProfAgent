@@ -123,7 +123,7 @@
     "garments_extension": {
       "count": 70,
       "path": "data/fixtures/garments_s16_womenswear.jsonl",
-      "sha256": "8d10eda2f2f302f55cafb837d88e0377c708f0d93f5b68550091412294c4267b"
+      "sha256": "da3409db6949cb456ebb2deb0f0335cfa2506befb407f1ca116df0bcda497379"
     },
     "schema": {
       "path": "data/schemas/garment_s16.schema.json",

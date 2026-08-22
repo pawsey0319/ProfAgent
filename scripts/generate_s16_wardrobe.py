@@ -440,9 +440,7 @@ def _slot_fit_copy(slot: str, fit: str) -> str:
         return f"服装版型：{FIT_LABELS[fit]}"
     if slot == "shoes":
         return f"鞋型：{'贴合鞋型' if fit == 'slim' else '常规鞋型'}"
-    if slot == "bag":
-        return "携带规格：标准"
-    return "佩戴规格：标准"
+    raise ValueError(f"slot does not support fit copy: {slot}")
 
 
 def _profile_search_text(
@@ -460,12 +458,12 @@ def _profile_search_text(
     )
     if slot == "bag":
         return (
-            f"{identity}携带规格：标准；用途场景：{occasion_text}；"
+            f"{identity}用途场景：{occasion_text}；"
             f"携带说明：{profile.comfort}"
         )
     if slot == "accessory":
         return (
-            f"{identity}佩戴规格：标准；用途场景：{occasion_text}；"
+            f"{identity}用途场景：{occasion_text}；"
             f"佩戴说明：{profile.comfort}"
         )
     return (

@@ -614,9 +614,9 @@ def test_every_extension_row_has_coherent_declarative_semantics(
             shoe_fit = "贴合鞋型" if row["fit"] == "slim" else "常规鞋型"
             assert f"鞋型：{shoe_fit}" in search_text
         elif row["slot"] == "bag":
-            assert "携带规格：标准" in search_text
+            assert "规格" not in search_text and "标准" not in search_text
         else:
-            assert "佩戴规格：标准" in search_text
+            assert "规格" not in search_text and "标准" not in search_text
         if row["slot"] in {"bag", "accessory"}:
             assert f"用途场景：{'、'.join(OCCASION_LABELS[item] for item in row['occasions'])}" in search_text
         else:
@@ -735,14 +735,12 @@ def test_all_extension_names_and_copy_are_slot_appropriate_and_evidence_honest(
                 assert claim == SHOE_UNVERIFIED_SUPPORT_CLAIM
         elif slot == "bag":
             assert row["fit"] == "regular"
-            assert "携带规格：标准" in search_text
             assert claim in {BAG_CARRY_CLAIM, BAG_HAND_CARRY_CLAIM}
-            assert not any(token in search_text for token in ("版型", "保暖度", "贴合身体", "修身", "宽松"))
+            assert not any(token in search_text for token in ("规格", "标准", "版型", "保暖度", "贴合身体", "修身", "宽松"))
         else:
             assert row["fit"] == "regular"
-            assert "佩戴规格：标准" in search_text
             assert claim == ACCESSORY_WEAR_CLAIM
-            assert not any(token in search_text for token in ("版型", "保暖度", "贴合身体", "修身", "宽松"))
+            assert not any(token in search_text for token in ("规格", "标准", "版型", "保暖度", "贴合身体", "修身", "宽松"))
 
     assert by_id["g084"]["name"] == "经典芭蕾平底鞋"
     assert by_id["g084"]["search_text"].endswith(
@@ -862,6 +860,8 @@ def test_every_bag_and_accessory_uses_only_purpose_relevant_copy(
     ]
     assert len(rows) == 9
     forbidden = (
+        "规格",
+        "标准",
         "版型",
         "保暖度",
         "贴合身体",
