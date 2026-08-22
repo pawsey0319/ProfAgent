@@ -5,12 +5,14 @@ import hashlib
 import ipaddress
 import re
 import socket
+import ssl
 import warnings
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path, PurePosixPath
-from typing import Awaitable, Callable, Literal
+from typing import Any, Awaitable, Callable, Literal
 
+import httpcore
 import httpx
 from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import (
@@ -31,6 +33,12 @@ from .config import (
     LICENSED_ASSET_MAX_REDIRECTS,
     LICENSED_ASSET_MAX_RESPONSE_BYTES,
     LICENSED_ASSET_MIN_DIMENSION,
+    LICENSED_ASSET_CONNECT_TIMEOUT_SECONDS,
+    LICENSED_ASSET_DNS_TIMEOUT_SECONDS,
+    LICENSED_ASSET_POOL_TIMEOUT_SECONDS,
+    LICENSED_ASSET_READ_TIMEOUT_SECONDS,
+    LICENSED_ASSET_TOTAL_TIMEOUT_SECONDS,
+    LICENSED_ASSET_WRITE_TIMEOUT_SECONDS,
     Settings,
 )
 
@@ -67,6 +75,8 @@ ImageFetchReasonCode = Literal[
     "dimension_out_of_range",
     "pixel_limit_exceeded",
     "hash_mismatch",
+    "unsupported_content_encoding",
+    "timeout",
 ]
 
 
@@ -89,6 +99,8 @@ _FETCH_REASONS = frozenset(
         "dimension_out_of_range",
         "pixel_limit_exceeded",
         "hash_mismatch",
+        "unsupported_content_encoding",
+        "timeout",
     }
 )
 _MIME_TO_FORMAT = {
@@ -97,6 +109,37 @@ _MIME_TO_FORMAT = {
     "image/webp": "WEBP",
 }
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_CANONICAL_LICENSES = {
+    "CC0": (
+        "CC0 1.0 Universal",
+        "https://creativecommons.org/publicdomain/zero/1.0/",
+        "CC0 1.0",
+    ),
+    "PDM": (
+        "Public Domain Mark 1.0",
+        "https://creativecommons.org/publicdomain/mark/1.0/",
+        "Public Domain Mark 1.0",
+    ),
+    "CC-BY-2.0": (
+        "Creative Commons Attribution 2.0",
+        "https://creativecommons.org/licenses/by/2.0/",
+        "CC BY 2.0",
+    ),
+    "CC-BY-3.0": (
+        "Creative Commons Attribution 3.0",
+        "https://creativecommons.org/licenses/by/3.0/",
+        "CC BY 3.0",
+    ),
+    "CC-BY-4.0": (
+        "Creative Commons Attribution 4.0",
+        "https://creativecommons.org/licenses/by/4.0/",
+        "CC BY 4.0",
+    ),
+}
+_CONTROLLED_NONPUBLIC = {
+    "user-owned": "用户自有图片",
+    "ai-generated": "AI 生成参考",
+}
 
 
 def _nonblank(value: str | None) -> str | None:
@@ -110,9 +153,43 @@ def _nonblank(value: str | None) -> str | None:
 def _require_safe_https_url(value: AnyHttpUrl | None) -> AnyHttpUrl | None:
     if value is None:
         return None
-    if value.scheme != "https" or value.username is not None or value.password is not None:
+    if (
+        value.scheme != "https"
+        or value.username is not None
+        or value.password is not None
+        or value.fragment is not None
+        or value.port == 0
+    ):
         raise ValueError("unsafe_metadata_url")
     return value
+
+
+def _canonical_attribution(code: str, creator: str | None) -> str:
+    label = _CANONICAL_LICENSES[code][2]
+    return f"{creator} / {label}" if creator is not None else label
+
+
+def _bounded_identity(value: str | None) -> str | None:
+    checked = _nonblank(value)
+    if checked is not None and (
+        len(checked) > 200
+        or checked != checked.strip()
+        or any(ord(char) < 32 or ord(char) == 127 for char in checked)
+    ):
+        raise ValueError("invalid_controlled_identity")
+    return checked
+
+
+def _bounded_attribution(value: str) -> str:
+    checked = _nonblank(value)
+    assert checked is not None
+    if (
+        len(checked) > 300
+        or checked != checked.strip()
+        or any(ord(char) < 32 or ord(char) == 127 for char in checked)
+    ):
+        raise ValueError("invalid_controlled_attribution")
+    return checked
 
 
 class LicensedSourceReceipt(BaseModel):
@@ -143,20 +220,27 @@ class LicensedSourceReceipt(BaseModel):
     @field_validator("creator")
     @classmethod
     def _validate_creator(cls, value: str | None) -> str | None:
-        return _nonblank(value)
+        return _bounded_identity(value)
 
     @field_validator("attribution")
     @classmethod
     def _validate_attribution(cls, value: str) -> str:
-        checked = _nonblank(value)
-        assert checked is not None
-        return checked
+        return _bounded_attribution(value)
 
     @model_validator(mode="after")
     def _validate_authority(self) -> "LicensedSourceReceipt":
         if self.provider in {"openverse", "partner_api"}:
             if self.license_code not in _PUBLIC_LICENSES or self.source_url is None:
                 raise ValueError("incoherent_source_authority")
+            _, canonical_url, _ = _CANONICAL_LICENSES[self.license_code]
+            if self.license_url is None or str(self.license_url) != canonical_url:
+                raise ValueError("noncanonical_license_url")
+            if self.license_code in _CC_BY_LICENSES and self.creator is None:
+                raise ValueError("incomplete_attribution")
+            if self.attribution != _canonical_attribution(
+                self.license_code, self.creator
+            ):
+                raise ValueError("noncanonical_attribution")
         elif self.provider == "user_upload":
             if self.license_code != "user-owned":
                 raise ValueError("incoherent_source_authority")
@@ -165,9 +249,13 @@ class LicensedSourceReceipt(BaseModel):
                 for value in (self.source_url, self.creator, self.license_url)
             ):
                 raise ValueError("incoherent_source_authority")
+            if self.attribution != _CONTROLLED_NONPUBLIC["user-owned"]:
+                raise ValueError("noncanonical_attribution")
         elif self.provider == "cpa_generated":
             if self.license_code != "ai-generated":
                 raise ValueError("incoherent_source_authority")
+            if self.attribution != _CONTROLLED_NONPUBLIC["ai-generated"]:
+                raise ValueError("noncanonical_attribution")
             if any(
                 value is not None
                 for value in (self.source_url, self.creator, self.license_url)
@@ -198,23 +286,34 @@ class PublicLicenseReceipt(BaseModel):
     @field_validator("name", "attribution")
     @classmethod
     def _validate_required_text(cls, value: str) -> str:
-        checked = _nonblank(value)
-        assert checked is not None
-        return checked
+        return _bounded_attribution(value)
 
     @field_validator("author")
     @classmethod
     def _validate_author(cls, value: str | None) -> str | None:
-        return _nonblank(value)
+        return _bounded_identity(value)
 
     @model_validator(mode="after")
     def _validate_attribution(self) -> "PublicLicenseReceipt":
-        if self.code in _CC_BY_LICENSES and (self.url is None or self.author is None):
-            raise ValueError("incomplete_attribution")
-        if self.code in {"user-owned", "ai-generated"} and (
-            self.url is not None or self.author is not None
-        ):
-            raise ValueError("incoherent_license_authority")
+        if self.code in _PUBLIC_LICENSES:
+            canonical_name, canonical_url, _ = _CANONICAL_LICENSES[self.code]
+            if self.name != canonical_name:
+                raise ValueError("noncanonical_license_name")
+            if self.url is None or str(self.url) != canonical_url:
+                raise ValueError("noncanonical_license_url")
+            if self.code in _CC_BY_LICENSES and self.author is None:
+                raise ValueError("incomplete_attribution")
+            if self.attribution != _canonical_attribution(self.code, self.author):
+                raise ValueError("noncanonical_attribution")
+        else:
+            controlled = _CONTROLLED_NONPUBLIC[self.code]
+            if (
+                self.url is not None
+                or self.author is not None
+                or self.name != controlled
+                or self.attribution != controlled
+            ):
+                raise ValueError("incoherent_license_authority")
         return self
 
 
@@ -285,6 +384,24 @@ class SafeImageConfig(BaseModel):
     min_dimension: StrictInt = Field(default=LICENSED_ASSET_MIN_DIMENSION, gt=0, le=8192)
     max_dimension: StrictInt = Field(default=LICENSED_ASSET_MAX_DIMENSION, gt=0, le=8192)
     max_redirects: StrictInt = Field(default=LICENSED_ASSET_MAX_REDIRECTS, ge=0, le=5)
+    dns_timeout_seconds: float = Field(
+        default=LICENSED_ASSET_DNS_TIMEOUT_SECONDS, gt=0, le=30
+    )
+    connect_timeout_seconds: float = Field(
+        default=LICENSED_ASSET_CONNECT_TIMEOUT_SECONDS, gt=0, le=30
+    )
+    read_timeout_seconds: float = Field(
+        default=LICENSED_ASSET_READ_TIMEOUT_SECONDS, gt=0, le=30
+    )
+    write_timeout_seconds: float = Field(
+        default=LICENSED_ASSET_WRITE_TIMEOUT_SECONDS, gt=0, le=30
+    )
+    pool_timeout_seconds: float = Field(
+        default=LICENSED_ASSET_POOL_TIMEOUT_SECONDS, gt=0, le=30
+    )
+    total_timeout_seconds: float = Field(
+        default=LICENSED_ASSET_TOTAL_TIMEOUT_SECONDS, gt=0, le=30
+    )
 
     @model_validator(mode="after")
     def _validate_dimensions(self) -> "SafeImageConfig":
@@ -300,6 +417,16 @@ class SafeImageConfig(BaseModel):
             min_dimension=settings.effective_licensed_asset_min_dimension,
             max_dimension=settings.effective_licensed_asset_max_dimension,
             max_redirects=settings.effective_licensed_asset_max_redirects,
+            dns_timeout_seconds=settings.effective_licensed_asset_dns_timeout_seconds,
+            connect_timeout_seconds=(
+                settings.effective_licensed_asset_connect_timeout_seconds
+            ),
+            read_timeout_seconds=settings.effective_licensed_asset_read_timeout_seconds,
+            write_timeout_seconds=(
+                settings.effective_licensed_asset_write_timeout_seconds
+            ),
+            pool_timeout_seconds=settings.effective_licensed_asset_pool_timeout_seconds,
+            total_timeout_seconds=settings.effective_licensed_asset_total_timeout_seconds,
         )
 
 
@@ -340,38 +467,78 @@ class ImageFetchError(Exception):
 
 
 Resolver = Callable[[str, int], Awaitable[tuple[str, ...]]]
+NetworkBackendFactory = Callable[[], httpcore.AsyncNetworkBackend]
 
 
 async def _default_resolver(hostname: str, port: int) -> tuple[str, ...]:
     loop = asyncio.get_running_loop()
-    try:
-        records = await loop.getaddrinfo(
-            hostname,
-            port,
-            family=socket.AF_UNSPEC,
-            type=socket.SOCK_STREAM,
-            proto=socket.IPPROTO_TCP,
-        )
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        raise ImageFetchError("dns_failure") from exc
+    records = await loop.getaddrinfo(
+        hostname,
+        port,
+        family=socket.AF_UNSPEC,
+        type=socket.SOCK_STREAM,
+        proto=socket.IPPROTO_TCP,
+    )
     return tuple(dict.fromkeys(str(record[4][0]) for record in records))
+
+
+class _PinnedNetworkBackend(httpcore.AsyncNetworkBackend):
+    """Force TCP to a validated address while retaining logical TLS authority."""
+
+    def __init__(
+        self,
+        *,
+        underlying: httpcore.AsyncNetworkBackend,
+        logical_hostname: str,
+        validated_address: str,
+    ) -> None:
+        self._underlying = underlying
+        self._logical_hostname = logical_hostname
+        self._validated_address = validated_address
+
+    async def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: Any = None,
+    ) -> httpcore.AsyncNetworkStream:
+        if host != self._logical_hostname:
+            raise RuntimeError("unexpected_logical_authority")
+        return await self._underlying.connect_tcp(
+            self._validated_address,
+            port,
+            timeout=timeout,
+            local_address=local_address,
+            socket_options=socket_options,
+        )
+
+    async def connect_unix_socket(self, *args: Any, **kwargs: Any) -> Any:
+        raise httpcore.UnsupportedProtocol("unix_socket_forbidden")
+
+    async def sleep(self, seconds: float) -> None:
+        await self._underlying.sleep(seconds)
 
 
 class SafeImageFetcher:
     def __init__(
         self,
         *,
-        client: httpx.AsyncClient,
         resolver: Resolver | None = None,
         config: SafeImageConfig | None = None,
         ready_dir: Path,
         quarantine_dir: Path,
+        _network_backend_factory: NetworkBackendFactory | None = None,
     ) -> None:
-        self._client = client
         self._resolver = resolver or _default_resolver
         self._config = config or SafeImageConfig()
+        self._network_backend_factory = (
+            _network_backend_factory or httpcore.AnyIOBackend
+        )
+        self._ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+        self._ssl_context.check_hostname = True
+        self._ssl_context.verify_mode = ssl.CERT_REQUIRED
         # Task 2 intentionally writes neither accepted nor rejected bytes. The
         # directories are retained in the constructor contract for the later,
         # atomic ingestion task and must not be created on fetch failure.
@@ -381,93 +548,241 @@ class SafeImageFetcher:
     async def fetch(
         self, url: str, expected_sha256: str | None = None
     ) -> FetchedImage:
+        reason: ImageFetchReasonCode | None = None
+        try:
+            return await asyncio.wait_for(
+                self._fetch_inner(url, expected_sha256),
+                timeout=self._config.total_timeout_seconds,
+            )
+        except asyncio.CancelledError:
+            raise
+        except ImageFetchError as exc:
+            reason = exc.reason_code
+        except (asyncio.TimeoutError, httpcore.TimeoutException):
+            reason = "timeout"
+        except Exception:
+            reason = "network_error"
+        assert reason is not None
+        # This raise deliberately occurs outside every except block so an
+        # upstream exception cannot survive as cause or context.
+        raise ImageFetchError(reason)
+
+    async def _fetch_inner(
+        self, url: str, expected_sha256: str | None
+    ) -> FetchedImage:
         current = self._parse_url(url, redirect=False)
         redirects = 0
 
         while True:
-            hostname, port, authority = self._logical_authority(current)
+            hostname, port = self._logical_authority(current)
             address = await self._resolve_global(hostname, port)
-            pinned_url = self._pin_url(current, address)
-            request = self._client.build_request(
-                "GET",
-                pinned_url,
-                headers={"host": authority, "accept": "image/png,image/jpeg,image/webp"},
+            outcome, value = await self._request_hop(
+                current=current,
+                logical_hostname=hostname,
+                validated_address=address,
+                expected_sha256=expected_sha256,
             )
-            request.extensions["sni_hostname"] = hostname.encode("ascii")
+            if outcome == "image":
+                assert isinstance(value, FetchedImage)
+                return value
+            assert isinstance(value, str)
+            if redirects >= self._config.max_redirects:
+                raise ImageFetchError("too_many_redirects")
+            current = self._parse_redirect(current, value)
+            redirects += 1
 
-            response: httpx.Response | None = None
-            try:
-                response = await self._client.send(
-                    request, stream=True, follow_redirects=False
-                )
-                if response.status_code in _REDIRECT_STATUSES:
-                    if redirects >= self._config.max_redirects:
-                        raise ImageFetchError("too_many_redirects")
-                    location = response.headers.get("location")
-                    if not location:
-                        raise ImageFetchError("invalid_redirect")
-                    current = self._parse_redirect(current, location)
-                    redirects += 1
-                    continue
-                if response.status_code < 200 or response.status_code >= 300:
-                    raise ImageFetchError("http_status")
-                return await self._validate_image_response(response, expected_sha256)
-            except asyncio.CancelledError:
-                raise
-            except ImageFetchError:
-                raise
-            except Exception as exc:
-                raise ImageFetchError("network_error") from exc
-            finally:
-                if response is not None:
+    async def _request_hop(
+        self,
+        *,
+        current: httpx.URL,
+        logical_hostname: str,
+        validated_address: str,
+        expected_sha256: str | None,
+    ) -> tuple[str, str | FetchedImage]:
+        pool = self._new_pool(logical_hostname, validated_address)
+        response: httpcore.Response | None = None
+        request_url = httpcore.URL(
+            scheme=b"https",
+            host=current.raw_host,
+            port=current.port,
+            target=current.raw_path,
+        )
+        raw_host = current.raw_host
+        host_header = b"[" + raw_host + b"]" if b":" in raw_host else raw_host
+        if current.port not in {None, 443}:
+            host_header += b":" + str(current.port).encode("ascii")
+        request = httpcore.Request(
+            method=b"GET",
+            url=request_url,
+            headers=[
+                (b"host", host_header),
+                (b"accept", b"image/png,image/jpeg,image/webp"),
+                (b"accept-encoding", b"identity"),
+                (b"connection", b"close"),
+            ],
+            extensions={
+                "timeout": {
+                    "connect": self._config.connect_timeout_seconds,
+                    "read": self._config.read_timeout_seconds,
+                    "write": self._config.write_timeout_seconds,
+                    "pool": self._config.pool_timeout_seconds,
+                }
+            },
+        )
+        try:
+            response = await pool.handle_async_request(request)
+            if response.status in _REDIRECT_STATUSES:
+                locations = self._header_values(response.headers, b"location")
+                if len(locations) != 1:
+                    raise ImageFetchError("invalid_redirect")
+                try:
+                    location = locations[0].decode("ascii")
+                except UnicodeDecodeError:
+                    raise ImageFetchError("invalid_redirect")
+                return "redirect", location
+            if response.status < 200 or response.status >= 300:
+                raise ImageFetchError("http_status")
+            result = await self._validate_image_response(
+                response, expected_sha256
+            )
+            return "image", result
+        finally:
+            await self._cleanup(response, pool)
+
+    def _new_pool(
+        self, logical_hostname: str, validated_address: str
+    ) -> httpcore.AsyncConnectionPool:
+        underlying = self._network_backend_factory()
+        pinned = _PinnedNetworkBackend(
+            underlying=underlying,
+            logical_hostname=logical_hostname,
+            validated_address=validated_address,
+        )
+        return httpcore.AsyncConnectionPool(
+            ssl_context=self._ssl_context,
+            proxy=None,
+            max_connections=1,
+            max_keepalive_connections=0,
+            keepalive_expiry=0.0,
+            http1=True,
+            http2=False,
+            retries=0,
+            network_backend=pinned,
+        )
+
+    async def _cleanup(
+        self,
+        response: httpcore.Response | None,
+        pool: httpcore.AsyncConnectionPool,
+    ) -> None:
+        async def close_all() -> None:
+            if response is not None:
+                try:
                     await response.aclose()
+                except BaseException:
+                    pass
+            try:
+                await pool.aclose()
+            except BaseException:
+                pass
+
+        cleanup_task = asyncio.create_task(close_all())
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(cleanup_task),
+                timeout=self._config.pool_timeout_seconds,
+            )
+        except asyncio.CancelledError:
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(cleanup_task),
+                    timeout=self._config.pool_timeout_seconds,
+                )
+            except BaseException:
+                cleanup_task.cancel()
+                await asyncio.gather(cleanup_task, return_exceptions=True)
+            raise
+        except asyncio.TimeoutError:
+            cleanup_task.cancel()
+            await asyncio.gather(cleanup_task, return_exceptions=True)
 
     @staticmethod
     def _parse_url(url: str, *, redirect: bool) -> httpx.URL:
         reason: ImageFetchReasonCode = "invalid_redirect" if redirect else "invalid_url"
+        if not isinstance(url, str) or url != url.strip() or "#" in url:
+            raise ImageFetchError(reason)
+        authority_match = re.match(r"(?i)^https://([^/?#]*)", url)
+        if authority_match is None:
+            raise ImageFetchError(reason)
+        raw_authority = authority_match.group(1)
+        if (
+            not raw_authority
+            or "@" in raw_authority
+            or "%" in raw_authority
+            or raw_authority.endswith(":")
+        ):
+            raise ImageFetchError(reason)
         try:
             parsed = httpx.URL(url)
-        except Exception as exc:
-            raise ImageFetchError(reason) from exc
+            port = 443 if parsed.port is None else parsed.port
+        except Exception:
+            raise ImageFetchError(reason)
         if (
-            not isinstance(url, str)
-            or parsed.scheme != "https"
+            parsed.scheme != "https"
             or not parsed.host
-            or bool(parsed.username)
-            or bool(parsed.password)
-            or parsed.fragment
+            or port <= 0
+            or port > 65535
         ):
+            raise ImageFetchError(reason)
+        if re.fullmatch(r"[0-9.]+", parsed.host):
+            try:
+                ipaddress.ip_address(parsed.host)
+            except ValueError:
+                raise ImageFetchError(reason)
+        if re.fullmatch(r"0[xX][0-9A-Fa-f]+", parsed.host):
             raise ImageFetchError(reason)
         return parsed
 
     def _parse_redirect(self, current: httpx.URL, location: str) -> httpx.URL:
+        if "#" in location:
+            raise ImageFetchError("invalid_redirect")
+        if re.match(r"(?i)^[a-z][a-z0-9+.-]*://", location):
+            return self._parse_url(location, redirect=True)
+        if location.startswith("//"):
+            authority = location[2:].split("/", 1)[0]
+            if "@" in authority or "%" in authority:
+                raise ImageFetchError("invalid_redirect")
         try:
             joined = current.join(location)
-        except Exception as exc:
-            raise ImageFetchError("invalid_redirect") from exc
+        except Exception:
+            raise ImageFetchError("invalid_redirect")
         return self._parse_url(str(joined), redirect=True)
 
     @staticmethod
-    def _logical_authority(url: httpx.URL) -> tuple[str, int, str]:
+    def _logical_authority(url: httpx.URL) -> tuple[str, int]:
         hostname = url.host
         assert hostname is not None
         port = url.port or 443
-        host_header = f"[{hostname}]" if ":" in hostname else hostname
-        authority = host_header if port == 443 else f"{host_header}:{port}"
-        return hostname, port, authority
+        return hostname, port
 
     async def _resolve_global(self, hostname: str, port: int) -> str:
         try:
             direct_address = ipaddress.ip_address(hostname)
         except ValueError:
+            failure_reason: ImageFetchReasonCode | None = None
             try:
-                addresses = await self._resolver(hostname, port)
+                addresses = await asyncio.wait_for(
+                    self._resolver(hostname, port),
+                    timeout=self._config.dns_timeout_seconds,
+                )
             except asyncio.CancelledError:
                 raise
-            except ImageFetchError:
-                raise
-            except Exception as exc:
-                raise ImageFetchError("dns_failure") from exc
+            except asyncio.TimeoutError:
+                failure_reason = "timeout"
+            except Exception:
+                failure_reason = "dns_failure"
+            if failure_reason is not None:
+                raise ImageFetchError(failure_reason)
         else:
             addresses = (str(direct_address),)
         if not addresses:
@@ -485,6 +800,7 @@ class SafeImageFetcher:
             or address.is_link_local
             or address.is_reserved
             or address.is_unspecified
+            or getattr(address, "is_site_local", False)
             for address in parsed
         ):
             raise ImageFetchError("unsafe_address")
@@ -492,32 +808,43 @@ class SafeImageFetcher:
         # fail-closed global-address predicate.
         return str(parsed[0])
 
-    @staticmethod
-    def _pin_url(logical_url: httpx.URL, address: str) -> httpx.URL:
-        return logical_url.copy_with(host=address)
-
     async def _validate_image_response(
-        self, response: httpx.Response, expected_sha256: str | None
+        self, response: httpcore.Response, expected_sha256: str | None
     ) -> FetchedImage:
-        content_type_header = response.headers.get("content-type")
-        if content_type_header is None:
+        encodings = self._header_values(response.headers, b"content-encoding")
+        if len(encodings) > 1 or (
+            len(encodings) == 1 and encodings[0].strip().lower() != b"identity"
+        ):
+            raise ImageFetchError("unsupported_content_encoding")
+
+        content_types = self._header_values(response.headers, b"content-type")
+        if not content_types:
             raise ImageFetchError("missing_mime")
-        source_mime = content_type_header.split(";", 1)[0].strip().lower()
+        if len(content_types) != 1:
+            raise ImageFetchError("unsupported_mime")
+        try:
+            source_mime = (
+                content_types[0].decode("ascii").split(";", 1)[0].strip().lower()
+            )
+        except UnicodeDecodeError:
+            raise ImageFetchError("unsupported_mime")
         if source_mime not in _MIME_TO_FORMAT:
             raise ImageFetchError("unsupported_mime")
 
-        declared_length = response.headers.get("content-length")
-        if declared_length is not None:
+        lengths = self._header_values(response.headers, b"content-length")
+        if len(lengths) > 1:
+            raise ImageFetchError("response_too_large")
+        if lengths:
             try:
-                length = int(declared_length)
-            except ValueError as exc:
-                raise ImageFetchError("response_too_large") from exc
+                length = int(lengths[0].decode("ascii"))
+            except (UnicodeDecodeError, ValueError):
+                raise ImageFetchError("response_too_large")
             if length < 0 or length > self._config.max_response_bytes:
                 raise ImageFetchError("response_too_large")
 
         chunks: list[bytes] = []
         total = 0
-        async for chunk in response.aiter_bytes():
+        async for chunk in response.aiter_stream():
             total += len(chunk)
             if total > self._config.max_response_bytes:
                 raise ImageFetchError("response_too_large")
@@ -538,6 +865,13 @@ class SafeImageFetcher:
             width=width,
             height=height,
         )
+
+    @staticmethod
+    def _header_values(
+        headers: list[tuple[bytes, bytes]], name: bytes
+    ) -> list[bytes]:
+        lowered = name.lower()
+        return [value for key, value in headers if key.lower() == lowered]
 
     def _decode_and_normalize(self, payload: bytes, source_mime: str) -> tuple[bytes, int, int]:
         try:
@@ -567,8 +901,14 @@ class SafeImageFetcher:
                     else:
                         normalized = normalized.copy()
                     width, height = normalized.size
+                    pixel_bytes = normalized.tobytes()
+                    clean_image = Image.frombytes(
+                        normalized.mode, normalized.size, pixel_bytes
+                    )
                     output = BytesIO()
-                    normalized.save(output, format="PNG", optimize=False, compress_level=9)
+                    clean_image.save(
+                        output, format="PNG", optimize=False, compress_level=9
+                    )
                     return output.getvalue(), width, height
         except ImageFetchError:
             raise

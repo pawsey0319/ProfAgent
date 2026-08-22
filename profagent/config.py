@@ -21,6 +21,12 @@ LICENSED_ASSET_MAX_PIXELS = 20_000_000
 LICENSED_ASSET_MIN_DIMENSION = 1
 LICENSED_ASSET_MAX_DIMENSION = 4096
 LICENSED_ASSET_MAX_REDIRECTS = 3
+LICENSED_ASSET_DNS_TIMEOUT_SECONDS = 3.0
+LICENSED_ASSET_CONNECT_TIMEOUT_SECONDS = 5.0
+LICENSED_ASSET_READ_TIMEOUT_SECONDS = 10.0
+LICENSED_ASSET_WRITE_TIMEOUT_SECONDS = 5.0
+LICENSED_ASSET_POOL_TIMEOUT_SECONDS = 2.0
+LICENSED_ASSET_TOTAL_TIMEOUT_SECONDS = 20.0
 
 
 def _as_bool(value: str | None, default: bool) -> bool:
@@ -115,6 +121,14 @@ class Settings:
     licensed_asset_min_dimension: int = LICENSED_ASSET_MIN_DIMENSION
     licensed_asset_max_dimension: int = LICENSED_ASSET_MAX_DIMENSION
     licensed_asset_max_redirects: int = LICENSED_ASSET_MAX_REDIRECTS
+    licensed_asset_dns_timeout_seconds: float = LICENSED_ASSET_DNS_TIMEOUT_SECONDS
+    licensed_asset_connect_timeout_seconds: float = (
+        LICENSED_ASSET_CONNECT_TIMEOUT_SECONDS
+    )
+    licensed_asset_read_timeout_seconds: float = LICENSED_ASSET_READ_TIMEOUT_SECONDS
+    licensed_asset_write_timeout_seconds: float = LICENSED_ASSET_WRITE_TIMEOUT_SECONDS
+    licensed_asset_pool_timeout_seconds: float = LICENSED_ASSET_POOL_TIMEOUT_SECONDS
+    licensed_asset_total_timeout_seconds: float = LICENSED_ASSET_TOTAL_TIMEOUT_SECONDS
     database_url: str | None = field(default=None, repr=False)
     wardrobe_catalog_manifest: Path | None = None
     dense_enabled: bool = False
@@ -225,6 +239,54 @@ class Settings:
             default=LICENSED_ASSET_MAX_REDIRECTS,
             minimum=0,
             maximum=5,
+        )
+
+    @property
+    def effective_licensed_asset_dns_timeout_seconds(self) -> float:
+        return _bounded_positive_float(
+            self.licensed_asset_dns_timeout_seconds,
+            default=LICENSED_ASSET_DNS_TIMEOUT_SECONDS,
+            maximum=30.0,
+        )
+
+    @property
+    def effective_licensed_asset_connect_timeout_seconds(self) -> float:
+        return _bounded_positive_float(
+            self.licensed_asset_connect_timeout_seconds,
+            default=LICENSED_ASSET_CONNECT_TIMEOUT_SECONDS,
+            maximum=30.0,
+        )
+
+    @property
+    def effective_licensed_asset_read_timeout_seconds(self) -> float:
+        return _bounded_positive_float(
+            self.licensed_asset_read_timeout_seconds,
+            default=LICENSED_ASSET_READ_TIMEOUT_SECONDS,
+            maximum=30.0,
+        )
+
+    @property
+    def effective_licensed_asset_write_timeout_seconds(self) -> float:
+        return _bounded_positive_float(
+            self.licensed_asset_write_timeout_seconds,
+            default=LICENSED_ASSET_WRITE_TIMEOUT_SECONDS,
+            maximum=30.0,
+        )
+
+    @property
+    def effective_licensed_asset_pool_timeout_seconds(self) -> float:
+        return _bounded_positive_float(
+            self.licensed_asset_pool_timeout_seconds,
+            default=LICENSED_ASSET_POOL_TIMEOUT_SECONDS,
+            maximum=30.0,
+        )
+
+    @property
+    def effective_licensed_asset_total_timeout_seconds(self) -> float:
+        return _bounded_positive_float(
+            self.licensed_asset_total_timeout_seconds,
+            default=LICENSED_ASSET_TOTAL_TIMEOUT_SECONDS,
+            maximum=30.0,
         )
 
     @classmethod
@@ -356,6 +418,36 @@ class Settings:
                 default=LICENSED_ASSET_MAX_REDIRECTS,
                 minimum=0,
                 maximum=5,
+            ),
+            licensed_asset_dns_timeout_seconds=_bounded_positive_float(
+                os.getenv("PROFAGENT_LICENSED_ASSET_DNS_TIMEOUT_SECONDS"),
+                default=LICENSED_ASSET_DNS_TIMEOUT_SECONDS,
+                maximum=30.0,
+            ),
+            licensed_asset_connect_timeout_seconds=_bounded_positive_float(
+                os.getenv("PROFAGENT_LICENSED_ASSET_CONNECT_TIMEOUT_SECONDS"),
+                default=LICENSED_ASSET_CONNECT_TIMEOUT_SECONDS,
+                maximum=30.0,
+            ),
+            licensed_asset_read_timeout_seconds=_bounded_positive_float(
+                os.getenv("PROFAGENT_LICENSED_ASSET_READ_TIMEOUT_SECONDS"),
+                default=LICENSED_ASSET_READ_TIMEOUT_SECONDS,
+                maximum=30.0,
+            ),
+            licensed_asset_write_timeout_seconds=_bounded_positive_float(
+                os.getenv("PROFAGENT_LICENSED_ASSET_WRITE_TIMEOUT_SECONDS"),
+                default=LICENSED_ASSET_WRITE_TIMEOUT_SECONDS,
+                maximum=30.0,
+            ),
+            licensed_asset_pool_timeout_seconds=_bounded_positive_float(
+                os.getenv("PROFAGENT_LICENSED_ASSET_POOL_TIMEOUT_SECONDS"),
+                default=LICENSED_ASSET_POOL_TIMEOUT_SECONDS,
+                maximum=30.0,
+            ),
+            licensed_asset_total_timeout_seconds=_bounded_positive_float(
+                os.getenv("PROFAGENT_LICENSED_ASSET_TOTAL_TIMEOUT_SECONDS"),
+                default=LICENSED_ASSET_TOTAL_TIMEOUT_SECONDS,
+                maximum=30.0,
             ),
             database_url=database_url.strip(),
             wardrobe_catalog_manifest=(

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import hashlib
 import importlib
 import inspect
 import ipaddress
+import ssl
+import traceback
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
@@ -12,8 +15,9 @@ from types import ModuleType
 from typing import Any, get_args
 
 import httpx
+import httpcore
 import pytest
-from PIL import Image, PngImagePlugin
+from PIL import Image, ImageCms, PngImagePlugin
 from pydantic import ValidationError
 
 
@@ -33,6 +37,33 @@ SOURCE_KINDS = {
 ASSET_STATUSES = {"ready", "missing", "failed", "quarantined", "takedown"}
 PROVIDERS = {"openverse", "user_upload", "partner_api", "cpa_generated"}
 APPROVED_MIME_TYPES = {"image/png", "image/jpeg", "image/webp"}
+CANONICAL_LICENSES = {
+    "CC0": (
+        "CC0 1.0 Universal",
+        "https://creativecommons.org/publicdomain/zero/1.0/",
+        "CC0 1.0",
+    ),
+    "PDM": (
+        "Public Domain Mark 1.0",
+        "https://creativecommons.org/publicdomain/mark/1.0/",
+        "Public Domain Mark 1.0",
+    ),
+    "CC-BY-2.0": (
+        "Creative Commons Attribution 2.0",
+        "https://creativecommons.org/licenses/by/2.0/",
+        "CC BY 2.0",
+    ),
+    "CC-BY-3.0": (
+        "Creative Commons Attribution 3.0",
+        "https://creativecommons.org/licenses/by/3.0/",
+        "CC BY 3.0",
+    ),
+    "CC-BY-4.0": (
+        "Creative Commons Attribution 4.0",
+        "https://creativecommons.org/licenses/by/4.0/",
+        "CC BY 4.0",
+    ),
+}
 HASH_A = "a" * 64
 HASH_B = "b" * 64
 IMPORTED_AT = datetime(2026, 8, 23, 8, 0, tzinfo=timezone.utc)
@@ -133,47 +164,169 @@ class ResolverSpy:
         return self.mapping[hostname]
 
 
-class TransportSpy:
-    def __init__(self, routes: dict[str, httpx.Response | Exception]) -> None:
+class WireResponse:
+    def __init__(
+        self,
+        status: int,
+        *,
+        body: bytes = b"",
+        headers: dict[str, str] | None = None,
+        extra_headers: tuple[tuple[str, str], ...] = (),
+        chunks: tuple[bytes, ...] | None = None,
+    ) -> None:
+        self.status = status
+        self.body = body
+        self.headers = dict(headers or {})
+        self.extra_headers = extra_headers
+        self.chunks = chunks
+
+    def to_wire_chunks(self) -> list[bytes]:
+        headers = {key.lower(): value for key, value in self.headers.items()}
+        body_parts = self.chunks if self.chunks is not None else (self.body,)
+        if "content-length" not in headers and "transfer-encoding" not in headers:
+            if self.chunks is None:
+                headers["content-length"] = str(len(self.body))
+            else:
+                headers["transfer-encoding"] = "chunked"
+        reason = {200: "OK", 301: "Moved", 302: "Found", 307: "Redirect", 308: "Redirect"}.get(
+            self.status, "Response"
+        )
+        head = [f"HTTP/1.1 {self.status} {reason}\r\n".encode("ascii")]
+        head.extend(f"{key}: {value}\r\n".encode("ascii") for key, value in headers.items())
+        head.extend(
+            f"{key}: {value}\r\n".encode("ascii")
+            for key, value in self.extra_headers
+        )
+        head.append(b"\r\n")
+        if headers.get("transfer-encoding", "").lower() == "chunked":
+            encoded_body = [
+                f"{len(chunk):X}\r\n".encode("ascii") + chunk + b"\r\n"
+                for chunk in body_parts
+            ]
+            return [b"".join(head), *encoded_body, b"0\r\n\r\n"]
+        return [b"".join(head), *body_parts]
+
+
+class FakeNetworkStream(httpcore.AsyncNetworkStream):
+    def __init__(self, backend: "TransportSpy", target_host: str, target_port: int) -> None:
+        self.backend = backend
+        self.target_host = target_host
+        self.target_port = target_port
+        self._request = bytearray()
+        self._response_chunks: list[bytes] = []
+        self._closed = False
+
+    async def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
+        self.backend.read_timeouts.append(timeout)
+        if self.backend.stall_read:
+            await asyncio.wait_for(self.backend.read_gate.wait(), timeout=timeout)
+        self.backend.read_calls += 1
+        if not self._response_chunks:
+            return b""
+        chunk = self._response_chunks[0]
+        result = chunk[:max_bytes]
+        remainder = chunk[max_bytes:]
+        if remainder:
+            self._response_chunks[0] = remainder
+        else:
+            self._response_chunks.pop(0)
+        return result
+
+    async def write(self, buffer: bytes, timeout: float | None = None) -> None:
+        self.backend.write_timeouts.append(timeout)
+        self._request.extend(buffer)
+        if b"\r\n\r\n" not in self._request or self._response_chunks:
+            return
+        head = bytes(self._request).split(b"\r\n\r\n", 1)[0]
+        lines = head.split(b"\r\n")
+        target = lines[0].split(b" ", 2)[1].decode("ascii")
+        headers = {}
+        for line in lines[1:]:
+            key, value = line.split(b":", 1)
+            headers[key.decode("ascii").lower()] = value.strip().decode("ascii")
+        host = headers["host"]
+        logical_url = f"https://{host}{target}"
+        network_host = (
+            f"[{self.target_host}]" if ":" in self.target_host else self.target_host
+        )
+        network_authority = (
+            network_host
+            if self.target_port == 443
+            else f"{network_host}:{self.target_port}"
+        )
+        self.backend.calls.append(logical_url)
+        self.backend.network_calls.append(f"https://{network_authority}{target}")
+        self.backend.request_headers.append(headers)
+        route = self.backend.routes[logical_url]
+        if isinstance(route, Exception):
+            raise route
+        self._response_chunks = route.to_wire_chunks()
+
+    async def aclose(self) -> None:
+        self._closed = True
+        self.backend.closed_streams += 1
+        if self.backend.close_failure:
+            raise RuntimeError("secret-close-failure")
+
+    async def start_tls(
+        self,
+        ssl_context: ssl.SSLContext,
+        server_hostname: str | None = None,
+        timeout: float | None = None,
+    ) -> "FakeNetworkStream":
+        self.backend.tls_calls.append((server_hostname, timeout, ssl_context.verify_mode))
+        return self
+
+    def get_extra_info(self, info: str) -> Any:
+        return None
+
+
+class TransportSpy(httpcore.AsyncNetworkBackend):
+    def __init__(self, routes: dict[str, WireResponse | Exception]) -> None:
         self.routes = routes
         self.calls: list[str] = []
         self.network_calls: list[str] = []
+        self.connect_calls: list[tuple[str, int, float | None]] = []
+        self.tls_calls: list[tuple[str | None, float | None, ssl.VerifyMode]] = []
+        self.request_headers: list[dict[str, str]] = []
+        self.read_timeouts: list[float | None] = []
+        self.write_timeouts: list[float | None] = []
+        self.factory_calls = 0
+        self.closed_streams = 0
+        self.read_calls = 0
+        self.stall_connect = False
+        self.stall_read = False
+        self.close_failure = False
+        self.connect_gate = asyncio.Event()
+        self.read_gate = asyncio.Event()
 
-    async def __call__(self, request: httpx.Request) -> httpx.Response:
-        # A validated hostname must never be resolved a second time by the HTTP
-        # stack: the network target is the already-validated IP, while Host and
-        # TLS SNI retain the original hostname. This is the Task 2 anti-rebinding
-        # boundary and is observable even through MockTransport.
-        network_url = str(request.url)
-        network_host = request.url.host
-        assert network_host is not None
-        assert ipaddress.ip_address(network_host).is_global
-        host_header = request.headers.get("host")
-        assert host_header
-        logical_hostname = host_header.rsplit(":", 1)[0]
-        sni_hostname = request.extensions.get("sni_hostname")
-        assert sni_hostname in {logical_hostname, logical_hostname.encode("ascii")}
-        path_and_query = request.url.raw_path.decode("ascii")
-        logical_url = f"https://{host_header}{path_and_query}"
-        self.calls.append(logical_url)
-        self.network_calls.append(network_url)
-        response = self.routes[logical_url]
-        if isinstance(response, Exception):
-            raise response
-        return response
+    def factory(self) -> "TransportSpy":
+        self.factory_calls += 1
+        return self
+
+    async def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: Any = None,
+    ) -> FakeNetworkStream:
+        self.connect_calls.append((host, port, timeout))
+        if self.stall_connect:
+            await asyncio.wait_for(self.connect_gate.wait(), timeout=timeout)
+        return FakeNetworkStream(self, host, port)
+
+    async def connect_unix_socket(self, *args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("unix sockets are forbidden")
+
+    async def sleep(self, seconds: float) -> None:
+        await asyncio.sleep(seconds)
 
 
-class ChunkedBody(httpx.AsyncByteStream):
+class ChunkedBody:
     def __init__(self, chunks: tuple[bytes, ...]) -> None:
         self._chunks = chunks
-
-    async def __aiter__(self):
-        for chunk in self._chunks:
-            yield chunk
-
-    async def aclose(self) -> None:
-        return None
-
 
 def _response(
     status: int,
@@ -181,17 +334,17 @@ def _response(
     body: bytes = b"",
     content_type: str | None = None,
     headers: dict[str, str] | None = None,
-    stream: httpx.AsyncByteStream | None = None,
-) -> httpx.Response:
+    stream: ChunkedBody | None = None,
+) -> WireResponse:
     response_headers = dict(headers or {})
     if content_type is not None:
         response_headers["content-type"] = content_type
-    kwargs: dict[str, Any] = {"status_code": status, "headers": response_headers}
-    if stream is None:
-        kwargs["content"] = body
-    else:
-        kwargs["stream"] = stream
-    return httpx.Response(**kwargs)
+    return WireResponse(
+        status,
+        body=body,
+        headers=response_headers,
+        chunks=None if stream is None else stream._chunks,
+    )
 
 
 async def _fetch(
@@ -205,18 +358,14 @@ async def _fetch(
     expected_sha256: str | None = None,
     config: Any | None = None,
 ) -> Any:
-    async with httpx.AsyncClient(
-        transport=httpx.MockTransport(transport),
-        follow_redirects=False,
-    ) as client:
-        fetcher = module.SafeImageFetcher(
-            client=client,
-            resolver=resolver,
-            config=config or module.SafeImageConfig(),
-            ready_dir=ready_dir,
-            quarantine_dir=quarantine_dir,
-        )
-        return await fetcher.fetch(url, expected_sha256=expected_sha256)
+    fetcher = module.SafeImageFetcher(
+        resolver=resolver,
+        config=config or module.SafeImageConfig(),
+        ready_dir=ready_dir,
+        quarantine_dir=quarantine_dir,
+        _network_backend_factory=transport.factory,
+    )
+    return await fetcher.fetch(url, expected_sha256=expected_sha256)
 
 
 def _assert_content_free_error(
@@ -269,8 +418,22 @@ def test_license_source_and_asset_literals_are_exact(licensed_assets: ModuleType
 @pytest.mark.parametrize(
     ("provider", "license_code", "source_url", "creator", "license_url", "attribution"),
     [
-        ("openverse", "CC0", "https://images.example/cc0", None, None, "CC0"),
-        ("openverse", "PDM", "https://images.example/pdm", None, None, "Public Domain"),
+        (
+            "openverse",
+            "CC0",
+            "https://images.example/cc0",
+            None,
+            CANONICAL_LICENSES["CC0"][1],
+            CANONICAL_LICENSES["CC0"][2],
+        ),
+        (
+            "openverse",
+            "PDM",
+            "https://images.example/pdm",
+            None,
+            CANONICAL_LICENSES["PDM"][1],
+            CANONICAL_LICENSES["PDM"][2],
+        ),
         (
             "partner_api",
             "CC-BY-2.0",
@@ -420,8 +583,20 @@ def test_attribution_is_complete_for_public_cc_by_license(
 @pytest.mark.parametrize(
     ("source_kind", "license_code", "url", "author", "attribution"),
     [
-        ("licensed_photo", "CC0", None, None, "CC0"),
-        ("licensed_photo", "PDM", None, None, "Public Domain"),
+        (
+            "licensed_photo",
+            "CC0",
+            CANONICAL_LICENSES["CC0"][1],
+            None,
+            CANONICAL_LICENSES["CC0"][2],
+        ),
+        (
+            "licensed_photo",
+            "PDM",
+            CANONICAL_LICENSES["PDM"][1],
+            None,
+            CANONICAL_LICENSES["PDM"][2],
+        ),
         (
             "licensed_photo",
             "CC-BY-4.0",
@@ -441,10 +616,15 @@ def test_license_asset_accepts_coherent_public_owned_and_generated_sources(
     author: str | None,
     attribution: str,
 ) -> None:
+    controlled_name = (
+        CANONICAL_LICENSES[license_code][0]
+        if license_code in CANONICAL_LICENSES
+        else attribution
+    )
     receipt = licensed_assets.PublicLicenseReceipt.model_validate(
         _license_payload(
             code=license_code,
-            name=license_code,
+            name=controlled_name,
             url=url,
             author=author,
             attribution=attribution,
@@ -477,12 +657,27 @@ def test_license_asset_rejects_incoherent_source_kind(
     source_kind: str,
     license_code: str,
 ) -> None:
+    controlled_name = {
+        "user-owned": "用户自有图片",
+        "ai-generated": "AI 生成参考",
+    }.get(license_code, CANONICAL_LICENSES.get(license_code, (license_code,))[0])
+    controlled_attribution = {
+        "user-owned": "用户自有图片",
+        "ai-generated": "AI 生成参考",
+    }.get(license_code)
+    if controlled_attribution is None:
+        label = CANONICAL_LICENSES[license_code][2]
+        controlled_attribution = f"Example Creator / {label}"
     license_payload = _license_payload(
         code=license_code,
-        name=license_code,
-        url=None if license_code in {"user-owned", "ai-generated"} else _license_payload()["url"],
+        name=controlled_name,
+        url=(
+            None
+            if license_code in {"user-owned", "ai-generated"}
+            else CANONICAL_LICENSES[license_code][1]
+        ),
         author=None if license_code in {"user-owned", "ai-generated"} else "Example Creator",
-        attribution=license_code,
+        attribution=controlled_attribution,
     )
     with pytest.raises(ValidationError):
         licensed_assets.ProcessedWardrobeAsset.model_validate(
@@ -1204,9 +1399,682 @@ def test_error_reason_code_is_closed_and_contains_no_provider_content(
         "dimension_out_of_range",
         "pixel_limit_exceeded",
         "hash_mismatch",
+        "unsupported_content_encoding",
+        "timeout",
     }
     assert _literal_values(licensed_assets.ImageFetchReasonCode) == allowed_reasons
     error = licensed_assets.ImageFetchError("unsafe_address")
     _assert_content_free_error(licensed_assets, error, "unsafe_address")
     with pytest.raises((TypeError, ValueError, ValidationError)):
         licensed_assets.ImageFetchError("https://private.example/secret")
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"license_url": CANONICAL_LICENSES["CC-BY-3.0"][1]},
+        {"license_url": "https://license.example/by/4.0/"},
+        {"attribution": "Unrelated person / CC BY 4.0"},
+        {"creator": "x" * 201, "attribution": f"{'x' * 201} / CC BY 4.0"},
+    ],
+)
+def test_source_receipt_rejects_noncanonical_license_authority(
+    licensed_assets: ModuleType, overrides: dict[str, Any]
+) -> None:
+    with pytest.raises(ValidationError):
+        licensed_assets.LicensedSourceReceipt.model_validate(
+            _source_payload(**overrides)
+        )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"name": "CC BY 4.0"},
+        {"url": CANONICAL_LICENSES["CC-BY-3.0"][1]},
+        {"url": "https://license.example/by/4.0/"},
+        {"attribution": "Unrelated person / CC BY 4.0"},
+        {"author": "x" * 201, "attribution": f"{'x' * 201} / CC BY 4.0"},
+    ],
+)
+def test_public_receipt_rejects_noncanonical_license_authority(
+    licensed_assets: ModuleType, overrides: dict[str, Any]
+) -> None:
+    with pytest.raises(ValidationError):
+        licensed_assets.PublicLicenseReceipt.model_validate(
+            _license_payload(**overrides)
+        )
+
+
+@pytest.mark.parametrize(
+    ("code", "name", "attribution", "url", "author"),
+    [
+        ("user-owned", "user-owned", "用户自有图片", None, None),
+        ("user-owned", "用户自有图片", "not controlled", None, None),
+        (
+            "ai-generated",
+            "AI 生成参考",
+            "AI 生成参考",
+            "https://images.example/not-authority",
+            None,
+        ),
+        ("ai-generated", "ai-generated", "AI 生成参考", None, None),
+    ],
+)
+def test_owned_and_generated_receipts_use_exact_server_owned_text(
+    licensed_assets: ModuleType,
+    code: str,
+    name: str,
+    attribution: str,
+    url: str | None,
+    author: str | None,
+) -> None:
+    with pytest.raises(ValidationError):
+        licensed_assets.PublicLicenseReceipt.model_validate(
+            _license_payload(
+                code=code,
+                name=name,
+                attribution=attribution,
+                url=url,
+                author=author,
+            )
+        )
+
+
+def test_fetcher_public_api_has_no_arbitrary_http_client(
+    licensed_assets: ModuleType,
+) -> None:
+    parameters = inspect.signature(licensed_assets.SafeImageFetcher).parameters
+    assert "client" not in parameters
+    assert "_network_backend_factory" in parameters
+
+
+def test_httpcore_transport_pins_ip_preserves_sni_and_separates_redirect_pools(
+    licensed_assets: ModuleType, tmp_path: Path
+) -> None:
+    body = _make_image("PNG")
+    first = "https://one.example/start"
+    final = "https://two.example/final.png"
+    transport = TransportSpy(
+        {
+            first: _response(302, headers={"location": final}),
+            final: _response(200, body=body, content_type="image/png"),
+        }
+    )
+    result = asyncio.run(
+        _fetch(
+            module=licensed_assets,
+            url=first,
+            resolver=ResolverSpy(
+                {
+                    "one.example": ("93.184.216.34",),
+                    "two.example": ("93.184.216.34",),
+                }
+            ),
+            transport=transport,
+            ready_dir=tmp_path / "ready",
+            quarantine_dir=tmp_path / "quarantine",
+        )
+    )
+    assert isinstance(result, licensed_assets.FetchedImage)
+    assert transport.factory_calls == 2
+    assert [(host, port) for host, port, _ in transport.connect_calls] == [
+        ("93.184.216.34", 443),
+        ("93.184.216.34", 443),
+    ]
+    assert [call[0] for call in transport.tls_calls] == ["one.example", "two.example"]
+    assert all(call[2] == ssl.CERT_REQUIRED for call in transport.tls_calls)
+    assert all(
+        set(headers) == {"host", "accept", "accept-encoding", "connection"}
+        for headers in transport.request_headers
+    )
+
+
+def test_pool_configuration_is_direct_bounded_and_proxy_free(
+    licensed_assets: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_pool = licensed_assets.httpcore.AsyncConnectionPool
+    observed: list[dict[str, Any]] = []
+
+    def recording_pool(*args: Any, **kwargs: Any) -> Any:
+        observed.append(dict(kwargs))
+        return real_pool(*args, **kwargs)
+
+    monkeypatch.setattr(
+        licensed_assets.httpcore, "AsyncConnectionPool", recording_pool
+    )
+    url = "https://public.example/pool.png"
+    result = asyncio.run(
+        _fetch(
+            module=licensed_assets,
+            url=url,
+            resolver=ResolverSpy({"public.example": ("93.184.216.34",)}),
+            transport=TransportSpy(
+                {url: _response(200, body=_make_image("PNG"), content_type="image/png")}
+            ),
+            ready_dir=tmp_path / "ready",
+            quarantine_dir=tmp_path / "quarantine",
+        )
+    )
+    assert isinstance(result, licensed_assets.FetchedImage)
+    assert len(observed) == 1
+    assert observed[0]["proxy"] is None
+    assert observed[0]["max_connections"] == 1
+    assert observed[0]["max_keepalive_connections"] == 0
+    assert observed[0]["keepalive_expiry"] == 0.0
+    assert observed[0]["http1"] is True
+    assert observed[0]["http2"] is False
+    assert observed[0]["retries"] == 0
+
+
+def test_httpcore_transport_pins_ipv6_and_preserves_logical_sni(
+    licensed_assets: ModuleType, tmp_path: Path
+) -> None:
+    url = "https://ipv6.example:8443/image.png"
+    transport = TransportSpy(
+        {url: _response(200, body=_make_image("PNG"), content_type="image/png")}
+    )
+    result = asyncio.run(
+        _fetch(
+            module=licensed_assets,
+            url=url,
+            resolver=ResolverSpy({"ipv6.example": ("2606:4700:4700::1111",)}),
+            transport=transport,
+            ready_dir=tmp_path / "ready",
+            quarantine_dir=tmp_path / "quarantine",
+        )
+    )
+    assert isinstance(result, licensed_assets.FetchedImage)
+    assert transport.connect_calls[0][:2] == ("2606:4700:4700::1111", 8443)
+    assert transport.tls_calls[0][0] == "ipv6.example"
+
+
+@pytest.mark.parametrize(
+    ("url", "mapping", "resolver_calls"),
+    [
+        ("https://[fec0::1]/image.png", {}, []),
+        (
+            "https://site-local.example/image.png",
+            {"site-local.example": ("fec0::1",)},
+            [("site-local.example", 443)],
+        ),
+    ],
+)
+def test_ipv6_site_local_is_rejected_before_transport(
+    licensed_assets: ModuleType,
+    tmp_path: Path,
+    url: str,
+    mapping: dict[str, tuple[str, ...]],
+    resolver_calls: list[tuple[str, int]],
+) -> None:
+    resolver = ResolverSpy(mapping)
+    transport = TransportSpy({})
+    exc = _run_fetch_failure(
+        module=licensed_assets,
+        url=url,
+        resolver=resolver,
+        transport=transport,
+        ready_dir=tmp_path / "ready",
+        quarantine_dir=tmp_path / "quarantine",
+    )
+    _assert_content_free_error(licensed_assets, exc, "unsafe_address", url)
+    assert resolver.calls == resolver_calls
+    assert transport.connect_calls == []
+
+
+def test_accept_encoding_identity_and_compressed_response_rejected_before_body(
+    licensed_assets: ModuleType, tmp_path: Path
+) -> None:
+    url = "https://public.example/compressed.png"
+    compressed = gzip.compress(b"x" * 2_000_000)
+    transport = TransportSpy(
+        {
+            url: _response(
+                200,
+                body=compressed,
+                content_type="image/png",
+                headers={"content-encoding": "gzip"},
+            )
+        }
+    )
+    exc = _run_fetch_failure(
+        module=licensed_assets,
+        url=url,
+        resolver=ResolverSpy({"public.example": ("93.184.216.34",)}),
+        transport=transport,
+        ready_dir=tmp_path / "ready",
+        quarantine_dir=tmp_path / "quarantine",
+        config=licensed_assets.SafeImageConfig(max_response_bytes=4096),
+    )
+    _assert_content_free_error(
+        licensed_assets, exc, "unsupported_content_encoding", url
+    )
+    assert transport.request_headers[0]["accept-encoding"] == "identity"
+    assert transport.read_calls == 1
+
+
+@pytest.mark.parametrize(
+    "content_encoding",
+    ["br", "deflate", "identity, gzip", "identity, identity", ""],
+)
+def test_nonidentity_or_multiple_content_encoding_fails_closed(
+    licensed_assets: ModuleType,
+    tmp_path: Path,
+    content_encoding: str,
+) -> None:
+    url = "https://public.example/encoded.png"
+    exc = _run_fetch_failure(
+        module=licensed_assets,
+        url=url,
+        resolver=ResolverSpy({"public.example": ("93.184.216.34",)}),
+        transport=TransportSpy(
+            {
+                url: _response(
+                    200,
+                    body=_make_image("PNG"),
+                    content_type="image/png",
+                    headers={"content-encoding": content_encoding},
+                )
+            }
+        ),
+        ready_dir=tmp_path / "ready",
+        quarantine_dir=tmp_path / "quarantine",
+    )
+    _assert_content_free_error(
+        licensed_assets, exc, "unsupported_content_encoding", url
+    )
+
+
+def test_duplicate_identity_content_encoding_headers_fail_closed(
+    licensed_assets: ModuleType,
+    tmp_path: Path,
+) -> None:
+    url = "https://public.example/duplicate-encoding.png"
+    transport = TransportSpy(
+        {
+            url: WireResponse(
+                200,
+                body=_make_image("PNG"),
+                headers={
+                    "content-type": "image/png",
+                    "content-encoding": "identity",
+                },
+                extra_headers=(("content-encoding", "identity"),),
+            )
+        }
+    )
+    exc = _run_fetch_failure(
+        module=licensed_assets,
+        url=url,
+        resolver=ResolverSpy({"public.example": ("93.184.216.34",)}),
+        transport=transport,
+        ready_dir=tmp_path / "ready",
+        quarantine_dir=tmp_path / "quarantine",
+    )
+    _assert_content_free_error(
+        licensed_assets, exc, "unsupported_content_encoding", url
+    )
+
+
+def test_safe_image_config_has_bounded_server_owned_timeouts(
+    licensed_assets: ModuleType,
+) -> None:
+    config = licensed_assets.SafeImageConfig()
+    for field in (
+        "dns_timeout_seconds",
+        "connect_timeout_seconds",
+        "read_timeout_seconds",
+        "write_timeout_seconds",
+        "pool_timeout_seconds",
+        "total_timeout_seconds",
+    ):
+        assert 0 < getattr(config, field) <= 30
+        with pytest.raises(ValidationError):
+            licensed_assets.SafeImageConfig(**{field: 0.0})
+    assert config.total_timeout_seconds >= max(
+        config.dns_timeout_seconds,
+        config.connect_timeout_seconds,
+        config.read_timeout_seconds,
+    )
+
+
+def test_safe_image_config_reads_only_bounded_server_settings(
+    licensed_assets: ModuleType, tmp_path: Path
+) -> None:
+    from profagent.config import Settings
+
+    settings = Settings(
+        root_dir=tmp_path,
+        licensed_asset_dns_timeout_seconds=0.25,
+        licensed_asset_connect_timeout_seconds=0.5,
+        licensed_asset_read_timeout_seconds=0.75,
+        licensed_asset_write_timeout_seconds=1.0,
+        licensed_asset_pool_timeout_seconds=1.25,
+        licensed_asset_total_timeout_seconds=1.5,
+    )
+    config = licensed_assets.SafeImageConfig.from_settings(settings)
+    assert (
+        config.dns_timeout_seconds,
+        config.connect_timeout_seconds,
+        config.read_timeout_seconds,
+        config.write_timeout_seconds,
+        config.pool_timeout_seconds,
+        config.total_timeout_seconds,
+    ) == (0.25, 0.5, 0.75, 1.0, 1.25, 1.5)
+
+    bounded = licensed_assets.SafeImageConfig.from_settings(
+        Settings(
+            root_dir=tmp_path,
+            licensed_asset_dns_timeout_seconds=999.0,
+            licensed_asset_connect_timeout_seconds=999.0,
+            licensed_asset_read_timeout_seconds=999.0,
+            licensed_asset_write_timeout_seconds=999.0,
+            licensed_asset_pool_timeout_seconds=999.0,
+            licensed_asset_total_timeout_seconds=999.0,
+        )
+    )
+    assert all(
+        getattr(bounded, field) == 30.0
+        for field in (
+            "dns_timeout_seconds",
+            "connect_timeout_seconds",
+            "read_timeout_seconds",
+            "write_timeout_seconds",
+            "pool_timeout_seconds",
+            "total_timeout_seconds",
+        )
+    )
+
+
+def test_stalled_resolver_uses_controlled_dns_timeout(
+    licensed_assets: ModuleType, tmp_path: Path
+) -> None:
+    calls: list[tuple[str, int]] = []
+
+    async def stalled(hostname: str, port: int) -> tuple[str, ...]:
+        calls.append((hostname, port))
+        await asyncio.Event().wait()
+        return ()
+
+    transport = TransportSpy({})
+
+    async def run() -> BaseException:
+        fetcher = licensed_assets.SafeImageFetcher(
+            resolver=stalled,
+            config=licensed_assets.SafeImageConfig(
+                dns_timeout_seconds=0.01, total_timeout_seconds=0.2
+            ),
+            ready_dir=tmp_path / "ready",
+            quarantine_dir=tmp_path / "quarantine",
+            _network_backend_factory=transport.factory,
+        )
+        with pytest.raises(Exception) as caught:
+            await fetcher.fetch("https://public.example/image.png")
+        return caught.value
+
+    exc = asyncio.run(run())
+    _assert_content_free_error(licensed_assets, exc, "timeout")
+    assert calls == [("public.example", 443)]
+    assert transport.connect_calls == []
+
+
+@pytest.mark.parametrize("stall_kind", ["connect", "read"])
+def test_stalled_connect_and_read_are_bounded_and_cleanup(
+    licensed_assets: ModuleType, tmp_path: Path, stall_kind: str
+) -> None:
+    url = "https://public.example/stall.png"
+    transport = TransportSpy(
+        {url: _response(200, body=_make_image("PNG"), content_type="image/png")}
+    )
+    setattr(transport, f"stall_{stall_kind}", True)
+    config = licensed_assets.SafeImageConfig(
+        connect_timeout_seconds=0.01,
+        read_timeout_seconds=0.01,
+        total_timeout_seconds=0.2,
+    )
+    exc = _run_fetch_failure(
+        module=licensed_assets,
+        url=url,
+        resolver=ResolverSpy({"public.example": ("93.184.216.34",)}),
+        transport=transport,
+        ready_dir=tmp_path / "ready",
+        quarantine_dir=tmp_path / "quarantine",
+        config=config,
+    )
+    _assert_content_free_error(licensed_assets, exc, "timeout")
+    if stall_kind == "connect":
+        assert transport.connect_calls[0][2] == 0.01
+    else:
+        assert transport.read_timeouts[0] == 0.01
+        assert transport.closed_streams >= 1
+
+
+def test_total_timeout_is_independent_and_server_owned(
+    licensed_assets: ModuleType, tmp_path: Path
+) -> None:
+    url = "https://public.example/total.png"
+    transport = TransportSpy(
+        {url: _response(200, body=_make_image("PNG"), content_type="image/png")}
+    )
+    transport.stall_read = True
+    exc = _run_fetch_failure(
+        module=licensed_assets,
+        url=url,
+        resolver=ResolverSpy({"public.example": ("93.184.216.34",)}),
+        transport=transport,
+        ready_dir=tmp_path / "ready",
+        quarantine_dir=tmp_path / "quarantine",
+        config=licensed_assets.SafeImageConfig(
+            read_timeout_seconds=0.2, total_timeout_seconds=0.01
+        ),
+    )
+    _assert_content_free_error(licensed_assets, exc, "timeout")
+    assert transport.closed_streams >= 1
+
+
+def _png_chunk_types(payload: bytes) -> list[bytes]:
+    assert payload.startswith(b"\x89PNG\r\n\x1a\n")
+    offset = 8
+    chunks: list[bytes] = []
+    while offset < len(payload):
+        length = int.from_bytes(payload[offset : offset + 4], "big")
+        chunk_type = payload[offset + 4 : offset + 8]
+        chunks.append(chunk_type)
+        offset += 12 + length
+    assert offset == len(payload)
+    return chunks
+
+
+def _make_image_with_authoritative_metadata(image_format: str) -> bytes:
+    image = Image.new("RGB", (32, 24), (32, 96, 160))
+    profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+    exif = Image.Exif()
+    exif[315] = "private author"
+    output = BytesIO()
+    kwargs: dict[str, Any] = {"icc_profile": profile}
+    if image_format == "PNG":
+        metadata = PngImagePlugin.PngInfo()
+        metadata.add_text("Comment", "private text")
+        metadata.add_itxt("XML:com.adobe.xmp", "<xmp>private</xmp>")
+        kwargs["pnginfo"] = metadata
+        kwargs["exif"] = exif
+    elif image_format == "JPEG":
+        kwargs["exif"] = exif
+        kwargs["xmp"] = b"<xmp>private</xmp>"
+        kwargs["comment"] = b"private comment"
+    else:
+        kwargs["exif"] = exif
+        kwargs["xmp"] = b"<xmp>private</xmp>"
+    image.save(output, format=image_format, **kwargs)
+    return output.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("image_format", "mime_type"),
+    [("PNG", "image/png"), ("JPEG", "image/jpeg"), ("WEBP", "image/webp")],
+)
+def test_processed_png_is_reconstructed_from_pixels_and_has_no_metadata_chunks(
+    licensed_assets: ModuleType,
+    tmp_path: Path,
+    image_format: str,
+    mime_type: str,
+) -> None:
+    body = _make_image_with_authoritative_metadata(image_format)
+    url = f"https://public.example/metadata.{image_format.lower()}"
+    result = asyncio.run(
+        _fetch(
+            module=licensed_assets,
+            url=url,
+            resolver=ResolverSpy({"public.example": ("93.184.216.34",)}),
+            transport=TransportSpy(
+                {url: _response(200, body=body, content_type=mime_type)}
+            ),
+            ready_dir=tmp_path / "ready",
+            quarantine_dir=tmp_path / "quarantine",
+        )
+    )
+    chunks = _png_chunk_types(result.processed_bytes)
+    assert set(chunks) <= {b"IHDR", b"IDAT", b"IEND"}
+    with Image.open(BytesIO(result.processed_bytes)) as processed:
+        processed.load()
+        assert processed.info == {}
+        assert len(processed.getexif()) == 0
+
+
+def test_upstream_exception_has_no_retained_cause_context_or_secret_traceback(
+    licensed_assets: ModuleType, tmp_path: Path
+) -> None:
+    url = "https://public.example/secret-url/image.png"
+    secret = "upstream-secret-body"
+    transport = TransportSpy({url: RuntimeError(secret)})
+    exc = _run_fetch_failure(
+        module=licensed_assets,
+        url=url,
+        resolver=ResolverSpy({"public.example": ("93.184.216.34",)}),
+        transport=transport,
+        ready_dir=tmp_path / "ready",
+        quarantine_dir=tmp_path / "quarantine",
+    )
+    _assert_content_free_error(licensed_assets, exc, "network_error", url, secret)
+    assert exc.__cause__ is None
+    assert exc.__context__ is None
+    rendered = "".join(traceback.format_exception(exc))
+    assert secret not in rendered
+    assert url not in rendered
+
+
+def test_close_failures_are_suppressed_and_do_not_replace_success(
+    licensed_assets: ModuleType, tmp_path: Path
+) -> None:
+    url = "https://public.example/close.png"
+    transport = TransportSpy(
+        {url: _response(200, body=_make_image("PNG"), content_type="image/png")}
+    )
+    transport.close_failure = True
+    result = asyncio.run(
+        _fetch(
+            module=licensed_assets,
+            url=url,
+            resolver=ResolverSpy({"public.example": ("93.184.216.34",)}),
+            transport=transport,
+            ready_dir=tmp_path / "ready",
+            quarantine_dir=tmp_path / "quarantine",
+        )
+    )
+    assert isinstance(result, licensed_assets.FetchedImage)
+    assert transport.closed_streams >= 1
+
+
+def test_cancellation_propagates_after_response_and_pool_cleanup(
+    licensed_assets: ModuleType, tmp_path: Path
+) -> None:
+    async def run() -> int:
+        url = "https://public.example/cancel.png"
+        transport = TransportSpy(
+            {url: _response(200, body=_make_image("PNG"), content_type="image/png")}
+        )
+        transport.stall_read = True
+        fetcher = licensed_assets.SafeImageFetcher(
+            resolver=ResolverSpy({"public.example": ("93.184.216.34",)}),
+            config=licensed_assets.SafeImageConfig(
+                read_timeout_seconds=1.0, total_timeout_seconds=2.0
+            ),
+            ready_dir=tmp_path / "ready",
+            quarantine_dir=tmp_path / "quarantine",
+            _network_backend_factory=transport.factory,
+        )
+        task = asyncio.create_task(fetcher.fetch(url))
+        for _ in range(100):
+            if transport.read_timeouts:
+                break
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return transport.closed_streams
+
+    assert asyncio.run(run()) >= 1
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://@public.example/image.png",
+        "https://user@public.example/image.png",
+        "https://public.example/image.png#",
+        "https://public.example:0/image.png",
+        "https://public.example:65536/image.png",
+        "https://public.example:/image.png",
+        "https://[fe80::1%25eth0]/image.png",
+        "https://2130706433/image.png",
+        "https://0177.0.0.1/image.png",
+        "https://0x7f000001/image.png",
+    ],
+)
+def test_raw_initial_url_authority_edges_fail_before_dns_or_transport(
+    licensed_assets: ModuleType, tmp_path: Path, url: str
+) -> None:
+    resolver = ResolverSpy({})
+    transport = TransportSpy({})
+    exc = _run_fetch_failure(
+        module=licensed_assets,
+        url=url,
+        resolver=resolver,
+        transport=transport,
+        ready_dir=tmp_path / "ready",
+        quarantine_dir=tmp_path / "quarantine",
+    )
+    _assert_content_free_error(licensed_assets, exc, "invalid_url", url)
+    assert resolver.calls == []
+    assert transport.connect_calls == []
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "https://@other.example/image.png",
+        "https://other.example/image.png#",
+        "https://other.example:0/image.png",
+        "https://other.example:/image.png",
+        "https://[fe80::1%25eth0]/image.png",
+    ],
+)
+def test_raw_redirect_authority_edges_fail_before_redirect_dns_or_transport(
+    licensed_assets: ModuleType, tmp_path: Path, location: str
+) -> None:
+    start = "https://public.example/start"
+    resolver = ResolverSpy({"public.example": ("93.184.216.34",)})
+    transport = TransportSpy(
+        {start: _response(302, headers={"location": location})}
+    )
+    exc = _run_fetch_failure(
+        module=licensed_assets,
+        url=start,
+        resolver=resolver,
+        transport=transport,
+        ready_dir=tmp_path / "ready",
+        quarantine_dir=tmp_path / "quarantine",
+    )
+    _assert_content_free_error(licensed_assets, exc, "invalid_redirect", location)
+    assert resolver.calls == [("public.example", 443)]
+    assert len(transport.connect_calls) == 1
