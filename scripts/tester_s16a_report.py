@@ -50,6 +50,20 @@ R1_THRESHOLDS = {
     "hard_constraint_violations": ("==", 0),
     "slot_completeness": (">=", 0.95),
 }
+NODE_RUNTIME_CONTRACTS = (
+    "dialogue_runtime_test.cjs",
+    "image_asset_runtime_test.cjs",
+    "memory_candidate_flow_test.cjs",
+    "memory_candidate_runtime_test.cjs",
+    "memory_runtime_test.cjs",
+    "preference_clarification_runtime_test.cjs",
+    "recommendation_preview_runtime_test.cjs",
+    "s14_frontend_static_test.cjs",
+    "s15_frontend_static_test.cjs",
+    "s16_frontend_static_test.cjs",
+    "static_contract_test.cjs",
+    "visible_member_identity_test.cjs",
+)
 
 
 class GateFailure(RuntimeError):
@@ -91,6 +105,18 @@ def _conda_node_argv(*arguments: str) -> list[str]:
         "node",
         *arguments,
     ]
+
+
+def _node_runtime_contract_paths(web_root: Path) -> list[Path]:
+    actual = {path.name: path for path in web_root.glob("*test.cjs")}
+    expected = set(NODE_RUNTIME_CONTRACTS)
+    missing = sorted(expected - set(actual))
+    unknown = sorted(set(actual) - expected)
+    if missing:
+        raise GateFailure("missing Node runtime/static contracts: " + ", ".join(missing))
+    if unknown:
+        raise GateFailure("unknown Node runtime/static contracts: " + ", ".join(unknown))
+    return [actual[name] for name in NODE_RUNTIME_CONTRACTS]
 
 
 def _run(command: list[str], label: str) -> subprocess.CompletedProcess[str]:
@@ -796,11 +822,7 @@ def _execute(
         "S16A Dialogue pytest",
     )
 
-    node_test_paths = sorted((ROOT / "web").glob("*test.cjs"))
-    if len(node_test_paths) != 11:
-        raise GateFailure(
-            f"expected exactly 11 Node runtime/static contracts, got {len(node_test_paths)}"
-        )
+    node_test_paths = _node_runtime_contract_paths(ROOT / "web")
     node_syntax_paths = sorted(
         path
         for path in (ROOT / "web").iterdir()

@@ -187,6 +187,41 @@ def test_s16a_subprocess_gate_is_checked_captured_and_runtime_locked(
     ]
 
 
+def test_s16a_node_runtime_inventory_is_explicit_closed_and_includes_identity(
+    tmp_path: Path,
+) -> None:
+    expected = (
+        "dialogue_runtime_test.cjs",
+        "image_asset_runtime_test.cjs",
+        "memory_candidate_flow_test.cjs",
+        "memory_candidate_runtime_test.cjs",
+        "memory_runtime_test.cjs",
+        "preference_clarification_runtime_test.cjs",
+        "recommendation_preview_runtime_test.cjs",
+        "s14_frontend_static_test.cjs",
+        "s15_frontend_static_test.cjs",
+        "s16_frontend_static_test.cjs",
+        "static_contract_test.cjs",
+        "visible_member_identity_test.cjs",
+    )
+    assert report_module.NODE_RUNTIME_CONTRACTS == expected
+    web_root = tmp_path / "web"
+    web_root.mkdir()
+    for name in expected:
+        (web_root / name).write_text("// fixture\n", encoding="utf-8")
+    assert tuple(
+        path.name for path in report_module._node_runtime_contract_paths(web_root)
+    ) == expected
+
+    (web_root / "unexpected_test.cjs").write_text("// unknown\n", encoding="utf-8")
+    with pytest.raises(report_module.GateFailure, match="unknown"):
+        report_module._node_runtime_contract_paths(web_root)
+    (web_root / "unexpected_test.cjs").unlink()
+    (web_root / "visible_member_identity_test.cjs").unlink()
+    with pytest.raises(report_module.GateFailure, match="missing"):
+        report_module._node_runtime_contract_paths(web_root)
+
+
 def test_s16a_failure_does_not_overwrite_existing_pass_or_leave_temp_files(
     monkeypatch, tmp_path: Path
 ) -> None:
