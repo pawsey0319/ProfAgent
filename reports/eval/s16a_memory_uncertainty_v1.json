@@ -1,0 +1,411 @@
+{
+  "schema_version": 1,
+  "report_id": "s16a_memory_uncertainty_v1",
+  "scope": "S16A free-text memory candidates and preference uncertainty atomic acceptance",
+  "overall_status": "PASS",
+  "report_command": "conda run --no-capture-output -n torch128 python scripts/tester_s16a_report.py",
+  "provenance": {
+    "source_revision": "3cea34d353ca544a731e75b96efa72c38194b14a",
+    "conda_environment": "torch128",
+    "python": {
+      "version": "3.10.19",
+      "binding": "current sys.executable resolved inside torch128"
+    },
+    "node": {
+      "version": "v24.11.1",
+      "binding": "absolute executable resolved from torch128 process PATH"
+    },
+    "fixtures": "fixtures_v1.0",
+    "fixed_eval": "data/eval/eval.jsonl"
+  },
+  "commands": [
+    {
+      "label": "locked Node version",
+      "command": "node[torch128-path] --version",
+      "exit_status": 0
+    },
+    {
+      "label": "S16A focused contract pytest",
+      "command": "python[torch128] -m pytest -q tests/test_s16_memory_candidates.py::test_http_extract_is_multicard_opaque_idempotent_and_raw_free tests/test_s16_memory_candidates.py::test_http_sensitive_extract_blocks_before_provider_and_leaks_no_raw_text tests/test_s16_memory_candidates.py::test_http_supersede_is_server_authored_atomic_and_not_browser_selectable tests/test_s16_preference_uncertainty.py::test_neutral_answer_and_unanswered_followup_do_not_ask_or_write_memory tests/test_s16_preference_uncertainty.py::test_high_urgency_question_budget_and_retry_do_not_duplicate_cpa_or_candidate",
+      "exit_status": 0
+    },
+    {
+      "label": "S16A Memory pytest",
+      "command": "python[torch128] -m pytest -q tests/test_s16_memory_candidates.py",
+      "exit_status": 0
+    },
+    {
+      "label": "S16A Dialogue pytest",
+      "command": "python[torch128] -m pytest -q tests/test_s16_preference_uncertainty.py tests/test_dialogue_turn.py",
+      "exit_status": 0
+    },
+    {
+      "label": "Node syntax app.js",
+      "command": "node[torch128-path] --check web/app.js",
+      "exit_status": 0
+    },
+    {
+      "label": "Node syntax catalog_image_browser_smoke.cjs",
+      "command": "node[torch128-path] --check web/catalog_image_browser_smoke.cjs",
+      "exit_status": 0
+    },
+    {
+      "label": "Node syntax dialogue_runtime.js",
+      "command": "node[torch128-path] --check web/dialogue_runtime.js",
+      "exit_status": 0
+    },
+    {
+      "label": "Node syntax dialogue_runtime_test.cjs",
+      "command": "node[torch128-path] --check web/dialogue_runtime_test.cjs",
+      "exit_status": 0
+    },
+    {
+      "label": "Node syntax fixtures.js",
+      "command": "node[torch128-path] --check web/fixtures.js",
+      "exit_status": 0
+    },
+    {
+      "label": "Node syntax image_asset_runtime.js",
+      "command": "node[torch128-path] --check web/image_asset_runtime.js",
+      "exit_status": 0
+    },
+    {
+      "label": "Node syntax image_asset_runtime_test.cjs",
+      "command": "node[torch128-path] --check web/image_asset_runtime_test.cjs",
+      "exit_status": 0
+    },
+    {
+      "label": "Node syntax memory_candidate_flow_test.cjs",
+      "command": "node[torch128-path] --check web/memory_candidate_flow_test.cjs",
+      "exit_status": 0
+    },
+    {
+      "label": "Node syntax memory_candidate_runtime.js",
+      "command": "node[torch128-path] --check web/memory_candidate_runtime.js",
+      "exit_status": 0
+    },
+    {
+      "label": "Node syntax memory_candidate_runtime_test.cjs",
+      "command": "node[torch128-path] --check web/memory_candidate_runtime_test.cjs",
+      "exit_status": 0
+    },
+    {
+      "label": "Node syntax memory_runtime.js",
+      "command": "node[torch128-path] --check web/memory_runtime.js",
+      "exit_status": 0
+    },
+    {
+      "label": "Node syntax memory_runtime_test.cjs",
+      "command": "node[torch128-path] --check web/memory_runtime_test.cjs",
+      "exit_status": 0
+    },
+    {
+      "label": "Node syntax preference_clarification_runtime.js",
+      "command": "node[torch128-path] --check web/preference_clarification_runtime.js",
+      "exit_status": 0
+    },
+    {
+      "label": "Node syntax preference_clarification_runtime_test.cjs",
+      "command": "node[torch128-path] --check web/preference_clarification_runtime_test.cjs",
+      "exit_status": 0
+    },
+    {
+      "label": "Node syntax recommendation_preview_runtime.js",
+      "command": "node[torch128-path] --check web/recommendation_preview_runtime.js",
+      "exit_status": 0
+    },
+    {
+      "label": "Node syntax recommendation_preview_runtime_test.cjs",
+      "command": "node[torch128-path] --check web/recommendation_preview_runtime_test.cjs",
+      "exit_status": 0
+    },
+    {
+      "label": "Node syntax s14_frontend_static_test.cjs",
+      "command": "node[torch128-path] --check web/s14_frontend_static_test.cjs",
+      "exit_status": 0
+    },
+    {
+      "label": "Node syntax s15_frontend_static_test.cjs",
+      "command": "node[torch128-path] --check web/s15_frontend_static_test.cjs",
+      "exit_status": 0
+    },
+    {
+      "label": "Node syntax s16_frontend_static_test.cjs",
+      "command": "node[torch128-path] --check web/s16_frontend_static_test.cjs",
+      "exit_status": 0
+    },
+    {
+      "label": "Node syntax static_contract_test.cjs",
+      "command": "node[torch128-path] --check web/static_contract_test.cjs",
+      "exit_status": 0
+    },
+    {
+      "label": "Node runtime dialogue_runtime_test.cjs",
+      "command": "node[torch128-path] web/dialogue_runtime_test.cjs",
+      "exit_status": 0
+    },
+    {
+      "label": "Node runtime image_asset_runtime_test.cjs",
+      "command": "node[torch128-path] web/image_asset_runtime_test.cjs",
+      "exit_status": 0
+    },
+    {
+      "label": "Node runtime memory_candidate_flow_test.cjs",
+      "command": "node[torch128-path] web/memory_candidate_flow_test.cjs",
+      "exit_status": 0
+    },
+    {
+      "label": "Node runtime memory_candidate_runtime_test.cjs",
+      "command": "node[torch128-path] web/memory_candidate_runtime_test.cjs",
+      "exit_status": 0
+    },
+    {
+      "label": "Node runtime memory_runtime_test.cjs",
+      "command": "node[torch128-path] web/memory_runtime_test.cjs",
+      "exit_status": 0
+    },
+    {
+      "label": "Node runtime preference_clarification_runtime_test.cjs",
+      "command": "node[torch128-path] web/preference_clarification_runtime_test.cjs",
+      "exit_status": 0
+    },
+    {
+      "label": "Node runtime recommendation_preview_runtime_test.cjs",
+      "command": "node[torch128-path] web/recommendation_preview_runtime_test.cjs",
+      "exit_status": 0
+    },
+    {
+      "label": "Node runtime s14_frontend_static_test.cjs",
+      "command": "node[torch128-path] web/s14_frontend_static_test.cjs",
+      "exit_status": 0
+    },
+    {
+      "label": "Node runtime s15_frontend_static_test.cjs",
+      "command": "node[torch128-path] web/s15_frontend_static_test.cjs",
+      "exit_status": 0
+    },
+    {
+      "label": "Node runtime s16_frontend_static_test.cjs",
+      "command": "node[torch128-path] web/s16_frontend_static_test.cjs",
+      "exit_status": 0
+    },
+    {
+      "label": "Node runtime static_contract_test.cjs",
+      "command": "node[torch128-path] web/static_contract_test.cjs",
+      "exit_status": 0
+    },
+    {
+      "label": "full pytest",
+      "command": "python[torch128] -m pytest -q",
+      "exit_status": 0
+    },
+    {
+      "label": "fixture validation",
+      "command": "python[torch128] scripts/validate.py",
+      "exit_status": 0
+    },
+    {
+      "label": "fixed R1 evaluation",
+      "command": "python[torch128] -m profagent.eval",
+      "exit_status": 0
+    },
+    {
+      "label": "fixed truth diff",
+      "command": "git diff --exit-code -- data/fixtures data/eval/eval.jsonl scripts/generate.py scripts/validate.py",
+      "exit_status": 0
+    },
+    {
+      "label": "git diff check",
+      "command": "git diff --check",
+      "exit_status": 0
+    },
+    {
+      "label": "source revision",
+      "command": "git rev-parse HEAD",
+      "exit_status": 0
+    }
+  ],
+  "memory_uncertainty": {
+    "candidate_extraction": {
+      "status": "PASS",
+      "verified_cases": 1,
+      "evidence": "opaque multi-card exact-key and idempotency focused gate"
+    },
+    "sensitive_no_write": {
+      "status": "PASS",
+      "writes": 0,
+      "evidence": "prefilter/provider/repository/outbox/trace focused and Memory gates"
+    },
+    "raw_text_leakage": {
+      "status": "PASS",
+      "count": 0,
+      "surfaces": [
+        "long_term_memory",
+        "rrf",
+        "outbox",
+        "trace",
+        "debug_dom",
+        "browser_storage"
+      ]
+    },
+    "supersede": {
+      "status": "PASS",
+      "atomic": true,
+      "evidence": "server-authored candidate decision and lifecycle gates"
+    },
+    "one_question_budget": {
+      "status": "PASS",
+      "maximum_questions": 1,
+      "evidence": "server-owned gap and high-urgency repeat gates"
+    },
+    "high_urgency_continuation": {
+      "status": "PASS",
+      "recommendation_paused": false,
+      "shopping_allowed": false,
+      "catalog_actual_calls": 0,
+      "evidence": "legal recommendation remains available while one advisory question is unanswered"
+    }
+  },
+  "provider_determinism": {
+    "status": "PASS",
+    "mode": "offline fixtures and injected deterministic provider transports",
+    "external_calls": 0,
+    "text_cpa_calls": 0,
+    "image_cpa_calls": 0
+  },
+  "pytest": {
+    "focused": {
+      "status": "PASS",
+      "passed": 5
+    },
+    "memory": {
+      "status": "PASS",
+      "passed": 51
+    },
+    "dialogue": {
+      "status": "PASS",
+      "passed": 125
+    },
+    "full": {
+      "status": "PASS",
+      "passed": 374
+    }
+  },
+  "node": {
+    "status": "PASS",
+    "passed": 11,
+    "syntax_files": 20,
+    "runtime_static_contracts": [
+      "dialogue_runtime_test.cjs",
+      "image_asset_runtime_test.cjs",
+      "memory_candidate_flow_test.cjs",
+      "memory_candidate_runtime_test.cjs",
+      "memory_runtime_test.cjs",
+      "preference_clarification_runtime_test.cjs",
+      "recommendation_preview_runtime_test.cjs",
+      "s14_frontend_static_test.cjs",
+      "s15_frontend_static_test.cjs",
+      "s16_frontend_static_test.cjs",
+      "static_contract_test.cjs"
+    ]
+  },
+  "fixture_validation": {
+    "status": "PASS",
+    "summary": "validation passed: users=3 garments=50 outfits=20 catalog=50 eval=30"
+  },
+  "fixed_r1": {
+    "status": "PASS",
+    "metrics": {
+      "urgency_accuracy": {
+        "numerator": 30,
+        "denominator": 30,
+        "value": 1.0,
+        "unit": "ratio",
+        "threshold": {
+          "operator": ">=",
+          "value": 0.95
+        },
+        "status": "PASS"
+      },
+      "high_urgency_shopping_gate_accuracy": {
+        "numerator": 10,
+        "denominator": 10,
+        "value": 1.0,
+        "unit": "ratio",
+        "threshold": {
+          "operator": "==",
+          "value": 1.0
+        },
+        "status": "PASS"
+      },
+      "high_urgency_catalog_calls": {
+        "numerator": 0,
+        "denominator": 10,
+        "value": 0,
+        "unit": "invocations",
+        "threshold": {
+          "operator": "==",
+          "value": 0
+        },
+        "status": "PASS"
+      },
+      "item_hallucinations": {
+        "numerator": 0,
+        "denominator": 515,
+        "value": 0,
+        "unit": "violations",
+        "threshold": {
+          "operator": "==",
+          "value": 0
+        },
+        "status": "PASS"
+      },
+      "hard_constraint_violations": {
+        "numerator": 0,
+        "denominator": 423,
+        "value": 0,
+        "unit": "violations",
+        "threshold": {
+          "operator": "==",
+          "value": 0
+        },
+        "status": "PASS"
+      },
+      "slot_completeness": {
+        "numerator": 74,
+        "denominator": 74,
+        "value": 1.0,
+        "unit": "ratio",
+        "threshold": {
+          "operator": ">=",
+          "value": 0.95
+        },
+        "status": "PASS"
+      }
+    }
+  },
+  "reviewer_gate": {
+    "status": "PENDING",
+    "findings": {
+      "P0": null,
+      "P1": null,
+      "P2": null
+    },
+    "note": "read-only reviewer evidence has not yet been run for this report commit"
+  },
+  "privacy_hygiene": {
+    "raw_dialogue_in_report": false,
+    "sensitive_values_in_report": false,
+    "direct_identifiers_in_report": false,
+    "model_reasoning_in_report": false,
+    "credentials_in_report": false,
+    "absolute_workspace_path_in_report": false
+  },
+  "claim_boundary": {
+    "reviewer_findings_zero_claimed": false,
+    "real_external_provider_quality": "not_assessed",
+    "s16b": "not_closed",
+    "s16c": "not_closed",
+    "s16r": "not_closed"
+  }
+}

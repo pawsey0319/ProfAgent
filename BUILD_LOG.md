@@ -1,7 +1,7 @@
 # ProfAgent R1 Demo BUILD LOG
 
 > 唯一需求权威：`docs/PRD.md`（v1.16）。
-> 当前状态：**R1 DoD Demo 子集及 S6–S15 实现与验收已关闭。S15 Memory 路线 A 已完成事务真值、生命周期/ACL、最小 outbox、可重建软投影与确定性结构化重排；全量 300 项、S15 专项 19 项、Memory 相关 44 项、固定评测、双实例/重启与真实浏览器均通过。S16 已获批准并进入 S16-0 合同冻结，S16A/B/C/R 均未完成；LangMem、Mem0、Graphiti 与学习型 reranker 移至 S17+ 且未上线。**
+> 当前状态：**R1 DoD Demo 子集及 S6–S15 实现与验收已关闭。S16A 自由文本记忆与偏好不确定性实现及 tester 技术门禁已完成：全量 374 项、Memory 51 项、Dialogue 125 项、11 个 Node 合同和固定 R1 评测均通过，外部 Provider 调用为 0；Task8 后续只读 reviewer finding 仍诚实标记为 pending。S16B、S16C、S16R 均未完成；LangMem、Mem0、Graphiti 与学习型 reranker 移至 S17+ 且未上线。**
 > 目标：交付可运行的 R1 Stylist MVP Demo，并通过 PRD 23.1 的 Demo 子集验收。
 
 ## 0. 基线与执行约束
@@ -594,12 +594,13 @@ S16 复用 S15 Memory 路线 A、R1 owner/ID/HardFilter/购物门控、不可变
 - **硬规则**：任何合同都不得把浏览器或 CPA 变成排名、追问预算、衣物 ID、购物、记忆写入或 Look truth 的权威；S16 当前不得宣称已上线。
 - **验收口径**：合同文档互相一致，旧 S15/R1 门槛原文保留，文档检查与 `git diff --check` 为绿。
 
-#### S16A — 自由文本记忆与偏好不确定性（`backend` + `frontend` → `reviewer` → `tester`，未完成）
+#### S16A — 自由文本记忆与偏好不确定性（`backend` + `frontend` → `reviewer` → `tester`，已完成）
 
 - **目标**：实现自由文本拆分候选、逐条 `remember|session_only|reject|rephrase`、冲突确认和 session-bound working context；多套合法候选接近且缺少关键偏好时最多提出一个非阻断问题。
 - **对应 AC / 硬规则**：AC-01/03/04/05/06/07/10/11/14/16，MEM-01–12，SAFE-04/08，OBS-05；敏感默认不写，长期记忆仍走 `propose→confirm→commit`，硬记忆永远不进 RRF，高急切度 `shopping_allowed=false` 且 Catalog 调用为 0，ID 幻觉/硬约束违反/人物评分均为 0。
 - **输入/输出依赖**：消费 S16-0 冻结合同及 S15 SQL/outbox/RRF；产出候选确认卡、working context 和由服务端拥有的排序/问题预算证据。
 - **验收口径**：原始自由文本、原始对话、模型推理/正文、敏感值和直接标识符不得进入长期 Memory、RRF、outbox、Trace、Debug DOM 或 browser storage；候选卡仅含服务端生成的脱敏闭集字段。高急最多问一次且不阻塞合法推荐；拒绝后不换说法重复。
+- **完成证据（2026-08-22）**：单命令原子报告 `s16a_memory_uncertainty_v1` 为 PASS；focused 5、Memory 51、Dialogue 125、full 374、Node runtime/static 11，固定 R1 指标为 UrgencyAcc 100%、高急 ShoppingGateAcc 100%、Catalog actual calls 0、Item Hallucination 0、Hard Constraint Violation 0、Slot Completeness 100%。tester 确定性测试未调用外部 Provider；报告在后续只读 review 前不伪造 finding=0，当前 reviewer 状态为 pending。
 
 #### S16B — 女装 V1 资产与授权来源（`backend` + `frontend` → `reviewer` → `tester`，未完成）
 
