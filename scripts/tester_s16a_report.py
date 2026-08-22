@@ -26,6 +26,15 @@ REVIEW_ARTIFACT_ALLOWLIST = {
     "reports/eval/s16a_memory_uncertainty_v1.json",
     "reports/eval/s16a_memory_uncertainty_v1.md",
 }
+FIXED_REVIEW_EVIDENCE_PATHS = {
+    "fixed_package": "reports/eval/evidence/s16a_fixed_package_v1.json",
+    "review_output": "reports/eval/evidence/s16a_broad_review_v1.txt",
+}
+FINAL_PUBLICATION_EXACT_PATHS = {
+    "BUILD_LOG.md",
+    *REVIEW_ARTIFACT_ALLOWLIST,
+    *FIXED_REVIEW_EVIDENCE_PATHS.values(),
+}
 REPORT_COMMAND = (
     "conda run --no-capture-output -n torch128 "
     "python scripts/tester_s16a_report.py"
@@ -222,13 +231,25 @@ def _review_git_run(arguments: list[str], label: str) -> subprocess.CompletedPro
         ) from exc
 
 
-def _review_git_identity(*, require_clean: bool) -> dict[str, str]:
+def _status_matches_allowed_untracked(
+    status_output: str, allowed_untracked: set[str]
+) -> bool:
+    actual = {line for line in status_output.splitlines() if line}
+    expected = {f"?? {path}" for path in allowed_untracked}
+    return actual == expected
+
+
+def _review_git_identity(
+    *, require_clean: bool, allowed_untracked: set[str] | None = None
+) -> dict[str, str]:
     if require_clean:
         status = _review_git_run(
-            ["status", "--porcelain", "--untracked-files=all"],
+            ["status", "--porcelain=v1", "--untracked-files=all"],
             "review Git clean status",
         )
-        if status.stdout.strip():
+        if not _status_matches_allowed_untracked(
+            status.stdout, allowed_untracked or set()
+        ):
             raise GateFailure("review evidence requires a clean tracked Git identity")
     head = _review_git_run(["rev-parse", "HEAD"], "reviewed HEAD").stdout.strip()
     tree = _review_git_run(
@@ -486,12 +507,19 @@ def _command_plan_sha256(commands: list[dict[str, Any]]) -> str:
     return _sha256(_canonical_json_bytes(plan))
 
 
-def _clean_source_provenance(run_gate=None) -> dict[str, str]:
+def _clean_source_provenance(
+    run_gate=None, *, allowed_untracked: set[str] | None = None
+) -> dict[str, str]:
     """Return the clean current runner HEAD; accepted evidence may name an older source."""
 
     runner = run_gate or _run
-    status = runner(["git", "status", "--porcelain"], "clean current HEAD status")
-    if status.stdout.strip():
+    status = runner(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        "clean current HEAD status",
+    )
+    if not _status_matches_allowed_untracked(
+        status.stdout, allowed_untracked or set()
+    ):
         raise GateFailure("atomic report requires a clean tracked worktree")
     revision = runner(
         ["git", "rev-parse", "HEAD"], "current HEAD revision"
@@ -545,6 +573,101 @@ def _safe_read_evidence_bytes(raw_path: Any) -> tuple[str, bytes]:
     if resolved_after != resolved or len(content) != after.st_size:
         raise GateFailure("review evidence path changed during read")
     return relative.as_posix(), content
+
+
+def _expected_evidence_absolute_path(kind: str) -> Path:
+    return (REVIEW_EVIDENCE_ROOT / FIXED_REVIEW_EVIDENCE_PATHS[kind]).absolute()
+
+
+def _descriptor_pending_evidence_paths(
+    descriptor: dict[str, Any] | None,
+) -> set[str]:
+    if not isinstance(descriptor, dict):
+        raise GateFailure("review descriptor is required for pending evidence")
+    expected = {
+        "fixed_package_path": _expected_evidence_absolute_path("fixed_package"),
+        "review_output_path": _expected_evidence_absolute_path("review_output"),
+    }
+    for field, expected_path in expected.items():
+        raw_path = descriptor.get(field)
+        if not isinstance(raw_path, str) or Path(raw_path) != expected_path:
+            raise GateFailure("review descriptor must use frozen tracked evidence paths")
+    return set(FIXED_REVIEW_EVIDENCE_PATHS.values())
+
+
+def _assert_regular_tracked_publication_path(relative_path: str) -> None:
+    root = REVIEW_GIT_ROOT.resolve(strict=True)
+    candidate = root / relative_path
+    try:
+        resolved = candidate.resolve(strict=True)
+        resolved_relative = resolved.relative_to(root).as_posix()
+    except (OSError, ValueError) as exc:
+        raise GateFailure("final publication path escapes the repository") from exc
+    if (
+        resolved_relative != relative_path
+        or candidate.is_symlink()
+        or not resolved.is_file()
+    ):
+        raise GateFailure("final publication path is not a regular in-repository file")
+    stage_lines = [
+        line
+        for line in _review_git_run(
+            ["ls-files", "--stage", "--", relative_path],
+            "final publication tracked file mode",
+        ).stdout.splitlines()
+        if line
+    ]
+    if len(stage_lines) != 1:
+        raise GateFailure("final publication path is not tracked exactly once")
+    metadata, tracked_path = stage_lines[0].split("\t", 1)
+    mode, object_id, stage = metadata.split()
+    if (
+        mode not in {"100644", "100755"}
+        or not re.fullmatch(r"[0-9a-f]{40,64}", object_id)
+        or stage != "0"
+        or tracked_path.replace("\\", "/") != relative_path
+    ):
+        raise GateFailure("final publication path is not a regular tracked file")
+
+
+def _validate_final_publication(current_head: str, reviewed_head: str) -> None:
+    if current_head == reviewed_head:
+        raise GateFailure("final publication must be a non-empty child commit")
+    ancestry = _review_git_run(
+        ["rev-list", "--parents", "-n", "1", current_head],
+        "final publication direct ancestry",
+    ).stdout.split()
+    if ancestry != [current_head, reviewed_head]:
+        raise GateFailure("final publication must be one direct non-merge child")
+    commits = [
+        line
+        for line in _review_git_run(
+            ["rev-list", "--reverse", f"{reviewed_head}..{current_head}"],
+            "final publication commit interval",
+        ).stdout.splitlines()
+        if line
+    ]
+    if commits != [current_head]:
+        raise GateFailure("final publication interval must contain exactly one commit")
+    changed_paths = {
+        line.replace("\\", "/")
+        for line in _review_git_run(
+            [
+                "diff-tree",
+                "--no-commit-id",
+                "--name-only",
+                "-r",
+                reviewed_head,
+                current_head,
+            ],
+            "final publication exact changed paths",
+        ).stdout.splitlines()
+        if line
+    }
+    if changed_paths != FINAL_PUBLICATION_EXACT_PATHS:
+        raise GateFailure("final publication changed-path set is not exact")
+    for relative_path in sorted(FINAL_PUBLICATION_EXACT_PATHS):
+        _assert_regular_tracked_publication_path(relative_path)
 
 
 def _parse_fixed_package(
@@ -693,8 +816,11 @@ def _parse_review_output(
     }
 
 
-def _review_gate_from_descriptor(
-    current_reviewed_head: str, descriptor: dict[str, Any] | None
+def _review_gate_from_descriptor_at_head(
+    current_head: str,
+    descriptor: dict[str, Any] | None,
+    *,
+    allow_final_publication: bool,
 ) -> dict[str, Any]:
     try:
         required = {
@@ -708,27 +834,38 @@ def _review_gate_from_descriptor(
             raise GateFailure("review descriptor shape is not closed")
         if descriptor["schema_version"] != 1:
             raise GateFailure("review descriptor schema version is unsupported")
+        _descriptor_pending_evidence_paths(descriptor)
         source_revision = descriptor["expected_source_revision"]
+        reviewed_head = descriptor["reviewed_head"]
         if (
             not re.fullmatch(r"[0-9a-f]{40}", str(source_revision))
-            or descriptor["reviewed_head"] != current_reviewed_head
-            or source_revision == current_reviewed_head
+            or not re.fullmatch(r"[0-9a-f]{40}", str(reviewed_head))
+            or source_revision == reviewed_head
         ):
             raise GateFailure("review descriptor source binding mismatch")
         identity = _review_git_identity(require_clean=False)
-        if identity["reviewed_head"] != current_reviewed_head:
+        if identity["reviewed_head"] != current_head:
             raise GateFailure("review descriptor does not bind current HEAD")
+        if current_head != reviewed_head:
+            if not allow_final_publication:
+                raise GateFailure("first evidence run must execute at reviewed HEAD")
+            _validate_final_publication(current_head, reviewed_head)
         package_path, package_bytes = _safe_read_evidence_bytes(
             descriptor["fixed_package_path"]
         )
         review_path, review_bytes = _safe_read_evidence_bytes(
             descriptor["review_output_path"]
         )
+        if (
+            package_path != FIXED_REVIEW_EVIDENCE_PATHS["fixed_package"]
+            or review_path != FIXED_REVIEW_EVIDENCE_PATHS["review_output"]
+        ):
+            raise GateFailure("review evidence paths are not the frozen tracked paths")
         package = _parse_fixed_package(
-            package_bytes, source_revision, descriptor["reviewed_head"]
+            package_bytes, source_revision, reviewed_head
         )
         parsed_review = _parse_review_output(
-            review_bytes, source_revision, descriptor["reviewed_head"]
+            review_bytes, source_revision, reviewed_head
         )
         if _review_git_identity(require_clean=False) != identity:
             raise GateFailure("reviewed Git identity changed during evidence validation")
@@ -736,7 +873,7 @@ def _review_gate_from_descriptor(
             "status": parsed_review["status"],
             "findings": parsed_review["findings"],
             "source_revision": source_revision,
-            "reviewed_head": descriptor["reviewed_head"],
+            "reviewed_head": reviewed_head,
             "fixed_package_path": package_path,
             "review_output_path": review_path,
             "fixed_package_sha256": _sha256(package_bytes),
@@ -747,6 +884,16 @@ def _review_gate_from_descriptor(
         return accepted
     except (GateFailure, OSError, ValueError, TypeError):
         return _pending_reviewer_gate()
+
+
+def _review_gate_from_descriptor(
+    current_reviewed_head: str, descriptor: dict[str, Any] | None
+) -> dict[str, Any]:
+    return _review_gate_from_descriptor_at_head(
+        current_reviewed_head,
+        descriptor,
+        allow_final_publication=False,
+    )
 
 
 def _preserve_reviewer_gate(
@@ -760,19 +907,17 @@ def _preserve_reviewer_gate(
     if (
         not isinstance(stored_gate, dict)
         or stored_gate.get("status") not in {"PASS", "CHANGES_REQUIRED"}
-        or stored_gate.get("reviewed_head") != current_reviewed_head
     ):
         return _pending_reviewer_gate()
     package_relative = stored_gate.get("fixed_package_path")
     review_relative = stored_gate.get("review_output_path")
-    if not isinstance(package_relative, str) or not isinstance(review_relative, str):
-        return _pending_reviewer_gate()
     if (
-        Path(package_relative).is_absolute()
-        or Path(review_relative).is_absolute()
-        or ".." in Path(package_relative).parts
-        or ".." in Path(review_relative).parts
+        package_relative != FIXED_REVIEW_EVIDENCE_PATHS["fixed_package"]
+        or review_relative != FIXED_REVIEW_EVIDENCE_PATHS["review_output"]
     ):
+        return _pending_reviewer_gate()
+    reviewed_head = stored_gate.get("reviewed_head")
+    if not isinstance(reviewed_head, str):
         return _pending_reviewer_gate()
     descriptor = {
         "schema_version": 1,
@@ -781,7 +926,11 @@ def _preserve_reviewer_gate(
         "fixed_package_path": str((REVIEW_EVIDENCE_ROOT / package_relative).absolute()),
         "review_output_path": str((REVIEW_EVIDENCE_ROOT / review_relative).absolute()),
     }
-    recomputed = _review_gate_from_descriptor(current_reviewed_head, descriptor)
+    recomputed = _review_gate_from_descriptor_at_head(
+        current_reviewed_head,
+        descriptor,
+        allow_final_publication=True,
+    )
     if recomputed.get("status") == "PENDING":
         return recomputed
     fields = {
@@ -913,9 +1062,15 @@ def _validate_report_contract(report: dict[str, Any]) -> None:
         or source_revision == reviewed_head
         or reviewer.get("source_revision") != source_revision
         or reviewer.get("reviewed_head") != reviewed_head
-        or _preserve_reviewer_gate(reviewed_head, reviewer) != reviewer
     ):
         raise GateFailure("reviewer evidence is not source/content bound")
+    elif (
+        _preserve_reviewer_gate(
+            _review_git_identity(require_clean=False)["reviewed_head"], reviewer
+        )
+        != reviewer
+    ):
+        raise GateFailure("reviewer evidence is not publication/content bound")
 
 
 def _selected_metric(metric: dict[str, Any]) -> dict[str, Any]:
@@ -934,6 +1089,11 @@ def _execute(
     run_gate=None,
 ) -> dict[str, Any]:
     _assert_runtime()
+    allowed_untracked_evidence = (
+        _descriptor_pending_evidence_paths(review_evidence)
+        if review_evidence is not None
+        else set()
+    )
     commands: list[dict[str, Any]] = []
     runner = run_gate or _run
 
@@ -964,7 +1124,9 @@ def _execute(
         raise GateFailure("torch128 conda Node preflight returned an invalid process.execPath")
     node_version_result = gate(_conda_node_argv("--version"), "torch128 Node version")
     node_version = node_version_result.stdout.strip()
-    recorded_current = _clean_source_provenance(gate)
+    recorded_current = _clean_source_provenance(
+        gate, allowed_untracked=allowed_untracked_evidence
+    )
 
     focused_ids = [
         "tests/test_s16_memory_candidates.py::test_http_extract_is_multicard_opaque_idempotent_and_raw_free",
@@ -1059,7 +1221,10 @@ def _execute(
     )
     gate(["git", "diff", "--check"], "git diff check")
 
-    current_identity = _review_git_identity(require_clean=True)
+    current_identity = _review_git_identity(
+        require_clean=True,
+        allowed_untracked=allowed_untracked_evidence,
+    )
     if (
         recorded_current["source_revision"] != current_identity["reviewed_head"]
         or recorded_current["git_tree"] != current_identity["reviewed_git_tree"]
@@ -1074,9 +1239,14 @@ def _execute(
     if reviewer_gate["status"] in {"PASS", "CHANGES_REQUIRED"}:
         source_revision = reviewer_gate["source_revision"]
         source_tree = _review_git_tree(source_revision)
+        report_review_identity = {
+            "reviewed_head": reviewer_gate["reviewed_head"],
+            "reviewed_git_tree": _review_git_tree(reviewer_gate["reviewed_head"]),
+        }
     else:
         source_revision = current_identity["reviewed_head"]
         source_tree = current_identity["reviewed_git_tree"]
+        report_review_identity = current_identity
     command_plan_sha256 = _command_plan_sha256(commands)
 
     report = {
@@ -1088,7 +1258,7 @@ def _execute(
         "provenance": {
             "source_revision": source_revision,
             "git_tree": source_tree,
-            **current_identity,
+            **report_review_identity,
             "command_plan_sha256": command_plan_sha256,
             "conda_environment": "torch128",
             "python": {
