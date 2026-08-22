@@ -203,7 +203,14 @@ def test_explicit_allowlisted_cpa_build_echo_is_traced_as_resolved_model(
             json={
                 "model": "grok-4.6-build",
                 "choices": [
-                    {"message": {"content": '{"intent":"recommend"}'}}
+                    {
+                        "message": {
+                            "content": (
+                                '{"intent":"recommend","occasion":"date",'
+                                '"goals":["polished"]}'
+                            )
+                        }
+                    }
                 ],
             },
         )

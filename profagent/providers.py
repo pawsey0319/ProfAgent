@@ -16,6 +16,107 @@ from .config import Settings
 LOGICAL_GROK_MODEL = "grok4.6"
 CPA_TRANSPORT_MODEL = "grok-4.6-high"
 CPA_REPORTED_MODELS = frozenset({"grok-4.6-high", "grok-4.6-build"})
+_SCENE_INTENTS = frozenset({"recommend", "buy", "fill_gap", "browse", "vent"})
+_SCENE_OCCASIONS = frozenset(
+    {
+        "daily",
+        "commute",
+        "interview",
+        "meeting",
+        "date",
+        "party",
+        "travel",
+        "outdoor",
+        "home",
+        "sports",
+    }
+)
+_SCENE_GOALS = frozenset(
+    {
+        "reliable",
+        "modern",
+        "comfortable",
+        "polished",
+        "low_key",
+        "confident",
+        "cool",
+    }
+)
+
+
+def _reject_duplicate_json_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    """Build one JSON object while rejecting every duplicate key."""
+
+    parsed: dict[str, object] = {}
+    for key, value in pairs:
+        if key in parsed:
+            raise ValueError("duplicate JSON key")
+        parsed[key] = value
+    return parsed
+
+
+def _load_closed_json(raw: bytes | str) -> object:
+    """Parse untrusted provider JSON without last-key-wins semantics."""
+
+    return json.loads(raw, object_pairs_hook=_reject_duplicate_json_keys)
+
+
+def _parse_cpa_completion(
+    raw: bytes,
+    *,
+    max_response_bytes: int,
+) -> tuple[str, str]:
+    """Parse the frozen minimal CPA completion envelope."""
+
+    if len(raw) > max_response_bytes:
+        raise ValueError("CPA completion response is too large")
+    body = _load_closed_json(raw)
+    if not isinstance(body, dict) or set(body) != {"model", "choices"}:
+        raise ValueError("CPA completion envelope is invalid")
+    reported_model = body["model"]
+    choices = body["choices"]
+    if not isinstance(reported_model, str):
+        raise TypeError("CPA completion model must be text")
+    if not isinstance(choices, list) or len(choices) != 1:
+        raise ValueError("CPA completion choices are invalid")
+    choice = choices[0]
+    if not isinstance(choice, dict) or set(choice) != {"message"}:
+        raise ValueError("CPA completion choice is invalid")
+    message = choice["message"]
+    if not isinstance(message, dict) or set(message) != {"content"}:
+        raise ValueError("CPA completion message is invalid")
+    content = message["content"]
+    if not isinstance(content, str):
+        raise TypeError("CPA completion content must be text")
+    return reported_model, content
+
+
+def _validate_scene_payload(payload: object) -> dict[str, object]:
+    """Return one fully closed Scene advisory or reject the whole payload."""
+
+    if not isinstance(payload, dict) or set(payload) != {
+        "intent",
+        "occasion",
+        "goals",
+    }:
+        raise ValueError("scene advisory envelope is invalid")
+    intent = payload["intent"]
+    occasion = payload["occasion"]
+    goals = payload["goals"]
+    if not isinstance(intent, str) or intent not in _SCENE_INTENTS:
+        raise ValueError("scene advisory intent is invalid")
+    if not isinstance(occasion, str) or occasion not in _SCENE_OCCASIONS:
+        raise ValueError("scene advisory occasion is invalid")
+    if (
+        not isinstance(goals, list)
+        or len(goals) > 3
+        or len(set(goals)) != len(goals)
+        or any(not isinstance(goal, str) or goal not in _SCENE_GOALS for goal in goals)
+    ):
+        raise ValueError("scene advisory goals are invalid")
+    return {"intent": intent, "occasion": occasion, "goals": list(goals)}
 
 
 class ProviderUnavailable(RuntimeError):
@@ -50,6 +151,7 @@ class GrokLLMProvider:
     # CPA may report a concrete, explicitly reviewed build identifier while
     # accepting the stable transport alias.  Never accept arbitrary prefixes.
     _REPORTED_MODEL_ALLOWLIST = {CPA_TRANSPORT_MODEL: CPA_REPORTED_MODELS}
+    _MAX_SCENE_RESPONSE_BYTES = 16 * 1024
     _MAX_DIALOGUE_RESPONSE_BYTES = 64 * 1024
     _MAX_MEMORY_CANDIDATE_RESPONSE_BYTES = 16 * 1024
     # R1 has no 3D/360/video/dynamic path.  Model output mentioning one of
@@ -335,12 +437,12 @@ class GrokLLMProvider:
                     json=payload,
                 )
                 response.raise_for_status()
-                body = response.json()
-            self._verify_reported_model(body.get("model"), "scene")
-            content = body["choices"][0]["message"]["content"]
-            parsed = json.loads(content)
-            if not isinstance(parsed, dict):
-                raise ValueError("provider response is not a JSON object")
+                reported_model, content = _parse_cpa_completion(
+                    response.content,
+                    max_response_bytes=self._MAX_SCENE_RESPONSE_BYTES,
+                )
+            self._verify_reported_model(reported_model, "scene")
+            parsed = _validate_scene_payload(_load_closed_json(content))
             metadata = {
                 "attempted": True,
                 "status": "ok",
@@ -430,16 +532,6 @@ class GrokLLMProvider:
         }
         started = time.perf_counter()
 
-        def reject_duplicate_keys(
-            pairs: list[tuple[str, object]],
-        ) -> dict[str, object]:
-            parsed: dict[str, object] = {}
-            for key, value in pairs:
-                if key in parsed:
-                    raise ValueError("duplicate JSON key")
-                parsed[key] = value
-            return parsed
-
         try:
             async with httpx.AsyncClient(
                 timeout=self.settings.cpa_timeout_seconds,
@@ -451,17 +543,12 @@ class GrokLLMProvider:
                     json=request_body,
                 )
                 response.raise_for_status()
-                if len(response.content) > self._MAX_MEMORY_CANDIDATE_RESPONSE_BYTES:
-                    raise ValueError("memory candidate response is too large")
-                body = json.loads(
+                reported_model, content = _parse_cpa_completion(
                     response.content,
-                    object_pairs_hook=reject_duplicate_keys,
+                    max_response_bytes=self._MAX_MEMORY_CANDIDATE_RESPONSE_BYTES,
                 )
-            self._verify_reported_model(body.get("model"), "memory_candidates")
-            content = body["choices"][0]["message"]["content"]
-            if not isinstance(content, str):
-                raise TypeError("memory candidate content must be text")
-            payload = json.loads(content, object_pairs_hook=reject_duplicate_keys)
+            self._verify_reported_model(reported_model, "memory_candidates")
+            payload = _load_closed_json(content)
             if not isinstance(payload, dict) or set(payload) != {"candidates"}:
                 raise ValueError("memory candidate envelope is invalid")
             raw_candidates = payload["candidates"]
@@ -480,13 +567,17 @@ class GrokLLMProvider:
                     raise ValueError("memory candidate fields are invalid")
                 kind = raw["canonical_kind"]
                 value = raw["canonical_value"]
+                tags = raw["applicability_tags"]
+                confidence = raw["confidence_band"]
                 if (
                     not isinstance(kind, str)
                     or kind not in allowed_kinds
                     or not isinstance(value, str)
                     or value not in allowed_values[kind]
-                    or raw["applicability_tags"] != []
-                    or raw["confidence_band"] not in {"high", "medium", "low"}
+                    or not isinstance(tags, list)
+                    or tags != []
+                    or not isinstance(confidence, str)
+                    or confidence not in {"high", "medium", "low"}
                 ):
                     raise ValueError("memory candidate value is outside closure")
                 key = (kind, value)
@@ -498,7 +589,7 @@ class GrokLLMProvider:
                         "canonical_kind": kind,
                         "canonical_value": value,
                         "applicability_tags": [],
-                        "confidence_band": raw["confidence_band"],
+                        "confidence_band": confidence,
                     }
                 )
             metadata: dict[str, object] = {
@@ -846,31 +937,18 @@ class GrokLLMProvider:
                     json=request_body,
                 )
                 response.raise_for_status()
-                if len(response.content) > self._MAX_DIALOGUE_RESPONSE_BYTES:
-                    raise DialogueOutputRejected(
-                        "CPA_DIALOGUE_ENVELOPE_TOO_LARGE"
-                    )
                 try:
-                    body = response.json()
-                except (json.JSONDecodeError, ValueError) as exc:
+                    reported_model, content = _parse_cpa_completion(
+                        response.content,
+                        max_response_bytes=self._MAX_DIALOGUE_RESPONSE_BYTES,
+                    )
+                except (json.JSONDecodeError, TypeError, ValueError) as exc:
                     raise DialogueOutputRejected(
-                        "CPA_DIALOGUE_ENVELOPE_JSON_INVALID"
+                        "CPA_DIALOGUE_ENVELOPE_SCHEMA_INVALID"
                     ) from exc
-            if not isinstance(body, dict):
-                raise DialogueOutputRejected(
-                    "CPA_DIALOGUE_ENVELOPE_SCHEMA_INVALID"
-                )
             reported_model = self._verify_reported_model(
-                body.get("model"), "dialogue"
+                reported_model, "dialogue"
             )
-            try:
-                content = body["choices"][0]["message"]["content"]
-            except (KeyError, IndexError, TypeError) as exc:
-                raise DialogueOutputRejected(
-                    "CPA_DIALOGUE_ENVELOPE_SCHEMA_INVALID"
-                ) from exc
-            if not isinstance(content, str):
-                raise DialogueOutputRejected("CPA_DIALOGUE_CONTENT_TYPE_INVALID")
             candidate = content.strip()
             if candidate.startswith("```"):
                 # Compatibility is intentionally narrow: unwrap only when the
@@ -887,8 +965,8 @@ class GrokLLMProvider:
                     )
                 candidate = fenced.group("payload").strip()
             try:
-                parsed = json.loads(candidate)
-            except json.JSONDecodeError as exc:
+                parsed = _load_closed_json(candidate)
+            except (json.JSONDecodeError, ValueError) as exc:
                 raise DialogueOutputRejected(
                     "CPA_DIALOGUE_CONTENT_JSON_INVALID"
                 ) from exc
@@ -926,48 +1004,12 @@ class GrokLLMProvider:
                 )
             advisory = parsed.get("scene_advisory")
             if advisory is not None:
-                advisory_valid = (
-                    isinstance(advisory, dict)
-                    and set(advisory) == {"intent", "occasion", "goals"}
-                    and advisory.get("intent")
-                    in {"recommend", "buy", "fill_gap", "browse", "vent"}
-                    and advisory.get("occasion")
-                    in {
-                        "daily",
-                        "commute",
-                        "interview",
-                        "meeting",
-                        "date",
-                        "party",
-                        "travel",
-                        "outdoor",
-                        "home",
-                        "sports",
-                    }
-                    and isinstance(advisory.get("goals"), list)
-                    and len(advisory["goals"]) <= 3
-                    and all(
-                        goal
-                        in {
-                            "reliable",
-                            "modern",
-                            "comfortable",
-                            "polished",
-                            "low_key",
-                            "confident",
-                            "cool",
-                        }
-                        for goal in advisory["goals"]
-                    )
-                )
-                if not advisory_valid:
-                    # Advisory never has authority over the local scene parser.
-                    # Drop malformed hints without hiding an otherwise safe,
-                    # contract-valid reply, but retain a content-free diagnostic.
-                    advisory = None
-                    advisory_diagnostic_reason_code = (
-                        "CPA_DIALOGUE_SCENE_ADVISORY_DROPPED"
-                    )
+                try:
+                    advisory = _validate_scene_payload(advisory)
+                except (TypeError, ValueError) as exc:
+                    raise DialogueOutputRejected(
+                        "CPA_DIALOGUE_SCENE_ADVISORY_INVALID"
+                    ) from exc
             if not policy["deadline_question_allowed"] and re.search(
                 r"(?:什么时候|哪天|截止时间|最晚.*(?:准备|需要))", reply
             ):

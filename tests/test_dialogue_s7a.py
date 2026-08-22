@@ -367,7 +367,7 @@ def test_explicit_pause_latch_requires_explicit_resume_even_after_new_task(
         assert resumed["recommendation"] is not None
 
 
-def test_invalid_scene_advisory_is_dropped_while_safe_reply_remains_visible(
+def test_invalid_scene_advisory_rejects_the_whole_provider_payload(
     monkeypatch, offline_settings
 ) -> None:
     contexts, calls = _install_cpa(
@@ -379,15 +379,15 @@ def test_invalid_scene_advisory_is_dropped_while_safe_reply_remains_visible(
         response = _turn(client, "今天第一次约会，有点紧张，帮我搭一套")
 
         assert calls == {"cpa": 1}
-        assert response["provider"]["status"] == "ok"
-        assert response["provider"]["generation_source"] == "cpa"
-        assert response["assistant_message"].startswith("第一次约会前有点紧张很自然")
+        assert response["provider"]["status"] == "fallback"
+        assert response["provider"]["generation_source"] == "local_fallback"
+        assert response["provider"]["reason_code"] == "CPA_DIALOGUE_OUTPUT_REJECTED"
         assert response["scene"]["occasion"] == "date"
         assert response["scene"]["urgency"] == "high"
         assert contexts[0]["policy"]["shopping_allowed"] is False
         trace = _trace(client, response)
-        assert trace["provider"]["advisory_diagnostic_reason_code"] == (
-            "CPA_DIALOGUE_SCENE_ADVISORY_DROPPED"
+        assert trace["provider"]["diagnostic_reason_code"] == (
+            "CPA_DIALOGUE_SCENE_ADVISORY_INVALID"
         )
         assert trace["catalog"]["call_count"] == 0
 
@@ -413,10 +413,7 @@ def test_invalid_advisory_never_weakens_unsafe_reply_rejection(
         assert "安全降级" not in response["assistant_message"]
         trace = _trace(client, response)
         assert trace["provider"]["diagnostic_reason_code"] == (
-            "CPA_DIALOGUE_VISUAL_REJECTED"
-        )
-        assert trace["provider"]["advisory_diagnostic_reason_code"] == (
-            "CPA_DIALOGUE_SCENE_ADVISORY_DROPPED"
+            "CPA_DIALOGUE_SCENE_ADVISORY_INVALID"
         )
         assert trace["catalog"]["call_count"] == 0
 
