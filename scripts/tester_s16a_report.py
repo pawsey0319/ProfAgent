@@ -20,6 +20,12 @@ REPORT_BUNDLE = (
     ROOT / "reports" / "eval" / "s16a_memory_uncertainty_v1.bundle.json"
 )
 REVIEW_EVIDENCE_ROOT = ROOT.resolve()
+REVIEW_GIT_ROOT = ROOT.resolve()
+REVIEW_ARTIFACT_ALLOWLIST = {
+    "reports/eval/s16a_memory_uncertainty_v1.bundle.json",
+    "reports/eval/s16a_memory_uncertainty_v1.json",
+    "reports/eval/s16a_memory_uncertainty_v1.md",
+}
 REPORT_COMMAND = (
     "conda run --no-capture-output -n torch128 "
     "python scripts/tester_s16a_report.py"
@@ -104,6 +110,57 @@ def _run(command: list[str], label: str) -> subprocess.CompletedProcess[str]:
         ) from exc
 
 
+def _review_git_run(arguments: list[str], label: str) -> subprocess.CompletedProcess[str]:
+    try:
+        git_root = REVIEW_GIT_ROOT.resolve(strict=True)
+        if not git_root.is_dir():
+            raise GateFailure("review Git root is not a directory")
+        return subprocess.run(
+            ["git", *arguments],
+            cwd=git_root,
+            check=True,
+            text=True,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        return_code = getattr(exc, "returncode", "unavailable")
+        raise GateFailure(
+            f"{label} failed with exit status {return_code}"
+        ) from exc
+
+
+def _review_git_identity(*, require_clean: bool) -> dict[str, str]:
+    if require_clean:
+        status = _review_git_run(
+            ["status", "--porcelain", "--untracked-files=all"],
+            "review Git clean status",
+        )
+        if status.stdout.strip():
+            raise GateFailure("review evidence requires a clean tracked Git identity")
+    head = _review_git_run(["rev-parse", "HEAD"], "reviewed HEAD").stdout.strip()
+    tree = _review_git_run(
+        ["rev-parse", "HEAD^{tree}"], "reviewed HEAD tree"
+    ).stdout.strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", head) or not re.fullmatch(
+        r"[0-9a-f]{40}", tree
+    ):
+        raise GateFailure("reviewed Git identity is malformed")
+    return {"reviewed_head": head, "reviewed_git_tree": tree}
+
+
+def _review_git_tree(revision: str) -> str:
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise GateFailure("review source revision is malformed")
+    tree = _review_git_run(
+        ["rev-parse", f"{revision}^{{tree}}"], "review source tree"
+    ).stdout.strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", tree):
+        raise GateFailure("review source tree is malformed")
+    return tree
+
+
 def _pytest_count(completed: subprocess.CompletedProcess[str]) -> int:
     matches = re.findall(r"(\d+) passed", completed.stdout + completed.stderr)
     if not matches:
@@ -166,6 +223,8 @@ def _bundle_document(report: dict[str, Any], markdown: str) -> dict[str, Any]:
         "report_id": report.get("report_id"),
         "source_revision": provenance.get("source_revision"),
         "git_tree": provenance.get("git_tree"),
+        "reviewed_head": provenance.get("reviewed_head"),
+        "reviewed_git_tree": provenance.get("reviewed_git_tree"),
         "command_plan_sha256": provenance.get("command_plan_sha256"),
         "projections": {
             "json": {
@@ -249,6 +308,16 @@ def _load_authoritative_report() -> dict[str, Any]:
         report = json.loads(payloads["json"])
     except (KeyError, json.JSONDecodeError) as exc:
         raise GateFailure("authoritative JSON projection payload is invalid") from exc
+    provenance = report.get("provenance", {})
+    for field in (
+        "source_revision",
+        "git_tree",
+        "reviewed_head",
+        "reviewed_git_tree",
+        "command_plan_sha256",
+    ):
+        if bundle.get(field) != provenance.get(field):
+            raise GateFailure(f"bundle/report {field} provenance mismatch")
     _validate_report_contract(report)
     return report
 
@@ -262,16 +331,22 @@ def _command_plan_sha256(commands: list[dict[str, Any]]) -> str:
 
 
 def _clean_source_provenance(run_gate=None) -> dict[str, str]:
+    """Return the clean current runner HEAD; accepted evidence may name an older source."""
+
     runner = run_gate or _run
-    status = runner(["git", "status", "--porcelain"], "clean source status")
+    status = runner(["git", "status", "--porcelain"], "clean current HEAD status")
     if status.stdout.strip():
         raise GateFailure("atomic report requires a clean tracked worktree")
-    revision = runner(["git", "rev-parse", "HEAD"], "source revision").stdout.strip()
-    tree = runner(["git", "rev-parse", "HEAD^{tree}"], "source tree").stdout.strip()
+    revision = runner(
+        ["git", "rev-parse", "HEAD"], "current HEAD revision"
+    ).stdout.strip()
+    tree = runner(
+        ["git", "rev-parse", "HEAD^{tree}"], "current HEAD tree"
+    ).stdout.strip()
     if not re.fullmatch(r"[0-9a-f]{40}", revision) or not re.fullmatch(
         r"[0-9a-f]{40}", tree
     ):
-        raise GateFailure("source revision/tree provenance is malformed")
+        raise GateFailure("current HEAD revision/tree provenance is malformed")
     return {"source_revision": revision, "git_tree": tree}
 
 
@@ -339,9 +414,9 @@ def _parse_fixed_package(
         if not re.fullmatch(r"[0-9a-f]{40}", str(package[field])):
             raise GateFailure(f"fixed package {field} is malformed")
     if (
-        package["head_revision"] != reviewed_head
+        package["base_revision"] != expected_source
+        or package["head_revision"] != reviewed_head
         or package["tested_source_revision"] != expected_source
-        or reviewed_head != expected_source
         or package["base_revision"] == package["head_revision"]
     ):
         raise GateFailure("fixed package head/tested source binding mismatch")
@@ -354,18 +429,48 @@ def _parse_fixed_package(
     if len(commits) != len(set(commits)) or commits[-1] != reviewed_head:
         raise GateFailure("fixed package commit list does not terminate at reviewed head")
     base = package["base_revision"]
+    _review_git_run(
+        ["merge-base", "--is-ancestor", base, reviewed_head],
+        "review source ancestry",
+    )
     actual_commits = [
         line
-        for line in _run(
-            ["git", "rev-list", "--reverse", f"{base}..{reviewed_head}"],
+        for line in _review_git_run(
+            ["rev-list", "--reverse", f"{base}..{reviewed_head}"],
             "review package commit list",
         ).stdout.splitlines()
         if line
     ]
-    if commits != actual_commits:
+    if not actual_commits or commits != actual_commits:
         raise GateFailure("fixed package commit list differs from local git truth")
-    actual_diff = _run(
-        ["git", "diff", "--no-ext-diff", "--binary", base, reviewed_head],
+    expected_parent = base
+    for commit in actual_commits:
+        ancestry = _review_git_run(
+            ["rev-list", "--parents", "-n", "1", commit],
+            "artifact commit ancestry",
+        ).stdout.split()
+        if ancestry != [commit, expected_parent]:
+            raise GateFailure("review artifact history must be a linear descendant")
+        changed_paths = {
+            line.replace("\\", "/")
+            for line in _review_git_run(
+                [
+                    "diff-tree",
+                    "--no-commit-id",
+                    "--name-only",
+                    "-r",
+                    expected_parent,
+                    commit,
+                ],
+                "artifact commit path allowlist",
+            ).stdout.splitlines()
+            if line
+        }
+        if not changed_paths or not changed_paths.issubset(REVIEW_ARTIFACT_ALLOWLIST):
+            raise GateFailure("review interval contains a non-artifact commit")
+        expected_parent = commit
+    actual_diff = _review_git_run(
+        ["diff", "--no-ext-diff", "--binary", base, reviewed_head],
         "review package diff truth",
     ).stdout
     if not isinstance(package["diff"], str) or package["diff"] != actual_diff:
@@ -409,7 +514,7 @@ def _parse_review_output(
     ):
         raise GateFailure("review output contains an ambiguous verdict")
     source, head, verdict = match.group(1), match.group(2), match.group(3)
-    if source != expected_source or head != reviewed_head or head != source:
+    if source != expected_source or head != reviewed_head or head == source:
         raise GateFailure("review output source/head binding mismatch")
     findings = {
         "P0": int(match.group(4)),
@@ -433,7 +538,7 @@ def _parse_review_output(
 
 
 def _review_gate_from_descriptor(
-    source_revision: str, descriptor: dict[str, Any] | None
+    current_reviewed_head: str, descriptor: dict[str, Any] | None
 ) -> dict[str, Any]:
     try:
         required = {
@@ -447,11 +552,16 @@ def _review_gate_from_descriptor(
             raise GateFailure("review descriptor shape is not closed")
         if descriptor["schema_version"] != 1:
             raise GateFailure("review descriptor schema version is unsupported")
+        source_revision = descriptor["expected_source_revision"]
         if (
-            descriptor["expected_source_revision"] != source_revision
-            or descriptor["reviewed_head"] != source_revision
+            not re.fullmatch(r"[0-9a-f]{40}", str(source_revision))
+            or descriptor["reviewed_head"] != current_reviewed_head
+            or source_revision == current_reviewed_head
         ):
             raise GateFailure("review descriptor source binding mismatch")
+        identity = _review_git_identity(require_clean=False)
+        if identity["reviewed_head"] != current_reviewed_head:
+            raise GateFailure("review descriptor does not bind current HEAD")
         package_path, package_bytes = _safe_read_evidence_bytes(
             descriptor["fixed_package_path"]
         )
@@ -464,6 +574,8 @@ def _review_gate_from_descriptor(
         parsed_review = _parse_review_output(
             review_bytes, source_revision, descriptor["reviewed_head"]
         )
+        if _review_git_identity(require_clean=False) != identity:
+            raise GateFailure("reviewed Git identity changed during evidence validation")
         accepted = {
             "status": parsed_review["status"],
             "findings": parsed_review["findings"],
@@ -482,7 +594,7 @@ def _review_gate_from_descriptor(
 
 
 def _preserve_reviewer_gate(
-    source_revision: str, stored_gate: dict[str, Any] | None = None
+    current_reviewed_head: str, stored_gate: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     if stored_gate is None:
         try:
@@ -492,7 +604,7 @@ def _preserve_reviewer_gate(
     if (
         not isinstance(stored_gate, dict)
         or stored_gate.get("status") not in {"PASS", "CHANGES_REQUIRED"}
-        or stored_gate.get("source_revision") != source_revision
+        or stored_gate.get("reviewed_head") != current_reviewed_head
     ):
         return _pending_reviewer_gate()
     package_relative = stored_gate.get("fixed_package_path")
@@ -508,12 +620,12 @@ def _preserve_reviewer_gate(
         return _pending_reviewer_gate()
     descriptor = {
         "schema_version": 1,
-        "expected_source_revision": source_revision,
+        "expected_source_revision": stored_gate.get("source_revision"),
         "reviewed_head": stored_gate.get("reviewed_head"),
         "fixed_package_path": str((REVIEW_EVIDENCE_ROOT / package_relative).absolute()),
         "review_output_path": str((REVIEW_EVIDENCE_ROOT / review_relative).absolute()),
     }
-    recomputed = _review_gate_from_descriptor(source_revision, descriptor)
+    recomputed = _review_gate_from_descriptor(current_reviewed_head, descriptor)
     if recomputed.get("status") == "PENDING":
         return recomputed
     fields = {
@@ -591,13 +703,20 @@ def _validate_report_contract(report: dict[str, Any]) -> None:
         if not _metric_passes(name, metric.get("value")):
             raise GateFailure(f"{name} value missed its fixed threshold")
     reviewer = report.get("reviewer_gate", {})
-    source_revision = report.get("provenance", {}).get("source_revision")
+    provenance = report.get("provenance", {})
+    source_revision = provenance.get("source_revision")
+    reviewed_head = provenance.get("reviewed_head")
     if reviewer.get("status") == "PENDING":
         if reviewer.get("findings") != {"P0": None, "P1": None, "P2": None}:
             raise GateFailure("pending reviewer findings must remain unknown")
-    elif not isinstance(source_revision, str) or _preserve_reviewer_gate(
-        source_revision, reviewer
-    ) != reviewer:
+    elif (
+        not isinstance(source_revision, str)
+        or not isinstance(reviewed_head, str)
+        or source_revision == reviewed_head
+        or reviewer.get("source_revision") != source_revision
+        or reviewer.get("reviewed_head") != reviewed_head
+        or _preserve_reviewer_gate(reviewed_head, reviewer) != reviewer
+    ):
         raise GateFailure("reviewer evidence is not source/content bound")
 
 
@@ -647,7 +766,7 @@ def _execute(
         raise GateFailure("torch128 conda Node preflight returned an invalid process.execPath")
     node_version_result = gate(_conda_node_argv("--version"), "torch128 Node version")
     node_version = node_version_result.stdout.strip()
-    source = _clean_source_provenance(gate)
+    recorded_current = _clean_source_provenance(gate)
 
     focused_ids = [
         "tests/test_s16_memory_candidates.py::test_http_extract_is_multicard_opaque_idempotent_and_raw_free",
@@ -730,12 +849,24 @@ def _execute(
     )
     gate(["git", "diff", "--check"], "git diff check")
 
+    current_identity = _review_git_identity(require_clean=True)
+    if (
+        recorded_current["source_revision"] != current_identity["reviewed_head"]
+        or recorded_current["git_tree"] != current_identity["reviewed_git_tree"]
+    ):
+        raise GateFailure("recorded and review Git identities differ")
     if review_evidence is None:
-        reviewer_gate = _preserve_reviewer_gate(source["source_revision"])
+        reviewer_gate = _preserve_reviewer_gate(current_identity["reviewed_head"])
     else:
         reviewer_gate = _review_gate_from_descriptor(
-            source["source_revision"], review_evidence
+            current_identity["reviewed_head"], review_evidence
         )
+    if reviewer_gate["status"] in {"PASS", "CHANGES_REQUIRED"}:
+        source_revision = reviewer_gate["source_revision"]
+        source_tree = _review_git_tree(source_revision)
+    else:
+        source_revision = current_identity["reviewed_head"]
+        source_tree = current_identity["reviewed_git_tree"]
     command_plan_sha256 = _command_plan_sha256(commands)
 
     report = {
@@ -745,7 +876,9 @@ def _execute(
         "overall_status": "PASS",
         "report_command": REPORT_COMMAND,
         "provenance": {
-            **source,
+            "source_revision": source_revision,
+            "git_tree": source_tree,
+            **current_identity,
             "command_plan_sha256": command_plan_sha256,
             "conda_environment": "torch128",
             "python": {
@@ -899,7 +1032,7 @@ def _markdown(report: dict[str, Any]) -> str:
         "",
         "## 审查边界",
         "",
-        f"本报告只证明 tester 技术门禁。当前 reviewer={report['reviewer_gate']['status']}；调用方只提供仓库允许根内的 fixed package/review output 绝对路径与预期 source/head，runner 从安全读取的同一份 bytes 自行解析并计算 SHA-256；只有内容、路径与当前 source 持续匹配时才保留 reviewer evidence。S16B、S16C、S16R 均未关闭。",
+        f"本报告只证明 tester 技术门禁。当前 reviewer={report['reviewer_gate']['status']}；接受 reviewer evidence 时，source_revision 是代码/测试/BUILD_LOG 结构的 clean commit，reviewed_head 必须是当前 HEAD 且为其非空线性后代，区间每个提交只能改三份固定 Task8 report artifacts。调用方只提供仓库允许根内的 fixed package/review output 绝对路径与预期 source/head，runner 从安全读取的同一份 bytes 自行解析并计算 SHA-256；只有 ancestry、逐提交路径、内容、路径与当前 HEAD 持续匹配时才保留 reviewer evidence。S16B、S16C、S16R 均未关闭。",
         "",
         "报告不包含原始对话、敏感值、直接标识符、模型推理或外部 Provider 正文。",
         "",
@@ -945,6 +1078,8 @@ def main(review_evidence: dict[str, Any] | None = None, run_gate=None) -> int:
                 "reviewer": authoritative["reviewer_gate"]["status"],
                 "source_revision": bundle["source_revision"],
                 "git_tree": bundle["git_tree"],
+                "reviewed_head": bundle["reviewed_head"],
+                "reviewed_git_tree": bundle["reviewed_git_tree"],
                 "command_plan_sha256": bundle["command_plan_sha256"],
                 "bundle_sha256": bundle["bundle_sha256"],
                 "projection_sha256": {
