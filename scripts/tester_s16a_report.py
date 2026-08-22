@@ -64,10 +64,70 @@ NODE_RUNTIME_CONTRACTS = (
     "static_contract_test.cjs",
     "visible_member_identity_test.cjs",
 )
-CPA_CLOSED_ENVELOPE_TESTS = (
-    "tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak",
-    "tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak",
-    "tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing",
+CPA_CLOSED_ENVELOPE_ROUTE_CASES = (
+    (
+        "test_scene_cpa_closed_response_contract_degrades_without_raw_leak",
+        (
+            "outer_duplicate",
+            "outer_extra",
+            "choice_duplicate",
+            "choice_extra",
+            "message_duplicate",
+            "message_extra",
+            "outer_missing",
+            "choices_wrong_type",
+            "choices_multiple",
+            "inner_duplicate",
+            "inner_extra",
+            "inner_missing",
+            "inner_wrong_type",
+        ),
+    ),
+    (
+        "test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak",
+        (
+            "outer_duplicate",
+            "outer_extra",
+            "choice_duplicate",
+            "choice_extra",
+            "message_duplicate",
+            "message_extra",
+            "outer_missing",
+            "choices_wrong_type",
+            "choices_multiple",
+            "inner_duplicate",
+            "inner_extra",
+            "inner_missing",
+            "inner_wrong_type",
+            "nested_duplicate",
+            "nested_extra",
+        ),
+    ),
+    (
+        "test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing",
+        (
+            "outer_duplicate",
+            "outer_extra",
+            "choice_duplicate",
+            "choice_extra",
+            "message_duplicate",
+            "message_extra",
+            "outer_missing",
+            "choices_wrong_type",
+            "choices_multiple",
+            "inner_duplicate",
+            "inner_extra",
+            "inner_missing",
+            "inner_wrong_type",
+            "nested_duplicate",
+            "nested_extra",
+        ),
+    ),
+)
+CPA_CLOSED_ENVELOPE_MANIFEST = tuple(
+    f"tests/test_cpa_response_contracts.py::{test_name}[{case}]"
+    for test_name, cases in CPA_CLOSED_ENVELOPE_ROUTE_CASES
+    for case in cases
 )
 
 
@@ -197,6 +257,71 @@ def _pytest_count(completed: subprocess.CompletedProcess[str]) -> int:
     if not matches:
         raise GateFailure("pytest output did not contain an auditable passed count")
     return int(matches[-1])
+
+
+def _cpa_collected_nodeids(
+    completed: subprocess.CompletedProcess[str],
+) -> tuple[str, ...]:
+    output = completed.stdout + completed.stderr
+    nodeids = tuple(
+        line.strip()
+        for line in output.splitlines()
+        if line.strip().startswith("tests/test_cpa_response_contracts.py::")
+    )
+    if len(nodeids) != len(set(nodeids)):
+        raise GateFailure("CPA collection manifest contains duplicate nodeids")
+    collected_matches = re.findall(
+        r"(?m)^(\d+) tests? collected(?: in [^\r\n]+)?$", output
+    )
+    if len(collected_matches) != 1 or int(collected_matches[0]) != len(nodeids):
+        raise GateFailure("CPA collection manifest summary is not exact")
+    if nodeids != CPA_CLOSED_ENVELOPE_MANIFEST:
+        missing = [
+            nodeid for nodeid in CPA_CLOSED_ENVELOPE_MANIFEST if nodeid not in nodeids
+        ]
+        unknown = [
+            nodeid for nodeid in nodeids if nodeid not in CPA_CLOSED_ENVELOPE_MANIFEST
+        ]
+        order_drift = not missing and not unknown
+        detail = (
+            f"missing={len(missing)}, unknown={len(unknown)}, "
+            f"order_drift={str(order_drift).lower()}"
+        )
+        raise GateFailure(f"CPA collection manifest drifted: {detail}")
+    return nodeids
+
+
+def _cpa_exact_outcomes(
+    completed: subprocess.CompletedProcess[str],
+) -> dict[str, int]:
+    output = completed.stdout + completed.stderr
+    summary_matches = re.findall(
+        r"(?m)^((?:\d+ (?:passed|failed|skipped|xfailed|xpassed|errors?|deselected|warnings?)(?:, )?)+) in [^\r\n]+$",
+        output,
+    )
+    if len(summary_matches) != 1:
+        raise GateFailure("CPA closed-envelope outcomes summary is not exact")
+    observed: dict[str, int] = {}
+    for count, label in re.findall(
+        r"(\d+) (passed|failed|skipped|xfailed|xpassed|errors?|deselected|warnings?)",
+        summary_matches[0],
+    ):
+        normalized = "errors" if label in {"error", "errors"} else label
+        if normalized in observed:
+            raise GateFailure("CPA closed-envelope outcomes contain duplicate status")
+        observed[normalized] = int(count)
+    expected = {
+        "passed": len(CPA_CLOSED_ENVELOPE_MANIFEST),
+        "failed": 0,
+        "skipped": 0,
+        "xfailed": 0,
+        "errors": 0,
+    }
+    if observed.get("passed") != expected["passed"] or any(
+        count for label, count in observed.items() if label != "passed"
+    ):
+        raise GateFailure("CPA closed-envelope outcomes must be exactly 43 passed")
+    return expected
 
 
 def _command_display(command: list[str]) -> str:
@@ -721,9 +846,31 @@ def _validate_report_contract(report: dict[str, Any]) -> None:
             "writes": 0,
         },
     }
+    expected_manifest = list(CPA_CLOSED_ENVELOPE_MANIFEST)
+    expected_manifest_sha = _sha256(_canonical_json_bytes(expected_manifest))
+    expected_cpa_keys = {
+        "status",
+        "collected",
+        "passed",
+        "failed",
+        "skipped",
+        "xfailed",
+        "errors",
+        "manifest_nodeids",
+        "manifest_sha256",
+        "paths",
+    }
     if (
-        cpa_contracts.get("status") != "PASS"
-        or cpa_contracts.get("passed", 0) < len(CPA_CLOSED_ENVELOPE_TESTS)
+        set(cpa_contracts) != expected_cpa_keys
+        or cpa_contracts.get("status") != "PASS"
+        or cpa_contracts.get("collected") != len(CPA_CLOSED_ENVELOPE_MANIFEST)
+        or cpa_contracts.get("passed") != len(CPA_CLOSED_ENVELOPE_MANIFEST)
+        or any(
+            cpa_contracts.get(outcome) != 0
+            for outcome in ("failed", "skipped", "xfailed", "errors")
+        )
+        or cpa_contracts.get("manifest_nodeids") != expected_manifest
+        or cpa_contracts.get("manifest_sha256") != expected_manifest_sha
         or cpa_contracts.get("paths") != expected_cpa_paths
     ):
         raise GateFailure("CPA closed-envelope degradation/leakage gate failed")
@@ -732,6 +879,10 @@ def _validate_report_contract(report: dict[str, Any]) -> None:
         detail = pytest_report.get(suite, {})
         if detail.get("status") != "PASS" or detail.get("passed", 0) < 1:
             raise GateFailure(f"pytest.{suite} gate failed")
+    if pytest_report["cpa_closed_envelopes"].get("passed") != len(
+        CPA_CLOSED_ENVELOPE_MANIFEST
+    ):
+        raise GateFailure("CPA closed-envelope pytest count is not exact")
     node = report.get("node", {})
     if node.get("status") != "PASS" or node.get("passed", 0) < 1:
         raise GateFailure("Node gate failed")
@@ -842,10 +993,22 @@ def _execute(
         ),
         "S16A Dialogue pytest",
     )
+    cpa_collection = gate(
+        _conda_python_argv(
+            "-m",
+            "pytest",
+            "--collect-only",
+            "-q",
+            "tests/test_cpa_response_contracts.py",
+        ),
+        "CPA closed-envelope collection",
+    )
+    collected_cpa_nodeids = _cpa_collected_nodeids(cpa_collection)
     cpa_closed_envelopes = gate(
-        _conda_python_argv("-m", "pytest", "-q", *CPA_CLOSED_ENVELOPE_TESTS),
+        _conda_python_argv("-m", "pytest", "-q", *collected_cpa_nodeids),
         "CPA closed-envelope pytest",
     )
+    cpa_outcomes = _cpa_exact_outcomes(cpa_closed_envelopes)
 
     node_test_paths = _node_runtime_contract_paths(ROOT / "web")
     node_syntax_paths = sorted(
@@ -993,7 +1156,12 @@ def _execute(
             "image_cpa_calls": 0,
             "closed_envelope_contracts": {
                 "status": "PASS",
-                "passed": _pytest_count(cpa_closed_envelopes),
+                "collected": len(collected_cpa_nodeids),
+                **cpa_outcomes,
+                "manifest_nodeids": list(CPA_CLOSED_ENVELOPE_MANIFEST),
+                "manifest_sha256": _sha256(
+                    _canonical_json_bytes(list(CPA_CLOSED_ENVELOPE_MANIFEST))
+                ),
                 "paths": {
                     "scene": {
                         "invalid_envelope_degraded": True,
@@ -1017,7 +1185,7 @@ def _execute(
             "dialogue": {"status": "PASS", "passed": _pytest_count(dialogue)},
             "cpa_closed_envelopes": {
                 "status": "PASS",
-                "passed": _pytest_count(cpa_closed_envelopes),
+                "passed": cpa_outcomes["passed"],
             },
             "full": {"status": "PASS", "passed": _pytest_count(full)},
         },

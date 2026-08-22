@@ -19,6 +19,75 @@ REQUIRED_MEMORY_CHECKS = {
     "high_urgency_continuation",
 }
 
+_CPA_ROUTE_CASES = (
+    (
+        "test_scene_cpa_closed_response_contract_degrades_without_raw_leak",
+        (
+            "outer_duplicate",
+            "outer_extra",
+            "choice_duplicate",
+            "choice_extra",
+            "message_duplicate",
+            "message_extra",
+            "outer_missing",
+            "choices_wrong_type",
+            "choices_multiple",
+            "inner_duplicate",
+            "inner_extra",
+            "inner_missing",
+            "inner_wrong_type",
+        ),
+    ),
+    (
+        "test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak",
+        (
+            "outer_duplicate",
+            "outer_extra",
+            "choice_duplicate",
+            "choice_extra",
+            "message_duplicate",
+            "message_extra",
+            "outer_missing",
+            "choices_wrong_type",
+            "choices_multiple",
+            "inner_duplicate",
+            "inner_extra",
+            "inner_missing",
+            "inner_wrong_type",
+            "nested_duplicate",
+            "nested_extra",
+        ),
+    ),
+    (
+        "test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing",
+        (
+            "outer_duplicate",
+            "outer_extra",
+            "choice_duplicate",
+            "choice_extra",
+            "message_duplicate",
+            "message_extra",
+            "outer_missing",
+            "choices_wrong_type",
+            "choices_multiple",
+            "inner_duplicate",
+            "inner_extra",
+            "inner_missing",
+            "inner_wrong_type",
+            "nested_duplicate",
+            "nested_extra",
+        ),
+    ),
+)
+
+
+def _expected_cpa_manifest() -> tuple[str, ...]:
+    return tuple(
+        f"tests/test_cpa_response_contracts.py::{test_name}[{case}]"
+        for test_name, cases in _CPA_ROUTE_CASES
+        for case in cases
+    )
+
 
 def _redirect_reports(monkeypatch, tmp_path: Path) -> tuple[Path, Path, Path]:
     json_path = tmp_path / "s16a.json"
@@ -56,7 +125,18 @@ def _passing_report() -> dict:
             "external_calls": 0,
             "closed_envelope_contracts": {
                 "status": "PASS",
-                "passed": 3,
+                "collected": 43,
+                "passed": 43,
+                "failed": 0,
+                "skipped": 0,
+                "xfailed": 0,
+                "errors": 0,
+                "manifest_nodeids": list(_expected_cpa_manifest()),
+                "manifest_sha256": report_module._sha256(
+                    report_module._canonical_json_bytes(
+                        list(_expected_cpa_manifest())
+                    )
+                ),
                 "paths": {
                     "scene": {"invalid_envelope_degraded": True, "raw_leakage": 0},
                     "dialogue": {"invalid_envelope_degraded": True, "raw_leakage": 0},
@@ -72,7 +152,7 @@ def _passing_report() -> dict:
             "focused": {"status": "PASS", "passed": 1},
             "memory": {"status": "PASS", "passed": 1},
             "dialogue": {"status": "PASS", "passed": 1},
-            "cpa_closed_envelopes": {"status": "PASS", "passed": 3},
+            "cpa_closed_envelopes": {"status": "PASS", "passed": 43},
             "full": {"status": "PASS", "passed": 1},
         },
         "node": {"status": "PASS", "passed": 1},
@@ -142,7 +222,7 @@ def test_s16a_report_contract_covers_required_gates() -> None:
         "catalog_actual_calls": 0,
     }
     assert report["provider_determinism"]["external_calls"] == 0
-    assert report["pytest"]["cpa_closed_envelopes"]["passed"] == 3
+    assert report["pytest"]["cpa_closed_envelopes"]["passed"] == 43
     assert report["pytest"]["full"]["status"] == "PASS"
     assert report["node"]["status"] == "PASS"
     assert report["reviewer_gate"] == {
@@ -152,18 +232,61 @@ def test_s16a_report_contract_covers_required_gates() -> None:
 
 
 def test_s16a_report_requires_explicit_cpa_closed_envelope_evidence() -> None:
-    expected = (
-        "tests/test_cpa_response_contracts.py::test_scene_cpa_closed_response_contract_degrades_without_raw_leak",
-        "tests/test_cpa_response_contracts.py::test_dialogue_cpa_closed_response_contract_falls_back_without_raw_leak",
-        "tests/test_cpa_response_contracts.py::test_memory_cpa_closed_response_contract_writes_nothing_and_leaks_nothing",
-    )
-    assert report_module.CPA_CLOSED_ENVELOPE_TESTS == expected
+    expected = _expected_cpa_manifest()
+    assert len(expected) == 43
+    assert report_module.CPA_CLOSED_ENVELOPE_MANIFEST == expected
 
     report = _passing_report()
     report_module._validate_report_contract(report)
     del report["provider_determinism"]["closed_envelope_contracts"]
     with pytest.raises(report_module.GateFailure, match="CPA closed-envelope"):
         report_module._validate_report_contract(report)
+
+
+@pytest.mark.parametrize("passed", [3, 42, 44])
+def test_s16a_report_rejects_nonexact_cpa_closed_envelope_pass_count(
+    passed: int,
+) -> None:
+    report = _passing_report()
+    report["provider_determinism"]["closed_envelope_contracts"]["passed"] = passed
+    report["pytest"]["cpa_closed_envelopes"]["passed"] = passed
+    with pytest.raises(report_module.GateFailure, match="CPA closed-envelope"):
+        report_module._validate_report_contract(report)
+
+
+def test_s16a_cpa_collection_manifest_rejects_missing_extra_and_duplicate() -> None:
+    expected = _expected_cpa_manifest()
+
+    def collected(nodeids: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
+        output = "\n".join(nodeids) + f"\n\n{len(nodeids)} tests collected in 0.01s\n"
+        return subprocess.CompletedProcess([], 0, stdout=output, stderr="")
+
+    assert report_module._cpa_collected_nodeids(collected(expected)) == expected
+    for drifted in (
+        expected[:-1],
+        (*expected, "tests/test_cpa_response_contracts.py::test_unknown[extra]"),
+        (*expected[:-1], expected[-2]),
+        (expected[1], expected[0], *expected[2:]),
+    ):
+        with pytest.raises(report_module.GateFailure, match="CPA collection manifest"):
+            report_module._cpa_collected_nodeids(collected(drifted))
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "3 passed in 0.01s",
+        "42 passed in 0.01s",
+        "44 passed in 0.01s",
+        "42 passed, 1 skipped in 0.01s",
+        "42 passed, 1 xfailed in 0.01s",
+        "42 passed, 1 error in 0.01s",
+    ],
+)
+def test_s16a_cpa_result_requires_exact_43_clean_passes(summary: str) -> None:
+    completed = subprocess.CompletedProcess([], 0, stdout=summary + "\n", stderr="")
+    with pytest.raises(report_module.GateFailure, match="CPA closed-envelope outcomes"):
+        report_module._cpa_exact_outcomes(completed)
 
 
 def test_s16a_report_contract_rejects_threshold_drift() -> None:
@@ -502,8 +625,11 @@ def _fake_execute_gate(root: Path, temp_root: Path):
             stdout = _git_text("rev-parse", "HEAD", cwd=root).strip() + "\n"
         elif label == "current HEAD tree":
             stdout = _git_text("rev-parse", "HEAD^{tree}", cwd=root).strip() + "\n"
+        elif label == "CPA closed-envelope collection":
+            manifest = _expected_cpa_manifest()
+            stdout = "\n".join(manifest) + "\n\n43 tests collected in 0.01s\n"
         elif label == "CPA closed-envelope pytest":
-            stdout = "3 passed in 0.01s\n"
+            stdout = "43 passed in 0.01s\n"
         elif "pytest" in label:
             stdout = "1 passed in 0.01s\n"
         elif label == "fixture validation":
@@ -730,12 +856,24 @@ def test_s16a_execute_publication_preserve_and_drift_fail_closed(
     assert first["reviewer_gate"]["review_output_sha256"] == report_module._sha256(
         review_path.read_bytes()
     )
-    assert first["provider_determinism"]["closed_envelope_contracts"]["passed"] == 3
+    closed_contract = first["provider_determinism"]["closed_envelope_contracts"]
+    assert closed_contract["passed"] == 43
+    assert closed_contract["collected"] == 43
+    assert closed_contract["manifest_nodeids"] == list(_expected_cpa_manifest())
+    collection_commands = [
+        entry
+        for entry in first["commands"]
+        if entry["label"] == "CPA closed-envelope collection"
+    ]
+    assert len(collection_commands) == 1
     cpa_commands = [
         entry for entry in first["commands"] if entry["label"] == "CPA closed-envelope pytest"
     ]
     assert len(cpa_commands) == 1
-    assert all(test_id in cpa_commands[0]["command"] for test_id in report_module.CPA_CLOSED_ENVELOPE_TESTS)
+    assert all(
+        test_id in cpa_commands[0]["command"]
+        for test_id in report_module.CPA_CLOSED_ENVELOPE_MANIFEST
+    )
 
     assert report_module.main(run_gate=fake_gate_run) == 0
     preserved = report_module._load_authoritative_report()
