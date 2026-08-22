@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -14,13 +16,16 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 REPORT_JSON = ROOT / "reports" / "eval" / "s16a_memory_uncertainty_v1.json"
 REPORT_MD = ROOT / "reports" / "eval" / "s16a_memory_uncertainty_v1.md"
+REPORT_BUNDLE = (
+    ROOT / "reports" / "eval" / "s16a_memory_uncertainty_v1.bundle.json"
+)
 REPORT_COMMAND = (
     "conda run --no-capture-output -n torch128 "
     "python scripts/tester_s16a_report.py"
 )
 PYTHON = str(Path(sys.executable).resolve())
-_node_on_path = shutil.which("node")
-NODE = str(Path(_node_on_path).resolve()) if _node_on_path else ""
+_conda_on_path = os.environ.get("CONDA_EXE") or shutil.which("conda")
+CONDA = str(Path(_conda_on_path).resolve()) if _conda_on_path else ""
 
 REQUIRED_MEMORY_CHECKS = {
     "candidate_extraction",
@@ -53,8 +58,32 @@ def _assert_runtime() -> None:
         sys.executable
     ).resolve():
         raise GateFailure("Python runtime is not locked to current torch128 executable")
-    if not NODE or not Path(NODE).is_absolute() or not Path(NODE).is_file():
-        raise GateFailure("Node runtime was not resolved to an absolute executable")
+    if not CONDA or not Path(CONDA).is_absolute() or not Path(CONDA).is_file():
+        raise GateFailure("conda executable was not resolved to an absolute path")
+
+
+def _conda_python_argv(*arguments: str) -> list[str]:
+    return [
+        CONDA,
+        "run",
+        "--no-capture-output",
+        "-n",
+        "torch128",
+        "python",
+        *arguments,
+    ]
+
+
+def _conda_node_argv(*arguments: str) -> list[str]:
+    return [
+        CONDA,
+        "run",
+        "--no-capture-output",
+        "-n",
+        "torch128",
+        "node",
+        *arguments,
+    ]
 
 
 def _run(command: list[str], label: str) -> subprocess.CompletedProcess[str]:
@@ -83,57 +112,213 @@ def _pytest_count(completed: subprocess.CompletedProcess[str]) -> int:
 
 def _command_display(command: list[str]) -> str:
     display = list(command)
-    if display and Path(display[0]).resolve() == Path(PYTHON).resolve():
-        display[0] = "python[torch128]"
-    elif display and NODE and Path(display[0]).resolve() == Path(NODE).resolve():
-        display[0] = "node[torch128-path]"
+    if display and CONDA and Path(display[0]).resolve() == Path(CONDA).resolve():
+        display[0] = "conda[resolved]"
     return " ".join(display)
 
 
-def _atomic_replace_pair(
-    json_path: Path,
-    json_content: str,
-    markdown_path: Path,
-    markdown_content: str,
-) -> None:
-    json_path.parent.mkdir(parents=True, exist_ok=True)
-    markdown_path.parent.mkdir(parents=True, exist_ok=True)
-    json_temp = json_path.with_name(json_path.name + ".tmp")
-    markdown_temp = markdown_path.with_name(markdown_path.name + ".tmp")
-    previous = {
-        json_path: json_path.read_bytes() if json_path.exists() else None,
-        markdown_path: markdown_path.read_bytes() if markdown_path.exists() else None,
-    }
-    json_replaced = False
-    markdown_replaced = False
+def _sha256(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
+
+
+def _canonical_json_bytes(value: Any) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _write_fsynced(path: Path, content: bytes) -> None:
+    with path.open("wb") as stream:
+        stream.write(content)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _run_preserving_files(paths: list[Path], operation):
+    snapshots = {path: path.read_bytes() if path.exists() else None for path in paths}
     try:
-        json_temp.write_text(json_content, encoding="utf-8")
-        markdown_temp.write_text(markdown_content, encoding="utf-8")
-        os.replace(json_temp, json_path)
-        json_replaced = True
-        os.replace(markdown_temp, markdown_path)
-        markdown_replaced = True
-    except Exception:
-        for path, was_replaced in (
-            (json_path, json_replaced),
-            (markdown_path, markdown_replaced),
-        ):
-            if not was_replaced:
-                continue
-            old_content = previous[path]
-            if old_content is None:
+        return operation()
+    finally:
+        for path, content in snapshots.items():
+            if content is None:
                 path.unlink(missing_ok=True)
                 continue
-            rollback = path.with_name(path.name + ".rollback.tmp")
+            temporary = path.with_name(path.name + ".restore.tmp")
             try:
-                rollback.write_bytes(old_content)
-                os.replace(rollback, path)
+                _write_fsynced(temporary, content)
+                os.replace(temporary, path)
             finally:
-                rollback.unlink(missing_ok=True)
-        raise
+                temporary.unlink(missing_ok=True)
+
+
+def _bundle_document(report: dict[str, Any], markdown: str) -> dict[str, Any]:
+    json_content = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
+    json_bytes = json_content.encode("utf-8")
+    markdown_bytes = markdown.encode("utf-8")
+    provenance = report.get("provenance", {})
+    core = {
+        "schema_version": 1,
+        "bundle_id": "s16a_memory_uncertainty_v1_bundle",
+        "report_id": report.get("report_id"),
+        "source_revision": provenance.get("source_revision"),
+        "git_tree": provenance.get("git_tree"),
+        "command_plan_sha256": provenance.get("command_plan_sha256"),
+        "projections": {
+            "json": {
+                "path": "reports/eval/s16a_memory_uncertainty_v1.json",
+                "sha256": _sha256(json_bytes),
+            },
+            "markdown": {
+                "path": "reports/eval/s16a_memory_uncertainty_v1.md",
+                "sha256": _sha256(markdown_bytes),
+            },
+        },
+        "payloads": {"json": json_content, "markdown": markdown},
+    }
+    return {**core, "bundle_sha256": _sha256(_canonical_json_bytes(core))}
+
+
+def _publish_authoritative_bundle(report: dict[str, Any], markdown: str) -> None:
+    """Publish projections first; one bundle replace is the authority commit.
+
+    A projection is never authoritative on its own. If either projection replace or
+    the final bundle replace fails, an old/mixed pair cannot validate. A later run
+    safely converges by replacing both projections and then the canonical bundle.
+    """
+
+    _validate_report_contract(report)
+    bundle = _bundle_document(report, markdown)
+    json_bytes = bundle["payloads"]["json"].encode("utf-8")
+    markdown_bytes = bundle["payloads"]["markdown"].encode("utf-8")
+    bundle_bytes = json.dumps(bundle, ensure_ascii=False, indent=2).encode("utf-8") + b"\n"
+    for path in (REPORT_JSON, REPORT_MD, REPORT_BUNDLE):
+        path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = {
+        REPORT_JSON: REPORT_JSON.with_name(REPORT_JSON.name + ".tmp"),
+        REPORT_MD: REPORT_MD.with_name(REPORT_MD.name + ".tmp"),
+        REPORT_BUNDLE: REPORT_BUNDLE.with_name(REPORT_BUNDLE.name + ".tmp"),
+    }
+    try:
+        _write_fsynced(temporary[REPORT_JSON], json_bytes)
+        _write_fsynced(temporary[REPORT_MD], markdown_bytes)
+        _write_fsynced(temporary[REPORT_BUNDLE], bundle_bytes)
+        os.replace(temporary[REPORT_JSON], REPORT_JSON)
+        os.replace(temporary[REPORT_MD], REPORT_MD)
+        os.replace(temporary[REPORT_BUNDLE], REPORT_BUNDLE)
+        _load_authoritative_report()
     finally:
-        json_temp.unlink(missing_ok=True)
-        markdown_temp.unlink(missing_ok=True)
+        for path in temporary.values():
+            path.unlink(missing_ok=True)
+
+
+def _load_authoritative_report() -> dict[str, Any]:
+    """Load a PASS only through a valid bundle plus both exact projections."""
+
+    try:
+        bundle = json.loads(REPORT_BUNDLE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise GateFailure("authoritative bundle is absent or invalid") from exc
+    bundle_hash = bundle.get("bundle_sha256")
+    core = {key: value for key, value in bundle.items() if key != "bundle_sha256"}
+    if not isinstance(bundle_hash, str) or bundle_hash != _sha256(
+        _canonical_json_bytes(core)
+    ):
+        raise GateFailure("authoritative bundle hash mismatch")
+    payloads = bundle.get("payloads", {})
+    projections = bundle.get("projections", {})
+    expected = {
+        "json": payloads.get("json", "").encode("utf-8"),
+        "markdown": payloads.get("markdown", "").encode("utf-8"),
+    }
+    actual_paths = {"json": REPORT_JSON, "markdown": REPORT_MD}
+    for name, path in actual_paths.items():
+        expected_hash = projections.get(name, {}).get("sha256")
+        if not isinstance(expected_hash, str) or _sha256(expected[name]) != expected_hash:
+            raise GateFailure(f"{name} projection payload hash mismatch")
+        try:
+            actual = path.read_bytes()
+        except OSError as exc:
+            raise GateFailure(f"{name} projection is unavailable") from exc
+        if actual != expected[name] or _sha256(actual) != expected_hash:
+            raise GateFailure(f"{name} projection does not match authoritative bundle")
+    try:
+        report = json.loads(payloads["json"])
+    except (KeyError, json.JSONDecodeError) as exc:
+        raise GateFailure("authoritative JSON projection payload is invalid") from exc
+    _validate_report_contract(report)
+    return report
+
+
+def _command_plan_sha256(commands: list[dict[str, Any]]) -> str:
+    plan = [
+        {"label": command["label"], "command": command["command"]}
+        for command in commands
+    ]
+    return _sha256(_canonical_json_bytes(plan))
+
+
+def _clean_source_provenance(run_gate=None) -> dict[str, str]:
+    runner = run_gate or _run
+    status = runner(["git", "status", "--porcelain"], "clean source status")
+    if status.stdout.strip():
+        raise GateFailure("atomic report requires a clean tracked worktree")
+    revision = runner(["git", "rev-parse", "HEAD"], "source revision").stdout.strip()
+    tree = runner(["git", "rev-parse", "HEAD^{tree}"], "source tree").stdout.strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", revision) or not re.fullmatch(
+        r"[0-9a-f]{40}", tree
+    ):
+        raise GateFailure("source revision/tree provenance is malformed")
+    return {"source_revision": revision, "git_tree": tree}
+
+
+def _pending_reviewer_gate() -> dict[str, Any]:
+    return {
+        "status": "PENDING",
+        "findings": {"P0": None, "P1": None, "P2": None},
+        "note": "no valid hash-bound reviewer evidence for current source revision",
+    }
+
+
+def _select_reviewer_gate(
+    source_revision: str, evidence: dict[str, Any] | None
+) -> dict[str, Any]:
+    if not isinstance(evidence, dict):
+        return _pending_reviewer_gate()
+    required = {
+        "schema_version",
+        "source_revision",
+        "fixed_package_sha256",
+        "review_output_sha256",
+        "status",
+        "findings",
+    }
+    if not required.issubset(evidence) or evidence.get("schema_version") != 1:
+        return _pending_reviewer_gate()
+    if evidence.get("source_revision") != source_revision:
+        return _pending_reviewer_gate()
+    if not all(
+        re.fullmatch(r"[0-9a-f]{64}", str(evidence.get(field, "")))
+        for field in ("fixed_package_sha256", "review_output_sha256")
+    ):
+        return _pending_reviewer_gate()
+    status = evidence.get("status")
+    findings = evidence.get("findings")
+    if status not in {"PASS", "CHANGES_REQUIRED"} or not isinstance(findings, dict):
+        return _pending_reviewer_gate()
+    if set(findings) != {"P0", "P1", "P2"} or not all(
+        isinstance(findings[key], int) and findings[key] >= 0 for key in findings
+    ):
+        return _pending_reviewer_gate()
+    if status == "PASS" and any(findings.values()):
+        return _pending_reviewer_gate()
+    if status == "CHANGES_REQUIRED" and not any(findings.values()):
+        return _pending_reviewer_gate()
+    accepted = {key: evidence[key] for key in required}
+    accepted["evidence_sha256"] = _sha256(_canonical_json_bytes(accepted))
+    return accepted
 
 
 def _metric_passes(name: str, value: float | int) -> bool:
@@ -194,12 +379,14 @@ def _validate_report_contract(report: dict[str, Any]) -> None:
         if not _metric_passes(name, metric.get("value")):
             raise GateFailure(f"{name} value missed its fixed threshold")
     reviewer = report.get("reviewer_gate", {})
-    if reviewer.get("status") != "PENDING" or reviewer.get("findings") != {
-        "P0": None,
-        "P1": None,
-        "P2": None,
-    }:
-        raise GateFailure("reviewer findings must remain honestly pending")
+    source_revision = report.get("provenance", {}).get("source_revision")
+    if reviewer.get("status") == "PENDING":
+        if reviewer.get("findings") != {"P0": None, "P1": None, "P2": None}:
+            raise GateFailure("pending reviewer findings must remain unknown")
+    elif not isinstance(source_revision, str) or _select_reviewer_gate(
+        source_revision, reviewer
+    ).get("status") != reviewer.get("status"):
+        raise GateFailure("reviewer evidence is not hash/source bound")
 
 
 def _selected_metric(metric: dict[str, Any]) -> dict[str, Any]:
@@ -213,7 +400,7 @@ def _selected_metric(metric: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _execute() -> dict[str, Any]:
+def _execute(review_evidence: dict[str, Any] | None = None) -> dict[str, Any]:
     _assert_runtime()
     commands: list[dict[str, Any]] = []
 
@@ -228,8 +415,23 @@ def _execute() -> dict[str, Any]:
         )
         return completed
 
-    node_version_result = gate([NODE, "--version"], "locked Node version")
+    python_exec_result = gate(
+        _conda_python_argv("-c", "import sys; print(sys.executable)"),
+        "torch128 Python process.execPath",
+    )
+    resolved_python = python_exec_result.stdout.strip()
+    if Path(resolved_python).resolve() != Path(PYTHON).resolve():
+        raise GateFailure("nested torch128 Python did not resolve to current sys.executable")
+    node_exec_result = gate(
+        _conda_node_argv("-p", "process.execPath"),
+        "torch128 Node process.execPath",
+    )
+    resolved_node = node_exec_result.stdout.strip()
+    if not resolved_node or not Path(resolved_node).is_absolute():
+        raise GateFailure("torch128 conda Node preflight returned an invalid process.execPath")
+    node_version_result = gate(_conda_node_argv("--version"), "torch128 Node version")
     node_version = node_version_result.stdout.strip()
+    source = _clean_source_provenance(gate)
 
     focused_ids = [
         "tests/test_s16_memory_candidates.py::test_http_extract_is_multicard_opaque_idempotent_and_raw_free",
@@ -239,22 +441,23 @@ def _execute() -> dict[str, Any]:
         "tests/test_s16_preference_uncertainty.py::test_high_urgency_question_budget_and_retry_do_not_duplicate_cpa_or_candidate",
     ]
     focused = gate(
-        [PYTHON, "-m", "pytest", "-q", *focused_ids],
+        _conda_python_argv("-m", "pytest", "-q", *focused_ids),
         "S16A focused contract pytest",
     )
     memory = gate(
-        [PYTHON, "-m", "pytest", "-q", "tests/test_s16_memory_candidates.py"],
+        _conda_python_argv(
+            "-m", "pytest", "-q", "tests/test_s16_memory_candidates.py"
+        ),
         "S16A Memory pytest",
     )
     dialogue = gate(
-        [
-            PYTHON,
+        _conda_python_argv(
             "-m",
             "pytest",
             "-q",
             "tests/test_s16_preference_uncertainty.py",
             "tests/test_dialogue_turn.py",
-        ],
+        ),
         "S16A Dialogue pytest",
     )
 
@@ -270,17 +473,27 @@ def _execute() -> dict[str, Any]:
     )
     for path in node_syntax_paths:
         relative = path.relative_to(ROOT).as_posix()
-        gate([NODE, "--check", relative], f"Node syntax {path.name}")
+        gate(_conda_node_argv("--check", relative), f"Node syntax {path.name}")
     for path in node_test_paths:
         relative = path.relative_to(ROOT).as_posix()
-        gate([NODE, relative], f"Node runtime {path.name}")
-
-    full = gate([PYTHON, "-m", "pytest", "-q"], "full pytest")
-    validate = gate([PYTHON, "scripts/validate.py"], "fixture validation")
-    gate([PYTHON, "-m", "profagent.eval"], "fixed R1 evaluation")
+        gate(_conda_node_argv(relative), f"Node runtime {path.name}")
 
     eval_path = ROOT / "reports" / "eval" / "r1_demo_v1.json"
-    eval_report = json.loads(eval_path.read_text(encoding="utf-8"))
+    eval_md_path = ROOT / "reports" / "eval" / "r1_demo_v1.md"
+    protected_r1_reports = [eval_path, eval_md_path]
+    full = _run_preserving_files(
+        protected_r1_reports,
+        lambda: gate(_conda_python_argv("-m", "pytest", "-q"), "full pytest"),
+    )
+    validate = gate(
+        _conda_python_argv("scripts/validate.py"), "fixture validation"
+    )
+
+    def fixed_eval_gate():
+        gate(_conda_python_argv("-m", "profagent.eval"), "fixed R1 evaluation")
+        return json.loads(eval_path.read_text(encoding="utf-8"))
+
+    eval_report = _run_preserving_files(protected_r1_reports, fixed_eval_gate)
     fixed_metrics = {
         name: _selected_metric(eval_report["metrics"][name])
         for name in R1_THRESHOLDS
@@ -300,9 +513,18 @@ def _execute() -> dict[str, Any]:
         "fixed truth diff",
     )
     gate(["git", "diff", "--check"], "git diff check")
-    source_revision = gate(
-        ["git", "rev-parse", "HEAD"], "source revision"
-    ).stdout.strip()
+
+    if review_evidence is None:
+        try:
+            prior = _load_authoritative_report().get("reviewer_gate")
+        except GateFailure:
+            prior = None
+        reviewer_gate = _select_reviewer_gate(source["source_revision"], prior)
+    else:
+        reviewer_gate = _select_reviewer_gate(
+            source["source_revision"], review_evidence
+        )
+    command_plan_sha256 = _command_plan_sha256(commands)
 
     report = {
         "schema_version": 1,
@@ -311,18 +533,23 @@ def _execute() -> dict[str, Any]:
         "overall_status": "PASS",
         "report_command": REPORT_COMMAND,
         "provenance": {
-            "source_revision": source_revision,
+            **source,
+            "command_plan_sha256": command_plan_sha256,
             "conda_environment": "torch128",
             "python": {
                 "version": platform.python_version(),
-                "binding": "current sys.executable resolved inside torch128",
+                "process_exec_path": resolved_python,
+                "binding": "resolved by torch128 conda invocation and matched current sys.executable",
             },
             "node": {
                 "version": node_version,
-                "binding": "absolute executable resolved from torch128 process PATH",
+                "process_exec_path": resolved_node,
+                "binding": "resolved by `conda run --no-capture-output -n torch128 node -p process.execPath`; no claim that Node is stored inside the env directory",
             },
             "fixtures": "fixtures_v1.0",
             "fixed_eval": "data/eval/eval.jsonl",
+            "publication_authority": "reports/eval/s16a_memory_uncertainty_v1.bundle.json",
+            "projection_hashes": "recorded in canonical bundle to avoid self-referential projection hashes",
         },
         "commands": commands,
         "memory_uncertainty": {
@@ -395,11 +622,7 @@ def _execute() -> dict[str, Any]:
             "status": eval_report["status"],
             "metrics": fixed_metrics,
         },
-        "reviewer_gate": {
-            "status": "PENDING",
-            "findings": {"P0": None, "P1": None, "P2": None},
-            "note": "read-only reviewer evidence has not yet been run for this report commit",
-        },
+        "reviewer_gate": reviewer_gate,
         "privacy_hygiene": {
             "raw_dialogue_in_report": False,
             "sensitive_values_in_report": False,
@@ -409,7 +632,7 @@ def _execute() -> dict[str, Any]:
             "absolute_workspace_path_in_report": False,
         },
         "claim_boundary": {
-            "reviewer_findings_zero_claimed": False,
+            "reviewer_findings_zero_claimed": reviewer_gate["status"] == "PASS",
             "real_external_provider_quality": "not_assessed",
             "s16b": "not_closed",
             "s16c": "not_closed",
@@ -437,13 +660,15 @@ def _markdown(report: dict[str, Any]) -> str:
     lines = [
         "# S16A 自由文本记忆与偏好不确定性验收",
         "",
-        "结论：PASS（tester 技术门禁）；后续只读 reviewer 状态：PENDING。未伪造 reviewer P0/P1/P2 为 0。",
+        f"结论：PASS（tester 技术门禁）；hash-bound reviewer 状态：{report['reviewer_gate']['status']}。PENDING 时 P0/P1/P2 保持 unknown。",
         "",
         "## 一条命令",
         "",
         f"`{report['report_command']}`",
         "",
-        "只有全部门禁成功后才原子替换本 JSON+MD。任一门禁或第二次 replace 失败，既有 PASS 报告保持不变且不留下临时半成品。",
+        "唯一权威是 canonical bundle；JSON/MD 只是 projection。runner 先写两份 projection，最后以一次 atomic os.replace 提交 bundle。",
+        "",
+        "直接读取未经 bundle hash 与双 projection hash 校验的 JSON/MD 不受支持；mixed pair、projection 失败或进程中断均不能成为 authoritative PASS，后续运行可 repair convergence。",
         "",
         "## S16A 合同",
         "",
@@ -462,7 +687,7 @@ def _markdown(report: dict[str, Any]) -> str:
         "",
         "## 审查边界",
         "",
-        "本报告只证明 tester 技术门禁。S16A 的后续只读 reviewer 尚未运行，因此 finding 数量保持 unknown；S16B、S16C、S16R 均未关闭。",
+        f"本报告只证明 tester 技术门禁。当前 reviewer={report['reviewer_gate']['status']}；只有 source revision、fixed package SHA-256 与 review output SHA-256 全部有效且绑定当前 source 时才保留 reviewer evidence。S16B、S16C、S16R 均未关闭。",
         "",
         "报告不包含原始对话、敏感值、直接标识符、模型推理或外部 Provider 正文。",
         "",
@@ -470,25 +695,22 @@ def _markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def main() -> int:
+def main(review_evidence: dict[str, Any] | None = None) -> int:
     try:
-        report = _execute()
+        report = _execute(review_evidence)
         _validate_report_contract(report)
-        json_content = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
         markdown_content = _markdown(report)
-        _atomic_replace_pair(
-            REPORT_JSON,
-            json_content,
-            REPORT_MD,
-            markdown_content,
-        )
+        _publish_authoritative_bundle(report, markdown_content)
+        authoritative = _load_authoritative_report()
+        bundle = json.loads(REPORT_BUNDLE.read_text(encoding="utf-8"))
     except Exception as exc:
         print(
             json.dumps(
                 {
                     "status": "FAIL",
                     "error_type": type(exc).__name__,
-                    "note": "existing PASS report, if any, was not replaced",
+                    "gate": str(exc).replace(str(ROOT), "<workspace>")[:300],
+                    "note": "no new authoritative PASS bundle was committed",
                 },
                 ensure_ascii=False,
             ),
@@ -498,18 +720,27 @@ def main() -> int:
     print(
         json.dumps(
             {
-                "status": report["overall_status"],
-                "pytest": report["pytest"],
-                "node": report["node"]["passed"],
+                "status": authoritative["overall_status"],
+                "pytest": authoritative["pytest"],
+                "node": authoritative["node"]["passed"],
                 "fixed_r1": {
                     name: metric["value"]
-                    for name, metric in report["fixed_r1"]["metrics"].items()
+                    for name, metric in authoritative["fixed_r1"]["metrics"].items()
                 },
-                "provider_external_calls": report["provider_determinism"][
+                "provider_external_calls": authoritative["provider_determinism"][
                     "external_calls"
                 ],
-                "reviewer": report["reviewer_gate"]["status"],
+                "reviewer": authoritative["reviewer_gate"]["status"],
+                "source_revision": bundle["source_revision"],
+                "git_tree": bundle["git_tree"],
+                "command_plan_sha256": bundle["command_plan_sha256"],
+                "bundle_sha256": bundle["bundle_sha256"],
+                "projection_sha256": {
+                    name: detail["sha256"]
+                    for name, detail in bundle["projections"].items()
+                },
                 "reports": [
+                    "reports/eval/s16a_memory_uncertainty_v1.bundle.json",
                     "reports/eval/s16a_memory_uncertainty_v1.json",
                     "reports/eval/s16a_memory_uncertainty_v1.md",
                 ],
@@ -522,4 +753,13 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--review-evidence", type=Path)
+    arguments = parser.parse_args()
+    evidence = None
+    if arguments.review_evidence is not None:
+        try:
+            evidence = json.loads(arguments.review_evidence.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            evidence = {}
+    raise SystemExit(main(evidence))

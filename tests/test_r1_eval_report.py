@@ -296,8 +296,8 @@ def test_frozen_eval_writes_stable_json_and_markdown(project_root: Path) -> None
     assert "legacy_generator_candidate_witness" in markdown
     assert "diagnostic only" in markdown
 
-    report_files = sorted(path.name for path in json_path.parent.iterdir() if path.is_file())
-    assert report_files == [
+    report_files = {path.name for path in json_path.parent.iterdir() if path.is_file()}
+    frozen_r1_to_s15 = {
         "r1_demo_v1.json",
         "r1_demo_v1.md",
         "s12_memory_image_v1.json",
@@ -308,7 +308,20 @@ def test_frozen_eval_writes_stable_json_and_markdown(project_root: Path) -> None
         "s14_continuity_preview_v1.md",
         "s15_memory_route_a_v1.json",
         "s15_memory_route_a_v1.md",
-    ]
+    }
+    s16a_legacy_projections = {
+        "s16a_memory_uncertainty_v1.json",
+        "s16a_memory_uncertainty_v1.md",
+    }
+    s16a_authoritative_bundle = {
+        *s16a_legacy_projections,
+        "s16a_memory_uncertainty_v1.bundle.json",
+    }
+    assert frozen_r1_to_s15.issubset(report_files)
+    assert frozenset(report_files - frozen_r1_to_s15) in {
+        frozenset(s16a_legacy_projections),
+        frozenset(s16a_authoritative_bundle),
+    }
 
 
 def test_eval_run_endpoint_returns_same_stable_contract(offline_settings) -> None:
