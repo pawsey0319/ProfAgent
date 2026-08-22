@@ -5,11 +5,11 @@
   "overall_status": "PASS",
   "report_command": "conda run --no-capture-output -n torch128 python scripts/tester_s16a_report.py",
   "provenance": {
-    "source_revision": "13f6d73d501d719c5b4de1bce758b0c84fe74f29",
-    "git_tree": "64a0090a8a5ff30724f07866ac3da98c85593b28",
-    "reviewed_head": "13f6d73d501d719c5b4de1bce758b0c84fe74f29",
-    "reviewed_git_tree": "64a0090a8a5ff30724f07866ac3da98c85593b28",
-    "command_plan_sha256": "9612ddd9ed8f69e8e36ab7639477dcceb7d6329bf5fc5b9146dc979a8c7441c0",
+    "source_revision": "1f33cf938182470f7cb1e802eb3ddaf6bf9ce288",
+    "git_tree": "09165c2de54e04b92cc82f7721ad433718102c63",
+    "reviewed_head": "1f33cf938182470f7cb1e802eb3ddaf6bf9ce288",
+    "reviewed_git_tree": "09165c2de54e04b92cc82f7721ad433718102c63",
+    "command_plan_sha256": "c87d09ba8b199ec3e76c230a846073ec2264e8183d37e9a8a94a14ee56e69fc3",
     "conda_environment": "torch128",
     "python": {
       "version": "3.10.19",
@@ -173,6 +173,11 @@
       "exit_status": 0
     },
     {
+      "label": "Node syntax visible_member_identity_test.cjs",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node --check web/visible_member_identity_test.cjs",
+      "exit_status": 0
+    },
+    {
       "label": "Node runtime dialogue_runtime_test.cjs",
       "command": "conda[resolved] run --no-capture-output -n torch128 node web/dialogue_runtime_test.cjs",
       "exit_status": 0
@@ -225,6 +230,11 @@
     {
       "label": "Node runtime static_contract_test.cjs",
       "command": "conda[resolved] run --no-capture-output -n torch128 node web/static_contract_test.cjs",
+      "exit_status": 0
+    },
+    {
+      "label": "Node runtime visible_member_identity_test.cjs",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node web/visible_member_identity_test.cjs",
       "exit_status": 0
     },
     {
@@ -312,17 +322,17 @@
     },
     "dialogue": {
       "status": "PASS",
-      "passed": 125
+      "passed": 128
     },
     "full": {
       "status": "PASS",
-      "passed": 387
+      "passed": 391
     }
   },
   "node": {
     "status": "PASS",
-    "passed": 11,
-    "syntax_files": 20,
+    "passed": 12,
+    "syntax_files": 21,
     "runtime_static_contracts": [
       "dialogue_runtime_test.cjs",
       "image_asset_runtime_test.cjs",
@@ -334,7 +344,8 @@
       "s14_frontend_static_test.cjs",
       "s15_frontend_static_test.cjs",
       "s16_frontend_static_test.cjs",
-      "static_contract_test.cjs"
+      "static_contract_test.cjs",
+      "visible_member_identity_test.cjs"
     ]
   },
   "fixture_validation": {
