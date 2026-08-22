@@ -5,208 +5,239 @@
   "overall_status": "PASS",
   "report_command": "conda run --no-capture-output -n torch128 python scripts/tester_s16a_report.py",
   "provenance": {
-    "source_revision": "3cea34d353ca544a731e75b96efa72c38194b14a",
+    "source_revision": "613caaab370c5bdec1226a1444f46d5830afe549",
+    "git_tree": "dea4ce10808789252803b51fc0b20269bb269c2d",
+    "command_plan_sha256": "ca78516d2899239d9fba2d087c265c3fd770070f7a99a194ffe8321462570865",
     "conda_environment": "torch128",
     "python": {
       "version": "3.10.19",
-      "binding": "current sys.executable resolved inside torch128"
+      "process_exec_path": "D:\\anaconda\\envs\\torch128\\python.exe",
+      "binding": "resolved by torch128 conda invocation and matched current sys.executable"
     },
     "node": {
       "version": "v24.11.1",
-      "binding": "absolute executable resolved from torch128 process PATH"
+      "process_exec_path": "D:\\node.js\\node.exe",
+      "binding": "resolved by `conda run --no-capture-output -n torch128 node -p process.execPath`; no claim that Node is stored inside the env directory"
     },
     "fixtures": "fixtures_v1.0",
-    "fixed_eval": "data/eval/eval.jsonl"
+    "fixed_eval": "data/eval/eval.jsonl",
+    "publication_authority": "reports/eval/s16a_memory_uncertainty_v1.bundle.json",
+    "projection_hashes": "recorded in canonical bundle to avoid self-referential projection hashes"
   },
   "commands": [
     {
-      "label": "locked Node version",
-      "command": "node[torch128-path] --version",
+      "label": "torch128 Python process.execPath",
+      "command": "conda[resolved] run --no-capture-output -n torch128 python -c import sys; print(sys.executable)",
+      "exit_status": 0
+    },
+    {
+      "label": "torch128 Node process.execPath",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node -p process.execPath",
+      "exit_status": 0
+    },
+    {
+      "label": "torch128 Node version",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node --version",
+      "exit_status": 0
+    },
+    {
+      "label": "clean source status",
+      "command": "git status --porcelain",
+      "exit_status": 0
+    },
+    {
+      "label": "source revision",
+      "command": "git rev-parse HEAD",
+      "exit_status": 0
+    },
+    {
+      "label": "source tree",
+      "command": "git rev-parse HEAD^{tree}",
       "exit_status": 0
     },
     {
       "label": "S16A focused contract pytest",
-      "command": "python[torch128] -m pytest -q tests/test_s16_memory_candidates.py::test_http_extract_is_multicard_opaque_idempotent_and_raw_free tests/test_s16_memory_candidates.py::test_http_sensitive_extract_blocks_before_provider_and_leaks_no_raw_text tests/test_s16_memory_candidates.py::test_http_supersede_is_server_authored_atomic_and_not_browser_selectable tests/test_s16_preference_uncertainty.py::test_neutral_answer_and_unanswered_followup_do_not_ask_or_write_memory tests/test_s16_preference_uncertainty.py::test_high_urgency_question_budget_and_retry_do_not_duplicate_cpa_or_candidate",
+      "command": "conda[resolved] run --no-capture-output -n torch128 python -m pytest -q tests/test_s16_memory_candidates.py::test_http_extract_is_multicard_opaque_idempotent_and_raw_free tests/test_s16_memory_candidates.py::test_http_sensitive_extract_blocks_before_provider_and_leaks_no_raw_text tests/test_s16_memory_candidates.py::test_http_supersede_is_server_authored_atomic_and_not_browser_selectable tests/test_s16_preference_uncertainty.py::test_neutral_answer_and_unanswered_followup_do_not_ask_or_write_memory tests/test_s16_preference_uncertainty.py::test_high_urgency_question_budget_and_retry_do_not_duplicate_cpa_or_candidate",
       "exit_status": 0
     },
     {
       "label": "S16A Memory pytest",
-      "command": "python[torch128] -m pytest -q tests/test_s16_memory_candidates.py",
+      "command": "conda[resolved] run --no-capture-output -n torch128 python -m pytest -q tests/test_s16_memory_candidates.py",
       "exit_status": 0
     },
     {
       "label": "S16A Dialogue pytest",
-      "command": "python[torch128] -m pytest -q tests/test_s16_preference_uncertainty.py tests/test_dialogue_turn.py",
+      "command": "conda[resolved] run --no-capture-output -n torch128 python -m pytest -q tests/test_s16_preference_uncertainty.py tests/test_dialogue_turn.py",
       "exit_status": 0
     },
     {
       "label": "Node syntax app.js",
-      "command": "node[torch128-path] --check web/app.js",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node --check web/app.js",
       "exit_status": 0
     },
     {
       "label": "Node syntax catalog_image_browser_smoke.cjs",
-      "command": "node[torch128-path] --check web/catalog_image_browser_smoke.cjs",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node --check web/catalog_image_browser_smoke.cjs",
       "exit_status": 0
     },
     {
       "label": "Node syntax dialogue_runtime.js",
-      "command": "node[torch128-path] --check web/dialogue_runtime.js",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node --check web/dialogue_runtime.js",
       "exit_status": 0
     },
     {
       "label": "Node syntax dialogue_runtime_test.cjs",
-      "command": "node[torch128-path] --check web/dialogue_runtime_test.cjs",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node --check web/dialogue_runtime_test.cjs",
       "exit_status": 0
     },
     {
       "label": "Node syntax fixtures.js",
-      "command": "node[torch128-path] --check web/fixtures.js",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node --check web/fixtures.js",
       "exit_status": 0
     },
     {
       "label": "Node syntax image_asset_runtime.js",
-      "command": "node[torch128-path] --check web/image_asset_runtime.js",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node --check web/image_asset_runtime.js",
       "exit_status": 0
     },
     {
       "label": "Node syntax image_asset_runtime_test.cjs",
-      "command": "node[torch128-path] --check web/image_asset_runtime_test.cjs",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node --check web/image_asset_runtime_test.cjs",
       "exit_status": 0
     },
     {
       "label": "Node syntax memory_candidate_flow_test.cjs",
-      "command": "node[torch128-path] --check web/memory_candidate_flow_test.cjs",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node --check web/memory_candidate_flow_test.cjs",
       "exit_status": 0
     },
     {
       "label": "Node syntax memory_candidate_runtime.js",
-      "command": "node[torch128-path] --check web/memory_candidate_runtime.js",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node --check web/memory_candidate_runtime.js",
       "exit_status": 0
     },
     {
       "label": "Node syntax memory_candidate_runtime_test.cjs",
-      "command": "node[torch128-path] --check web/memory_candidate_runtime_test.cjs",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node --check web/memory_candidate_runtime_test.cjs",
       "exit_status": 0
     },
     {
       "label": "Node syntax memory_runtime.js",
-      "command": "node[torch128-path] --check web/memory_runtime.js",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node --check web/memory_runtime.js",
       "exit_status": 0
     },
     {
       "label": "Node syntax memory_runtime_test.cjs",
-      "command": "node[torch128-path] --check web/memory_runtime_test.cjs",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node --check web/memory_runtime_test.cjs",
       "exit_status": 0
     },
     {
       "label": "Node syntax preference_clarification_runtime.js",
-      "command": "node[torch128-path] --check web/preference_clarification_runtime.js",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node --check web/preference_clarification_runtime.js",
       "exit_status": 0
     },
     {
       "label": "Node syntax preference_clarification_runtime_test.cjs",
-      "command": "node[torch128-path] --check web/preference_clarification_runtime_test.cjs",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node --check web/preference_clarification_runtime_test.cjs",
       "exit_status": 0
     },
     {
       "label": "Node syntax recommendation_preview_runtime.js",
-      "command": "node[torch128-path] --check web/recommendation_preview_runtime.js",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node --check web/recommendation_preview_runtime.js",
       "exit_status": 0
     },
     {
       "label": "Node syntax recommendation_preview_runtime_test.cjs",
-      "command": "node[torch128-path] --check web/recommendation_preview_runtime_test.cjs",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node --check web/recommendation_preview_runtime_test.cjs",
       "exit_status": 0
     },
     {
       "label": "Node syntax s14_frontend_static_test.cjs",
-      "command": "node[torch128-path] --check web/s14_frontend_static_test.cjs",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node --check web/s14_frontend_static_test.cjs",
       "exit_status": 0
     },
     {
       "label": "Node syntax s15_frontend_static_test.cjs",
-      "command": "node[torch128-path] --check web/s15_frontend_static_test.cjs",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node --check web/s15_frontend_static_test.cjs",
       "exit_status": 0
     },
     {
       "label": "Node syntax s16_frontend_static_test.cjs",
-      "command": "node[torch128-path] --check web/s16_frontend_static_test.cjs",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node --check web/s16_frontend_static_test.cjs",
       "exit_status": 0
     },
     {
       "label": "Node syntax static_contract_test.cjs",
-      "command": "node[torch128-path] --check web/static_contract_test.cjs",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node --check web/static_contract_test.cjs",
       "exit_status": 0
     },
     {
       "label": "Node runtime dialogue_runtime_test.cjs",
-      "command": "node[torch128-path] web/dialogue_runtime_test.cjs",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node web/dialogue_runtime_test.cjs",
       "exit_status": 0
     },
     {
       "label": "Node runtime image_asset_runtime_test.cjs",
-      "command": "node[torch128-path] web/image_asset_runtime_test.cjs",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node web/image_asset_runtime_test.cjs",
       "exit_status": 0
     },
     {
       "label": "Node runtime memory_candidate_flow_test.cjs",
-      "command": "node[torch128-path] web/memory_candidate_flow_test.cjs",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node web/memory_candidate_flow_test.cjs",
       "exit_status": 0
     },
     {
       "label": "Node runtime memory_candidate_runtime_test.cjs",
-      "command": "node[torch128-path] web/memory_candidate_runtime_test.cjs",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node web/memory_candidate_runtime_test.cjs",
       "exit_status": 0
     },
     {
       "label": "Node runtime memory_runtime_test.cjs",
-      "command": "node[torch128-path] web/memory_runtime_test.cjs",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node web/memory_runtime_test.cjs",
       "exit_status": 0
     },
     {
       "label": "Node runtime preference_clarification_runtime_test.cjs",
-      "command": "node[torch128-path] web/preference_clarification_runtime_test.cjs",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node web/preference_clarification_runtime_test.cjs",
       "exit_status": 0
     },
     {
       "label": "Node runtime recommendation_preview_runtime_test.cjs",
-      "command": "node[torch128-path] web/recommendation_preview_runtime_test.cjs",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node web/recommendation_preview_runtime_test.cjs",
       "exit_status": 0
     },
     {
       "label": "Node runtime s14_frontend_static_test.cjs",
-      "command": "node[torch128-path] web/s14_frontend_static_test.cjs",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node web/s14_frontend_static_test.cjs",
       "exit_status": 0
     },
     {
       "label": "Node runtime s15_frontend_static_test.cjs",
-      "command": "node[torch128-path] web/s15_frontend_static_test.cjs",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node web/s15_frontend_static_test.cjs",
       "exit_status": 0
     },
     {
       "label": "Node runtime s16_frontend_static_test.cjs",
-      "command": "node[torch128-path] web/s16_frontend_static_test.cjs",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node web/s16_frontend_static_test.cjs",
       "exit_status": 0
     },
     {
       "label": "Node runtime static_contract_test.cjs",
-      "command": "node[torch128-path] web/static_contract_test.cjs",
+      "command": "conda[resolved] run --no-capture-output -n torch128 node web/static_contract_test.cjs",
       "exit_status": 0
     },
     {
       "label": "full pytest",
-      "command": "python[torch128] -m pytest -q",
+      "command": "conda[resolved] run --no-capture-output -n torch128 python -m pytest -q",
       "exit_status": 0
     },
     {
       "label": "fixture validation",
-      "command": "python[torch128] scripts/validate.py",
+      "command": "conda[resolved] run --no-capture-output -n torch128 python scripts/validate.py",
       "exit_status": 0
     },
     {
       "label": "fixed R1 evaluation",
-      "command": "python[torch128] -m profagent.eval",
+      "command": "conda[resolved] run --no-capture-output -n torch128 python -m profagent.eval",
       "exit_status": 0
     },
     {
@@ -217,11 +248,6 @@
     {
       "label": "git diff check",
       "command": "git diff --check",
-      "exit_status": 0
-    },
-    {
-      "label": "source revision",
-      "command": "git rev-parse HEAD",
       "exit_status": 0
     }
   ],
@@ -288,7 +314,7 @@
     },
     "full": {
       "status": "PASS",
-      "passed": 374
+      "passed": 379
     }
   },
   "node": {
@@ -391,7 +417,7 @@
       "P1": null,
       "P2": null
     },
-    "note": "read-only reviewer evidence has not yet been run for this report commit"
+    "note": "no valid hash-bound reviewer evidence for current source revision"
   },
   "privacy_hygiene": {
     "raw_dialogue_in_report": false,

@@ -1,12 +1,14 @@
 # S16A 自由文本记忆与偏好不确定性验收
 
-结论：PASS（tester 技术门禁）；后续只读 reviewer 状态：PENDING。未伪造 reviewer P0/P1/P2 为 0。
+结论：PASS（tester 技术门禁）；hash-bound reviewer 状态：PENDING。PENDING 时 P0/P1/P2 保持 unknown。
 
 ## 一条命令
 
 `conda run --no-capture-output -n torch128 python scripts/tester_s16a_report.py`
 
-只有全部门禁成功后才原子替换本 JSON+MD。任一门禁或第二次 replace 失败，既有 PASS 报告保持不变且不留下临时半成品。
+唯一权威是 canonical bundle；JSON/MD 只是 projection。runner 先写两份 projection，最后以一次 atomic os.replace 提交 bundle。
+
+直接读取未经 bundle hash 与双 projection hash 校验的 JSON/MD 不受支持；mixed pair、projection 失败或进程中断均不能成为 authoritative PASS，后续运行可 repair convergence。
 
 ## S16A 合同
 
@@ -18,13 +20,13 @@
 
 ## 串行门禁
 
-- focused pytest：5 passed；Memory：51 passed；Dialogue：125 passed；full：374 passed。
+- focused pytest：5 passed；Memory：51 passed；Dialogue：125 passed；full：379 passed。
 - Node：20 个 syntax，11 个 runtime/static 合同通过。
 - fixture：validation passed: users=3 garments=50 outfits=20 catalog=50 eval=30。
 - 固定 R1：Urgency=100.00%；ShoppingGate=100.00%；Catalog=0；幻觉=0；硬约束=0；Slots=100.00%。
 
 ## 审查边界
 
-本报告只证明 tester 技术门禁。S16A 的后续只读 reviewer 尚未运行，因此 finding 数量保持 unknown；S16B、S16C、S16R 均未关闭。
+本报告只证明 tester 技术门禁。当前 reviewer=PENDING；只有 source revision、fixed package SHA-256 与 review output SHA-256 全部有效且绑定当前 source 时才保留 reviewer evidence。S16B、S16C、S16R 均未关闭。
 
 报告不包含原始对话、敏感值、直接标识符、模型推理或外部 Provider 正文。
