@@ -6,14 +6,24 @@ function createMemoryCandidateFlowController(dependencies) {
   const decisions = new Map();
   const decisionKeys = new Map();
 
-  function sameContext(left, right) {
+  function sameExtractionContext(left, right) {
     return left.userId === right.userId
       && left.sessionId === right.sessionId
       && left.namespace === right.namespace;
   }
 
-  function isCurrent(origin) {
-    return origin.generation === generation && sameContext(origin.context, dependencies.getContext());
+  function sameDecisionContext(left, right) {
+    return left.userId === right.userId && left.sessionId === right.sessionId;
+  }
+
+  function isExtractionCurrent(origin) {
+    return origin.generation === generation
+      && sameExtractionContext(origin.context, dependencies.getContext());
+  }
+
+  function isDecisionCurrent(origin) {
+    return origin.generation === generation
+      && sameDecisionContext(origin.context, dependencies.getContext());
   }
 
   function atomicApply(next) {
@@ -29,6 +39,14 @@ function createMemoryCandidateFlowController(dependencies) {
   function reportFailure(message) {
     dependencies.reportFailure?.(message);
     dependencies.input.focus();
+  }
+
+  function clearPendingSafely(candidateIds) {
+    try {
+      dependencies.clearPending?.(candidateIds);
+    } catch (_error) {
+      // Pending cleanup must not let an obsolete receipt mutate other UI state.
+    }
   }
 
   async function submit(event) {
@@ -57,9 +75,9 @@ function createMemoryCandidateFlowController(dependencies) {
         }),
         signal: controller.signal
       });
-      if (extraction !== origin || !isCurrent(origin)) return false;
+      if (extraction !== origin || !isExtractionCurrent(origin)) return false;
       const normalized = dependencies.normalizeExtraction(response, requestId);
-      if (extraction !== origin || !isCurrent(origin)) return false;
+      if (extraction !== origin || !isExtractionCurrent(origin)) return false;
       const current = dependencies.snapshotView();
       const next = {
         ...current,
@@ -73,7 +91,7 @@ function createMemoryCandidateFlowController(dependencies) {
             : "服务端未返回可安全确认的记忆；没有写入任何内容。"
       };
       atomicApply(next);
-      if (extraction !== origin || !isCurrent(origin)) return false;
+      if (extraction !== origin || !isExtractionCurrent(origin)) return false;
       if (normalized.status === "ready" && normalized.candidates.length > 0) {
         if (dependencies.input.value.trim() === sourceText) dependencies.input.value = "";
       } else {
@@ -82,13 +100,13 @@ function createMemoryCandidateFlowController(dependencies) {
       }
       return true;
     } catch (_error) {
-      if (extraction !== origin || !isCurrent(origin)) return false;
+      if (extraction !== origin || !isExtractionCurrent(origin)) return false;
       dependencies.setExtracting?.(false);
       reportFailure("候选记忆提取未完成；你的输入仍保留，可直接修改后重试。");
       return false;
     } finally {
       if (extraction === origin) extraction = null;
-      if (isCurrent(origin)) dependencies.setExtracting?.(false);
+      if (isExtractionCurrent(origin)) dependencies.setExtracting?.(false);
     }
   }
 
@@ -129,12 +147,12 @@ function createMemoryCandidateFlowController(dependencies) {
         }),
         signal: controller.signal
       });
-      if (decisions.get(origin.candidateId) !== origin || !isCurrent(origin)) return false;
+      if (decisions.get(origin.candidateId) !== origin || !isDecisionCurrent(origin)) return false;
       const receipt = dependencies.normalizeDecision(response, origin.candidateId);
-      if (receipt.decision !== action || decisions.get(origin.candidateId) !== origin || !isCurrent(origin)) return false;
+      if (receipt.decision !== action || decisions.get(origin.candidateId) !== origin || !isDecisionCurrent(origin)) return false;
       if (action === "remember") {
-        await dependencies.onRemember?.(() => decisions.get(origin.candidateId) === origin && isCurrent(origin));
-        if (decisions.get(origin.candidateId) !== origin || !isCurrent(origin)) return false;
+        await dependencies.onRemember?.(() => decisions.get(origin.candidateId) === origin && isDecisionCurrent(origin));
+        if (decisions.get(origin.candidateId) !== origin || !isDecisionCurrent(origin)) return false;
       }
       const latest = dependencies.snapshotView();
       if (!latest.candidates.some((item) => item.candidate_id === origin.candidateId)) return false;
@@ -149,12 +167,12 @@ function createMemoryCandidateFlowController(dependencies) {
           : action === "session_only" ? "仅本次偏好已由服务端绑定当前会话。"
             : action === "rephrase" ? "这条候选没有写入；请在输入框换一种说法。" : "这条候选已拒绝，不会写入。"
       });
-      if (decisions.get(origin.candidateId) !== origin || !isCurrent(origin)) return false;
+      if (decisions.get(origin.candidateId) !== origin || !isDecisionCurrent(origin)) return false;
       if (action === "rephrase") dependencies.input.focus();
       decisionKeys.delete(decisionKey);
       return true;
     } catch (_error) {
-      if (decisions.get(origin.candidateId) !== origin || !isCurrent(origin)) return false;
+      if (decisions.get(origin.candidateId) !== origin || !isDecisionCurrent(origin)) return false;
       const latest = dependencies.snapshotView();
       const nextPending = new Set(latest.pendingIds);
       nextPending.delete(origin.candidateId);
@@ -166,7 +184,10 @@ function createMemoryCandidateFlowController(dependencies) {
       dependencies.reportFailure?.("候选记忆决定未完成；未采用服务端回执。");
       return false;
     } finally {
-      if (decisions.get(origin.candidateId) === origin) decisions.delete(origin.candidateId);
+      if (decisions.get(origin.candidateId) === origin) {
+        decisions.delete(origin.candidateId);
+        clearPendingSafely([origin.candidateId]);
+      }
     }
   }
 
@@ -181,11 +202,13 @@ function createMemoryCandidateFlowController(dependencies) {
     generation += 1;
     if (extraction && !extraction.controller.signal.aborted) extraction.controller.abort();
     extraction = null;
+    const pendingCandidateIds = [...decisions.keys()];
     decisions.forEach((origin) => {
       if (!origin.controller.signal.aborted) origin.controller.abort();
     });
     decisions.clear();
     decisionKeys.clear();
+    clearPendingSafely(pendingCandidateIds);
     dependencies.setExtracting?.(false);
   }
 
@@ -1331,6 +1354,7 @@ if (typeof module === "object" && module.exports) {
     state.memorySessionOnlyCount = 0;
     state.memoryCandidateWriteStatus = "";
     state.memoryCandidateExtracting = false;
+    renderMemory();
     state.traceHistory = [];
     setDialogueInFlightControls(false);
     byId("cocreation").hidden = true;
@@ -3564,6 +3588,14 @@ if (typeof module === "object" && module.exports) {
     status.textContent = view.writeStatus || "";
   }
 
+  function clearMemoryCandidatePending(candidateIds) {
+    const nextPending = new Set(state.memoryCandidatePendingIds);
+    candidateIds.forEach((candidateId) => nextPending.delete(candidateId));
+    if (nextPending.size === state.memoryCandidatePendingIds.size) return;
+    state.memoryCandidatePendingIds = nextPending;
+    renderMemory();
+  }
+
   const memoryCandidateFlow = createMemoryCandidateFlowController({
     input: byId("memory-free-text"),
     getContext: () => ({
@@ -3580,6 +3612,7 @@ if (typeof module === "object" && module.exports) {
     snapshotView: snapshotMemoryCandidateView,
     applyView: applyMemoryCandidateView,
     restoreView: restoreMemoryCandidateView,
+    clearPending: clearMemoryCandidatePending,
     reportFailure: (message) => {
       const status = byId("memory-write-status");
       status.hidden = false;

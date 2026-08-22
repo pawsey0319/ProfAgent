@@ -85,6 +85,12 @@ function makeHarness(initialText = "我偏爱藏青色") {
       }
     },
     restoreView: (previous) => { view = cloneView(previous); renderCount += 1; },
+    clearPending: (candidateIds) => {
+      const pendingIds = new Set(view.pendingIds);
+      candidateIds.forEach((candidateId) => pendingIds.delete(candidateId));
+      view = cloneView({ ...view, pendingIds });
+      renderCount += 1;
+    },
     setExtracting: (extracting) => { input.disabled = extracting; },
     onRemember: async () => {}
   });
@@ -220,19 +226,64 @@ async function flush() {
 
   {
     const h = makeHarness();
+    const namespaceCard = candidate("mcand_namespace");
+    h.seedView({ candidates: [namespaceCard], resultStatus: "ready", writeStatus: "等待决定" });
+    const pending = h.controller.decide(namespaceCard, "reject");
+    assert.deepEqual([...h.view.pendingIds], [namespaceCard.candidate_id]);
+    assert.equal(Object.hasOwn(JSON.parse(h.requests[0].options.body), "namespace"), false, "decision API has no namespace authority field");
+    h.context.namespace = "shared";
+    h.requests[0].wait.resolve(decision(namespaceCard, "reject"));
+    assert.equal(await pending, true, "namespace is extraction-only and must not stale a valid decision receipt");
+    assert.deepEqual(h.view.candidates, []);
+    assert.deepEqual([...h.view.pendingIds], []);
+    assert.equal(h.view.writeStatus, "这条候选已拒绝，不会写入。");
+  }
+
+  for (const authorityChange of ["userId", "sessionId"]) {
+    const h = makeHarness();
+    const staleAuthority = candidate(`mcand_stale_${authorityChange}`);
+    h.seedView({ candidates: [staleAuthority], resultStatus: "ready", writeStatus: "新任务原状态" });
+    const pending = h.controller.decide(staleAuthority, "session_only");
+    const beforeFocus = h.input.focusCount;
+    h.context[authorityChange] = authorityChange === "userId" ? "u02" : "styling_02";
+    h.requests[0].wait.resolve(decision(staleAuthority, "session_only"));
+    assert.equal(await pending, false, `${authorityChange} change must stale the old receipt`);
+    assert.deepEqual(h.view.candidates.map((item) => item.candidate_id), [staleAuthority.candidate_id]);
+    assert.deepEqual([...h.view.pendingIds], [], `${authorityChange} stale return must clear pending`);
+    assert.equal(h.view.sessionOnlyCount, 0);
+    assert.equal(h.view.writeStatus, "新任务原状态");
+    assert.equal(h.input.focusCount, beforeFocus);
+  }
+
+  {
+    const h = makeHarness();
     const stale = candidate("mcand_stale");
     h.seedView({ candidates: [stale], resultStatus: "ready" });
     const pending = h.controller.decide(stale, "rephrase");
     const signal = h.requests[0].options.signal;
     const beforeResetFocus = h.input.focusCount;
     h.controller.reset();
+    assert.deepEqual([...h.view.pendingIds], [], "reset must synchronously clear pending UI state");
     h.context.sessionId = "styling_02";
+    const newTaskCard = candidate(stale.candidate_id, ["remember", "reject", "rephrase"]);
+    h.seedView({
+      candidates: [newTaskCard],
+      resultStatus: "ready",
+      pendingIds: new Set(),
+      sessionOnlyCount: 2,
+      writeStatus: "新任务状态"
+    });
+    const newTaskPending = h.controller.decide(newTaskCard, "reject");
     assert.equal(signal.aborted, true, "reset aborts the pending mutation");
     h.requests[0].wait.resolve(decision(stale, "rephrase"));
     assert.equal(await pending, false);
     assert.equal(h.input.focusCount, beforeResetFocus, "stale rephrase cannot focus the new session composer");
-    assert.equal(h.view.sessionOnlyCount, 0);
-    assert.equal(h.view.writeStatus, "");
+    assert.deepEqual(h.view.candidates.map((item) => item.candidate_id), [newTaskCard.candidate_id]);
+    assert.deepEqual([...h.view.pendingIds], [newTaskCard.candidate_id], "old finally cannot clear a new generation pending card with the same ID");
+    assert.equal(h.view.sessionOnlyCount, 2);
+    assert.equal(h.view.writeStatus, "新任务状态");
+    h.requests[1].wait.resolve(decision(newTaskCard, "reject"));
+    assert.equal(await newTaskPending, true);
   }
 
   assert.deepEqual(
