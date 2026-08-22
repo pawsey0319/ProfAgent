@@ -1,0 +1,62 @@
+1. Finalization Durability A–F
+
+A. Frozen paths and publication set are exact: `scripts/tester_s16a_report.py:29-36` defines the two required evidence paths and six-path final set.
+
+B. Descriptor accepts only the two absolute canonical paths; the runner itself reads, stabilizes, parses, and hashes their bytes. Exact untracked status is enforced before/after gates at `scripts/tester_s16a_report.py:234-262`, `545-595`, `1087-1129`, `1224-1238`.
+
+C. Final publication requires one direct non-merge child, one-commit interval, exact six changed paths, and regular in-repository tracked files at `scripts/tester_s16a_report.py:598-670`. Later commits, merges, subsets, extras, path escape, and drift return pending.
+
+D. Stored review evidence contains only frozen relative paths, is recomputed against current Git state and bytes, and must match all stored fields before preservation at `scripts/tester_s16a_report.py:899-950`.
+
+E. The test suite creates and commits real temporary Git repositories; it exercises initial acceptance, exact publication byte preservation, later commits, subset/extra/multiple commits, merge, missing/drifted evidence, ignored evidence, symlink, and junction cases at `tests/test_s16a_report.py:523-711`, `925-1098`. Not executed in this review.
+
+F. Canonical bundle/projection integrity, exact review-block parsing/count agreement, deterministic command plan, CPA 43-case manifest, Node/R1 gates, and privacy checks remain wired into the production runner. Technical report numbers are supporting evidence only.
+
+2. Full S16A Compliance
+
+Static production review confirms sensitive free text returns before provider/repository/trace writes; candidate output is closed and canonicalized; decisions are owner/session/TTL/idempotency bound and use the confirmed-memory path (`profagent/memory_candidates.py:214-323`, `330-361`, `668-825`). Clarification uses only grounded hard-valid outfits and has a server-owned task-wide one-question budget (`profagent/preference_uncertainty.py:58-65`, `135-184`, `252-291`).
+
+Hard filtering remains before retrieval and preserves owner/availability/season/weather constraints. API and AC documents retain S16A as implemented but not closed, with S16B/C/R offline (`docs/API_CONTRACT.md:355-382`, `docs/AC_MATRIX.md:3`, `28`; `BUILD_LOG.md:4`).
+
+3. Strengths
+
+- Closed provider envelopes and local fail-closed validation protect candidate and dialogue paths.
+- Finalization validates Git topology rather than trusting descriptor-supplied hashes or verdicts.
+- R is a single direct child of S and changes exactly the three report artifacts.
+- Fixed package SHA-256 matches `67E16E2FC23F4DDF173A682FDB075A2B3198DF1E39CC3BC45B9597F958C3C606`.
+
+4. Findings
+
+None.
+
+5. Regression
+
+No static regression found for ID grounding, high-urgency shopping/Catalog denial, pre-retrieval hard constraints, scorecard safety, adjustment/rejection control, immutable Look behavior, privacy, provider fallback, private Stylist identity, or 2D-only scope. Fixed truth files are unchanged across base→source; diff check is clean.
+
+6. Provenance
+
+- Base: `b9c492fc642cd97a07bc6b60d5a6b03a9fa8e73d`
+- Source: `72903b5f953dc4aabd825b27f9ea31a282708ad5`
+- Reviewed head: `6d9ae2f8f5b5837951e1daebb98d19eeccd37677`
+- R parent is exactly S; S..R contains exactly R.
+- R changes only the three S16A report artifacts; reviewer gate is PENDING with null counts.
+- A transient external modification of those reports was observed during inspection, then the workspace returned clean; this review is anchored to immutable S/R Git trees.
+
+7. Scope
+
+Read-only inspection only. No files changed, staged, or committed; no service, test runner, or evaluation command was started.
+
+8. Evidence
+
+The current bundle records full 450, CPA 43, Node 12, fixed R1 thresholds, and zero external provider calls as supporting tester evidence; its reviewer gate remains PENDING/null. `BUILD_LOG.md:4` correctly leaves S16A open and does not treat untracked Phase-A evidence as published acceptance.
+
+9. Verdict — PASS
+
+[S16A_REVIEW_RESULT_V1]
+source_revision=72903b5f953dc4aabd825b27f9ea31a282708ad5
+reviewed_head=6d9ae2f8f5b5837951e1daebb98d19eeccd37677
+final_verdict=PASS
+P0=0
+P1=0
+P2=0
+[/S16A_REVIEW_RESULT_V1]

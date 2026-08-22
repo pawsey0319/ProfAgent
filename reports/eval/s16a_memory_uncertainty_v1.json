@@ -7,8 +7,8 @@
   "provenance": {
     "source_revision": "72903b5f953dc4aabd825b27f9ea31a282708ad5",
     "git_tree": "69c1cf4e6b235b9a3cde14a8ac69007063a2e1a3",
-    "reviewed_head": "72903b5f953dc4aabd825b27f9ea31a282708ad5",
-    "reviewed_git_tree": "69c1cf4e6b235b9a3cde14a8ac69007063a2e1a3",
+    "reviewed_head": "6d9ae2f8f5b5837951e1daebb98d19eeccd37677",
+    "reviewed_git_tree": "e9a55892f5feaaea4c50f579a84ce578a782fe55",
     "command_plan_sha256": "2cc17dc1cb37cd3971244c34e4a5b9299e82b15fadc37cf1716b9be45aaef369",
     "conda_environment": "torch128",
     "python": {
@@ -508,13 +508,27 @@
     }
   },
   "reviewer_gate": {
-    "status": "PENDING",
+    "status": "PASS",
     "findings": {
-      "P0": null,
-      "P1": null,
-      "P2": null
+      "P0": 0,
+      "P1": 0,
+      "P2": 0
     },
-    "note": "no valid hash-bound reviewer evidence for current source revision"
+    "source_revision": "72903b5f953dc4aabd825b27f9ea31a282708ad5",
+    "reviewed_head": "6d9ae2f8f5b5837951e1daebb98d19eeccd37677",
+    "fixed_package_path": "reports/eval/evidence/s16a_fixed_package_v1.json",
+    "review_output_path": "reports/eval/evidence/s16a_broad_review_v1.txt",
+    "fixed_package_sha256": "67e16e2fc23f4ddf173a682fdb075a2b3198df1e39cc3bc45b9597f958c3c606",
+    "review_output_sha256": "b5b3cc8bca38e11e572cdcd500b805ca9f3cc22456966cd55c4dc144b0592825",
+    "fixed_package": {
+      "base_revision": "72903b5f953dc4aabd825b27f9ea31a282708ad5",
+      "head_revision": "6d9ae2f8f5b5837951e1daebb98d19eeccd37677",
+      "tested_source_revision": "72903b5f953dc4aabd825b27f9ea31a282708ad5",
+      "commits": [
+        "6d9ae2f8f5b5837951e1daebb98d19eeccd37677"
+      ]
+    },
+    "evidence_sha256": "f99b6f2e5dcb56d0e144aa0e09acf1b1a7dd6f0f0549a6c54d06ea4deec4014b"
   },
   "privacy_hygiene": {
     "raw_dialogue_in_report": false,
@@ -525,7 +539,7 @@
     "absolute_workspace_path_in_report": false
   },
   "claim_boundary": {
-    "reviewer_findings_zero_claimed": false,
+    "reviewer_findings_zero_claimed": true,
     "real_external_provider_quality": "not_assessed",
     "s16b": "not_closed",
     "s16c": "not_closed",

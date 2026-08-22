@@ -1,7 +1,7 @@
 # ProfAgent R1 Demo BUILD LOG
 
 > 唯一需求权威：`docs/PRD.md`（v1.17）。
-> 当前状态：**R1 DoD Demo 子集及 S6–S15 实现与验收已关闭。S16A 功能实现已完成，但 Task8 报告权威性修复与后续只读 reviewer 尚在验收，当前不得关闭 S16A；旧 JSON/MD projection 未经 canonical bundle 与双 hash 校验不构成 authoritative PASS。S16B、S16C、S16R 均未完成；LangMem、Mem0、Graphiti 与学习型 reranker 移至 S17+ 且未上线。**
+> 当前状态：**R1 DoD Demo 子集及 S6–S15 实现与验收已关闭；S16A 自由文本记忆、偏好不确定性及 Task8 finalization 已通过 tester 全门禁与 fresh broad review，现已关闭。旧 JSON/MD projection 未经 canonical bundle 与双 hash 校验仍不构成 authoritative PASS。S16B、S16C、S16R 均未完成、未上线；LangMem、Mem0、Graphiti 与学习型 reranker 移至 S17+ 且未上线。**
 > 目标：交付可运行的 R1 Stylist MVP Demo，并通过 PRD 23.1 的 Demo 子集验收。
 
 ## 0. 基线与执行约束
@@ -583,7 +583,7 @@ CPA Grok 生图限定为独立可选 `static_2d` Provider Adapter：
 - **tester 最终门禁**：`conda run --no-capture-output -n torch128 python scripts/tester_s15_report.py` exit 0 并原子生成 `reports/eval/s15_memory_route_a_v1.{json,md}`；S15 `19 passed`、Memory 相关 `44 passed`、full `300 passed`。固定 eval Urgency `30/30`、高急 Gate `10/10`、Catalog `0/10`、幻觉 `0/515`、硬约束 `0/423`、Slots `74/74`；Node 14 syntax + 7 runtime/static、随机非 8000 HTTP、双实例/重启 SQLite、ACL/生命周期/删除回执与真实 Chrome 全绿，CPA 调用 0。
 - **合成检索边界**：受控 benchmark 中 RRF+rerank 的 Recall@5/Recall@10/MRR 为 `.708333/.833333/1`；该数字仅验证确定性合同与排序方向，不代表真实用户质量或生产语义提升。
 
-### S16 — 私人 Stylist：自由文本记忆、女装资产与图上换装（2026-08-21，已批准、实施中；各阶段均未完成）
+### S16 — 私人 Stylist：自由文本记忆、女装资产与图上换装（2026-08-21，已批准、实施中；S16A 已完成，S16B/S16C/S16R 未完成）
 
 S16 复用 S15 Memory 路线 A、R1 owner/ID/HardFilter/购物门控、不可变 Look 和独立 CPA Text/Image/Vision Provider。界面身份始终为“私人 Stylist”；女装仅表示 V1 资产池范围，不推断用户性别。本阶段不接入 LangMem、Mem0、Graphiti、Cross-Encoder 或学习型 reranker，也不实现通用网页爬虫、3D、360°或视频。
 
@@ -594,14 +594,14 @@ S16 复用 S15 Memory 路线 A、R1 owner/ID/HardFilter/购物门控、不可变
 - **硬规则**：任何合同都不得把浏览器或 CPA 变成排名、追问预算、衣物 ID、购物、记忆写入或 Look truth 的权威；S16 当前不得宣称已上线。
 - **验收口径**：合同文档互相一致，旧 S15/R1 门槛原文保留，文档检查与 `git diff --check` 为绿。
 
-#### S16A — 自由文本记忆与偏好不确定性（`backend` + `frontend` → `reviewer` → `tester`，验收修复中，未关闭）
+#### S16A — 自由文本记忆与偏好不确定性（`backend` + `frontend` → `reviewer` → `tester`，已完成并关闭）
 
 - **目标**：实现自由文本拆分候选、逐条 `remember|session_only|reject|rephrase`、冲突确认和 session-bound working context；多套合法候选接近且缺少关键偏好时最多提出一个非阻断问题。
 - **对应 AC / 硬规则**：AC-01/03/04/05/06/07/10/11/14/16，MEM-01–12，SAFE-04/08，OBS-05；敏感默认不写，长期记忆仍走 `propose→confirm→commit`，硬记忆永远不进 RRF，高急切度 `shopping_allowed=false` 且 Catalog 调用为 0，ID 幻觉/硬约束违反/人物评分均为 0。
 - **输入/输出依赖**：消费 S16-0 冻结合同及 S15 SQL/outbox/RRF；产出候选确认卡、working context 和由服务端拥有的排序/问题预算证据。
 - **验收口径**：原始自由文本、原始对话、模型推理/正文、敏感值和直接标识符不得进入长期 Memory、RRF、outbox、Trace、Debug DOM 或 browser storage；候选卡仅含服务端生成的脱敏闭集字段。高急最多问一次且不阻塞合法推荐；拒绝后不换说法重复。
 - **Task8 权威性修复边界（2026-08-22）**：canonical bundle 是唯一权威，固定 JSON/MD 仅为 projection；只有 bundle hash、双 projection hash 和 source/tree/command-plan provenance 全部匹配才可读取 authoritative PASS。修复代码 clean 提交后才能运行全套 runner 并另行提交 artifacts；后续只读 review 前 finding 保持 pending/unknown。
-- **Task8 review evidence 修复边界（2026-08-22，验收中）**：review descriptor 只允许提交仓库允许根内的 fixed package/review output 绝对路径与预期 source/head，不接受调用方提供 SHA、verdict 或 findings。runner 必须从安全读取的同一份 bytes 自行验证 Git base/head/commit list/diff、解析唯一闭合 review result block 并计算 hashes；内容、路径或 source 漂移一律回到 `PENDING/unknown`。本记录不关闭 S16A，S16B/S16C/S16R 仍未完成。
+- **Task8 finalization 关闭证据（2026-08-23）**：clean source `72903b5f953dc4aabd825b27f9ea31a282708ad5`、artifact-only reviewed head `6d9ae2f8f5b5837951e1daebb98d19eeccd37677`；fixed package SHA-256 `67e16e2fc23f4ddf173a682fdb075a2b3198df1e39cc3bc45b9597f958c3c606`，fresh broad review SHA-256 `b5b3cc8bca38e11e572cdcd500b805ca9f3cc22456966cd55c4dc144b0592825`，reviewer `PASS` 且 `P0/P1/P2=0/0/0`。真实 atomic runner：focused `5`、Memory `51`、Dialogue `128`、CPA closed-envelope `43`、full pytest `450`、Node runtime/static `12` 与 syntax `21` 全绿；固定 R1 为 Urgency `30/30`、高急 Gate `10/10`、Catalog `0/10`、幻觉 `0/515`、硬约束 `0/423`、Slots `74/74`，external provider calls `0`。S16A/Task8 到此关闭；S16B、S16C、S16R 仍未完成、未上线，S17+ 能力仍未上线。
 
 #### S16B — 女装 V1 资产与授权来源（`backend` + `frontend` → `reviewer` → `tester`，未完成）
 
