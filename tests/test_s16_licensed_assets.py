@@ -4537,7 +4537,7 @@ def test_openverse_search_exposes_only_bounded_controlled_failure_reasons(
     assert "https://provider.example/private" not in public_outcome
 
 
-def test_g051_search_uses_frozen_bilingual_plan_and_shared_search_budget_without_persistence(
+def test_g051_search_uses_frozen_monotonic_plan_and_shared_search_budget_without_persistence(
     licensed_ingestion_cli: ModuleType,
     licensed_assets: ModuleType,
     vision_module: ModuleType,
@@ -4577,19 +4577,75 @@ def test_g051_search_uses_frozen_bilingual_plan_and_shared_search_budget_without
     )
 
     assert queries == [
-        "navy synthetic blouse product flat lay",
-        "navy synthetic blouse object flat lay",
-        "navy synthetic blouse flat lay 藏青色 合成材质 衬衫",
+        "blouse",
+        "navy blouse",
+        "women's blouse flat lay",
     ]
     assert result.api_attempts == 3
     assert result.candidate_attempts == 0
     assert result.remaining_ids == ("g051",)
-    assert "飘带衬衫" not in result.model_dump_json()
-    assert "飘带衬衫" not in capsys.readouterr().out
-    assert "飘带衬衫" not in caplog.text
+    forbidden_query_text = {
+        "飘带衬衫",
+        "synthetic",
+        "藏青色",
+        "合成材质",
+        "约会",
+        "会议",
+        "soft",
+        "smart",
+        "u01",
+        "g051",
+    }
+    public_text = result.model_dump_json() + capsys.readouterr().out + caplog.text
+    assert not any(value in public_text for value in forbidden_query_text)
     assert not config.manifest_path.exists()
     assert not config.sources_path.exists()
     assert not config.asset_directory.exists()
+
+
+def test_frozen_query_plan_is_closed_monotonic_and_free_of_raw_garment_text_for_every_slot(
+    licensed_ingestion_cli: ModuleType,
+) -> None:
+    """Any query derived from name/search_text/material/style/occasion is a data leak."""
+
+    cli = licensed_ingestion_cli._load()
+    expected_product = {
+        "top": "blouse",
+        "bottom": "trousers",
+        "dress": "dress",
+        "outer": "jacket",
+        "shoes": "shoes",
+        "bag": "handbag",
+        "accessory": "accessory",
+    }
+    garments = cli._controlled_garments(cli.CONTROLLED_GARMENT_FILE)
+    representative_by_slot: dict[str, Any] = {}
+    for garment in garments:
+        representative_by_slot.setdefault(garment.slot, garment)
+
+    assert set(representative_by_slot) == set(expected_product)
+    for slot, garment in representative_by_slot.items():
+        queries = cli._frozen_openverse_query_plan(garment)
+        product = expected_product[slot]
+        assert queries == (
+            product,
+            f"{garment.color} {product}",
+            f"women's {product} flat lay",
+        )
+        assert 1 <= len(queries) <= 3
+        assert all(query.isascii() for query in queries)
+        assert all(query == query.strip() and len(query) <= 100 for query in queries)
+        raw_inputs = {
+            garment.garment_id,
+            garment.user_id,
+            garment.name,
+            garment.search_text,
+            garment.material,
+            *garment.occasions,
+            *garment.styles,
+        }
+        public_queries = "\n".join(queries)
+        assert not any(value and value in public_queries for value in raw_inputs)
 
 
 def test_cli_openverse_client_ignores_malformed_proxy_environment_without_auth_state(
