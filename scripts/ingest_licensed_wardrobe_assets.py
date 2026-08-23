@@ -598,57 +598,46 @@ def _parse_openverse_response(payload_bytes: bytes) -> tuple[Any, ...]:
     return tuple(payload["results"])
 
 
-_QUERY_PRODUCTS: dict[str, tuple[str, str]] = {
-    "top": ("blouse", "衬衫"),
-    "bottom": ("trousers", "裤装"),
-    "dress": ("dress", "连衣裙"),
-    "outer": ("jacket", "外套"),
-    "shoes": ("shoes", "鞋"),
-    "bag": ("handbag", "手提包"),
-    "accessory": ("accessory", "配饰"),
+_QUERY_PRODUCTS: dict[str, str] = {
+    "top": "blouse",
+    "bottom": "trousers",
+    "dress": "dress",
+    "outer": "jacket",
+    "shoes": "shoes",
+    "bag": "handbag",
+    "accessory": "accessory",
 }
-_QUERY_COLORS_ZH: dict[str, str] = {
-    "beige": "米色",
-    "black": "黑色",
-    "blue": "蓝色",
-    "brown": "棕色",
-    "gray": "灰色",
-    "green": "绿色",
-    "khaki": "卡其色",
-    "navy": "藏青色",
-    "orange": "橙色",
-    "pink": "粉色",
-    "purple": "紫色",
-    "red": "红色",
-    "white": "白色",
-    "yellow": "黄色",
-}
-_QUERY_MATERIALS_ZH: dict[str, str] = {
-    "cotton": "棉质",
-    "knit": "针织",
-    "denim": "牛仔",
-    "wool": "羊毛",
-    "linen": "亚麻",
-    "leather": "皮革",
-    "synthetic": "合成材质",
-}
+_QUERY_COLORS = frozenset(
+    {
+        "beige",
+        "black",
+        "blue",
+        "brown",
+        "gray",
+        "green",
+        "khaki",
+        "navy",
+        "orange",
+        "pink",
+        "purple",
+        "red",
+        "white",
+        "yellow",
+    }
+)
 
 
 def _frozen_openverse_query_plan(garment: Garment) -> tuple[str, ...]:
     try:
-        product_en, product_zh = _QUERY_PRODUCTS[garment.slot]
-        color_zh = _QUERY_COLORS_ZH[garment.color]
-        material_zh = _QUERY_MATERIALS_ZH[garment.material]
+        product = _QUERY_PRODUCTS[garment.slot]
     except KeyError:
         raise ValueError("unsupported_query_authority") from None
-    english = f"{garment.color} {garment.material} {product_en}"
+    if garment.color not in _QUERY_COLORS:
+        raise ValueError("unsupported_query_authority")
     return (
-        f"{english} product flat lay",
-        f"{english} object flat lay",
-        (
-            f"{english} flat lay "
-            f"{color_zh} {material_zh} {product_zh}"
-        ),
+        product,
+        f"{garment.color} {product}",
+        f"women's {product} flat lay",
     )
 
 

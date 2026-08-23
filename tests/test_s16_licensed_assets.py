@@ -4596,8 +4596,8 @@ def test_g051_search_uses_frozen_monotonic_plan_and_shared_search_budget_without
         "u01",
         "g051",
     }
-    public_text = result.model_dump_json() + capsys.readouterr().out + caplog.text
-    assert not any(value in public_text for value in forbidden_query_text)
+    query_surfaces = "\n".join(queries) + capsys.readouterr().out + caplog.text
+    assert not any(value in query_surfaces for value in forbidden_query_text)
     assert not config.manifest_path.exists()
     assert not config.sources_path.exists()
     assert not config.asset_directory.exists()
