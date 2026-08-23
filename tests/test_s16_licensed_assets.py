@@ -4134,3 +4134,173 @@ def test_ingestion_cli_uses_settings_bound_safe_image_config(
     asyncio.run(cli._run_cli(config))
 
     assert captured["config"] == licensed_assets.SafeImageConfig.from_settings(settings)
+
+
+def _task4_ai_reference_state(
+    tmp_path: Path,
+    *,
+    mutation: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    root = Path(__file__).parents[1]
+    v1_manifest = json.loads(
+        (root / "data" / "manifests" / "wardrobe_generated_v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    v1_item = next(
+        item for item in v1_manifest["items"] if item["garment_id"] == "g001"
+    )
+    garment = json.loads(
+        next(
+            line
+            for line in (root / "data" / "fixtures" / "garments.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if json.loads(line)["garment_id"] == "g001"
+        )
+    )
+    receipt = {
+        "provider": "cpa_generated",
+        "provider_item_id": "g001",
+        "provider_license": "ai-generated",
+        "provider_license_version": "wardrobe_generated_v1_s12r2",
+        "license_code": "ai-generated",
+        "license_url": None,
+        "creator": None,
+        "source_url": None,
+        "image_url": None,
+        "source_ref": "data/manifests/wardrobe_generated_v1.json#g001",
+        "expected_sha256": v1_item["sha256"],
+        "attribution": "AI 生成参考",
+        "imported_at": v1_item["provenance_normalized_at"],
+        "original_sha256": v1_item["sha256"],
+        "processed_sha256": v1_item["sha256"],
+        "processing": "verified_s12r_ai_reference_passthrough",
+    }
+    item = {
+        "garment_id": "g001",
+        "user_id": garment["user_id"],
+        "slot": garment["slot"],
+        "audience": garment.get("audience", "womenswear"),
+        "source_kind": "ai_generated_reference",
+        "status": "ready",
+        "original_sha256": v1_item["sha256"],
+        "processed_sha256": v1_item["sha256"],
+        "relative_path": v1_item["relative_path"],
+        "license": {
+            "code": "ai-generated",
+            "name": "AI 生成参考",
+            "url": None,
+            "author": None,
+            "attribution": "AI 生成参考",
+        },
+        "receipt_history": [receipt],
+    }
+    if mutation == "forged_hash":
+        item["original_sha256"] = "0" * 64
+        item["processed_sha256"] = "0" * 64
+        receipt["expected_sha256"] = "0" * 64
+        receipt["original_sha256"] = "0" * 64
+        receipt["processed_sha256"] = "0" * 64
+    elif mutation == "wrong_source_ref":
+        receipt["source_ref"] = "data/manifests/wardrobe_generated_v1.json#g002"
+    elif mutation == "wrong_processing":
+        receipt["processing"] = "safe_decode_normalize_then_server_crop"
+    elif mutation == "wrong_contract_version":
+        receipt["provider_license_version"] = "wardrobe_generated_v1"
+    elif mutation == "wrong_relative_path":
+        item["relative_path"] = "data/assets/wardrobe_generated_v1/g002.png"
+    elif mutation == "forged_imported_at":
+        receipt["imported_at"] = "2026-08-23T00:00:00+00:00"
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    (state_dir / "wardrobe_s16_sources.jsonl").write_text(
+        json.dumps({"garment_id": "g001", "receipt": receipt}, sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
+    (state_dir / "wardrobe_assets_v2.json").write_text(
+        json.dumps(
+            {"manifest_version": "wardrobe_assets_v2", "items": [item]},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return item, receipt
+
+
+def test_ingestion_resume_strictly_preserves_verified_v1_ai_reference_subset(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    expected_item, _ = _task4_ai_reference_state(tmp_path)
+    config = _task4_config(
+        licensed_ingestion_cli,
+        garment_file=_write_task4_garment_file(tmp_path, "g051"),
+        state_dir=tmp_path / "state",
+        resume=True,
+    )
+
+    result = asyncio.run(
+        _run_task4_ingestion(
+            licensed_ingestion_cli,
+            config=config,
+            response_handler=_official_openverse_handler(_openverse_response()),
+            fetcher=Task4SafeFetcher(RuntimeError("must_not_fetch")),
+            vision=Task4Vision(RuntimeError("must_not_assess")),
+        )
+    )
+
+    assert result.quarantined_ids == ("g051",)
+    persisted = _task4_manifest(config.manifest_path)
+    assert next(
+        item for item in persisted["items"] if item["garment_id"] == "g001"
+    ) == expected_item
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "forged_hash",
+        "wrong_source_ref",
+        "wrong_processing",
+        "wrong_contract_version",
+        "wrong_relative_path",
+        "forged_imported_at",
+    ],
+)
+def test_ingestion_rejects_forged_ai_reference_before_provider_access(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    _task4_ai_reference_state(tmp_path, mutation=mutation)
+    config = _task4_config(
+        licensed_ingestion_cli,
+        garment_file=_write_task4_garment_file(tmp_path, "g051"),
+        state_dir=tmp_path / "state",
+        resume=True,
+    )
+    provider_calls: list[httpx.Request] = []
+
+    def no_provider_access(request: httpx.Request) -> httpx.Response:
+        provider_calls.append(request)
+        return httpx.Response(500)
+
+    with pytest.raises(ValueError):
+        asyncio.run(
+            _run_task4_ingestion(
+                licensed_ingestion_cli,
+                config=config,
+                response_handler=no_provider_access,
+                fetcher=Task4SafeFetcher(RuntimeError("must_not_fetch")),
+                vision=Task4Vision(RuntimeError("must_not_assess")),
+            )
+        )
+    assert provider_calls == []

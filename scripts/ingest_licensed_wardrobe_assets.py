@@ -8,6 +8,7 @@ import os
 import sys
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
@@ -34,10 +35,18 @@ from profagent.licensed_assets import (
 )
 from profagent.models import Garment
 from profagent.vision import VisionAdapter, VisionUnavailable
+from profagent.wardrobe_assets import (
+    WARDROBE_GENERATED_ASSET_SET,
+    WARDROBE_GENERATED_ASSET_VERSION,
+    validate_generated_v1_manifest,
+    validate_generated_v1_reference,
+)
 
 
 CONTROLLED_GARMENT_FILE = ROOT / "data" / "fixtures" / "garments_s16_womenswear.jsonl"
 BASE_GARMENT_FILE = ROOT / "data" / "fixtures" / "garments.jsonl"
+AI_REFERENCE_MANIFEST = ROOT / "data" / "manifests" / "wardrobe_generated_v1.json"
+AI_REFERENCE_ASSET_ROOT = ROOT / "data" / "assets" / WARDROBE_GENERATED_ASSET_SET
 DEFAULT_MANIFEST_PATH = ROOT / "data" / "manifests" / "wardrobe_assets_v2.json"
 DEFAULT_SOURCES_PATH = ROOT / "data" / "sources" / "wardrobe_s16_sources.jsonl"
 DEFAULT_ASSET_DIRECTORY = ROOT / "data" / "assets" / "wardrobe_licensed_v1"
@@ -261,6 +270,51 @@ def _authoritative_garments() -> dict[str, Garment]:
     if len(authoritative) != 120:
         raise ValueError("authoritative_garment_count_mismatch")
     return authoritative
+
+
+@lru_cache(maxsize=50)
+def _verified_ai_reference(garment_id: str) -> dict[str, Any]:
+    manifest = _load_json(AI_REFERENCE_MANIFEST, limit=2 * 1024 * 1024)
+    if not validate_generated_v1_manifest(manifest):
+        raise ValueError("invalid_ai_reference_manifest")
+    raw_items = manifest["items"]
+    garment_ids = [
+        item.get("garment_id") if isinstance(item, dict) else None
+        for item in raw_items
+    ]
+    if (
+        len(raw_items) != 50
+        or any(not isinstance(item_id, str) for item_id in garment_ids)
+        or len(set(garment_ids)) != len(garment_ids)
+    ):
+        raise ValueError("invalid_ai_reference_manifest")
+    truth = _authoritative_garments().get(garment_id)
+    matches = [
+        item
+        for item in raw_items
+        if isinstance(item, dict) and item.get("garment_id") == garment_id
+    ]
+    if (
+        truth is None
+        or truth.data_version != "fixtures_v1.0"
+        or truth.source_id != "fixtures"
+        or len(matches) != 1
+    ):
+        raise ValueError("invalid_ai_reference_identity")
+    item = matches[0]
+    ready = validate_generated_v1_reference(
+        root_dir=ROOT.resolve(),
+        asset_root=AI_REFERENCE_ASSET_ROOT.resolve(),
+        item=item,
+        garment_id=garment_id,
+        user_id=truth.user_id,
+        data_version="fixtures_v1.0",
+    )
+    imported_at = item.get("provenance_normalized_at")
+    if ready is None or not isinstance(imported_at, str):
+        raise ValueError("invalid_ai_reference_provenance")
+    _parse_imported_at(imported_at)
+    return item
 
 
 def _controlled_garments(garment_file: Path) -> tuple[Garment, ...]:
@@ -531,8 +585,7 @@ def _validated_receipt(
 ) -> tuple[_NormalizedSource, str, str]:
     if not isinstance(raw, dict) or set(raw) != _RECEIPT_KEYS:
         raise ValueError("invalid_source_receipt")
-    if raw.get("processing") != "safe_decode_normalize_then_server_crop":
-        raise ValueError("invalid_source_receipt")
+    processing = raw.get("processing")
     original_sha256 = raw.get("original_sha256")
     processed_sha256 = raw.get("processed_sha256")
     if not _is_sha256(original_sha256) or not _is_sha256(processed_sha256):
@@ -555,6 +608,8 @@ def _validated_receipt(
     source_ref = raw.get("source_ref")
     expected_sha256 = raw.get("expected_sha256")
     if provider == "openverse":
+        if processing != "safe_decode_normalize_then_server_crop":
+            raise ValueError("invalid_source_receipt")
         _bounded_text(raw.get("creator"), reason="invalid_source_receipt", maximum=200)
         _validate_https_url(raw.get("source_url"), reason="invalid_source_receipt")
         canonical = _CANONICAL_OPENVERSE_LICENSES.get(
@@ -573,7 +628,11 @@ def _validated_receipt(
         )
     elif provider == "user_upload":
         if (
-            provider_item_id != garment_id
+            processing != "safe_decode_normalize_then_server_crop"
+            or raw.get("source_url") is not None
+            or raw.get("creator") is not None
+            or raw.get("license_url") is not None
+            or provider_item_id != garment_id
             or provider_license != "user-owned"
             or provider_version != "owner-asserted-v1"
             or image_url is not None
@@ -588,6 +647,30 @@ def _validated_receipt(
         pure = PurePosixPath(source_ref)
         if pure.is_absolute() or any(part in {"", ".", ".."} for part in pure.parts):
             raise ValueError("invalid_source_receipt")
+    elif provider == "cpa_generated":
+        reference = _verified_ai_reference(garment_id)
+        reference_sha256 = reference["sha256"]
+        expected_source_ref = (
+            f"data/manifests/wardrobe_generated_v1.json#{garment_id}"
+        )
+        if (
+            processing != "verified_s12r_ai_reference_passthrough"
+            or provider_item_id != garment_id
+            or provider_license != "ai-generated"
+            or provider_version != WARDROBE_GENERATED_ASSET_VERSION
+            or raw.get("license_code") != "ai-generated"
+            or raw.get("license_url") is not None
+            or raw.get("creator") is not None
+            or raw.get("source_url") is not None
+            or image_url is not None
+            or source_ref != expected_source_ref
+            or expected_sha256 != reference_sha256
+            or original_sha256 != reference_sha256
+            or processed_sha256 != reference_sha256
+            or raw.get("attribution") != "AI 生成参考"
+            or raw.get("imported_at") != reference.get("provenance_normalized_at")
+        ):
+            raise ValueError("invalid_ai_reference_receipt")
     else:
         raise ValueError("unsupported_manifest_provider")
     source_receipt = LicensedSourceReceipt(
@@ -683,7 +766,11 @@ def _validate_manifest_item(
     ):
         raise ValueError("manifest_authority_mismatch")
     source_kind = raw.get("source_kind")
-    if source_kind not in {"licensed_photo", "user_owned_photo"}:
+    if source_kind not in {
+        "licensed_photo",
+        "user_owned_photo",
+        "ai_generated_reference",
+    }:
         raise ValueError("invalid_manifest_source_kind")
     status = raw.get("status")
     if status not in {"ready", "missing", "failed", "quarantined", "takedown"}:
@@ -721,6 +808,7 @@ def _validate_manifest_item(
     expected_providers = {
         "licensed_photo": {"openverse", "partner_api"},
         "user_owned_photo": {"user_upload"},
+        "ai_generated_reference": {"cpa_generated"},
     }
     if latest is not None and latest[0].source_receipt.provider not in expected_providers[source_kind]:
         raise ValueError("manifest_source_kind_mismatch")
@@ -748,23 +836,32 @@ def _validate_manifest_item(
             or latest[2] != processed_sha256
         ):
             raise ValueError("invalid_ready_hash_binding")
-        path = _safe_asset_path(asset_directory, relative_path)
-        if path is None or relative_path != f"{garment_id}/{processed_sha256}.png":
-            raise ValueError("unsafe_ready_path")
-        staged = None if staged_assets is None else staged_assets.get(relative_path)
-        if staged is not None:
-            payload = staged
+        if source_kind == "ai_generated_reference":
+            reference = _verified_ai_reference(garment_id)
+            if (
+                relative_path != reference.get("relative_path")
+                or original_sha256 != reference.get("sha256")
+                or processed_sha256 != reference.get("sha256")
+            ):
+                raise ValueError("invalid_ai_reference_binding")
         else:
-            if not path.is_file() or path.is_symlink():
-                raise ValueError("missing_ready_asset")
-            try:
-                if path.stat().st_size > 25 * 1024 * 1024:
-                    raise ValueError("ready_asset_too_large")
-                payload = path.read_bytes()
-            except OSError as exc:
-                raise ValueError("missing_ready_asset") from exc
-        if hashlib.sha256(payload).hexdigest() != processed_sha256:
-            raise ValueError("ready_asset_hash_mismatch")
+            path = _safe_asset_path(asset_directory, relative_path)
+            if path is None or relative_path != f"{garment_id}/{processed_sha256}.png":
+                raise ValueError("unsafe_ready_path")
+            staged = None if staged_assets is None else staged_assets.get(relative_path)
+            if staged is not None:
+                payload = staged
+            else:
+                if not path.is_file() or path.is_symlink():
+                    raise ValueError("missing_ready_asset")
+                try:
+                    if path.stat().st_size > 25 * 1024 * 1024:
+                        raise ValueError("ready_asset_too_large")
+                    payload = path.read_bytes()
+                except OSError as exc:
+                    raise ValueError("missing_ready_asset") from exc
+            if hashlib.sha256(payload).hexdigest() != processed_sha256:
+                raise ValueError("ready_asset_hash_mismatch")
     else:
         if processed_sha256 is not None or relative_path is not None:
             raise ValueError("nonready_asset_is_serveable")

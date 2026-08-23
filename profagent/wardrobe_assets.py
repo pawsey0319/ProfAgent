@@ -17,6 +17,122 @@ from .models import API_VERSION
 from .repository import FixtureRepository
 
 
+WARDROBE_GENERATED_ASSET_SET = "wardrobe_generated_v1"
+WARDROBE_GENERATED_ASSET_VERSION = "wardrobe_generated_v1_s12r2"
+WARDROBE_GENERATION_CONTRACT = "wardrobe_catalog_single_garment_v1"
+WARDROBE_GENERATED_VERIFICATION_BASIS = "batch_exact_request_contract"
+_CONTENT_HASH = re.compile(r"^[0-9a-f]{64}$")
+_GENERATED_MEDIA_TYPES = {"image/png"}
+
+
+def validate_generated_v1_manifest(payload: Any) -> bool:
+    """Validate the frozen S12R batch-level provenance contract."""
+
+    return bool(
+        isinstance(payload, dict)
+        and payload.get("schema_version") == 2
+        and payload.get("asset_set") == WARDROBE_GENERATED_ASSET_SET
+        and payload.get("asset_version") == WARDROBE_GENERATED_ASSET_VERSION
+        and payload.get("generation_contract") == WARDROBE_GENERATION_CONTRACT
+        and payload.get("requested_model") == CPA_IMAGE_MODEL
+        and payload.get("request_model_pinned") is True
+        and payload.get("model_reported") is False
+        and payload.get("model_verified") is False
+        and payload.get("resolved_model") is None
+        and payload.get("verification_basis")
+        == WARDROBE_GENERATED_VERIFICATION_BASIS
+        and payload.get("aspect_ratio") == "1:1"
+        and payload.get("ai_generated") is True
+        and payload.get("metadata_status") == "embedded_png_and_sidecar_manifest"
+        and isinstance(payload.get("items"), list)
+    )
+
+
+def validate_generated_v1_reference(
+    *,
+    root_dir: Path,
+    asset_root: Path,
+    item: Any,
+    garment_id: str,
+    user_id: str,
+    data_version: str,
+) -> tuple[bytes, str, str | None, str, str] | None:
+    """Validate one generated reference against its file and embedded receipt."""
+
+    if not isinstance(item, dict):
+        return None
+    prompt_hash = item.get("prompt_sha256")
+    prompt_hash_status = item.get("prompt_hash_status")
+    content_hash = item.get("sha256")
+    media_type = item.get("media_type")
+    prompt_evidence_valid = (
+        prompt_hash_status == "recorded_at_generation"
+        and isinstance(prompt_hash, str)
+        and _CONTENT_HASH.fullmatch(prompt_hash) is not None
+    ) or (prompt_hash_status == "not_preserved" and prompt_hash is None)
+    if (
+        item.get("garment_id") != garment_id
+        or item.get("user_id") != user_id
+        or item.get("source_data_version") != data_version
+        or item.get("status") != "succeeded"
+        or item.get("requested_model") != CPA_IMAGE_MODEL
+        or item.get("request_model_pinned") is not True
+        or item.get("model_reported") is not False
+        or item.get("model_verified") is not False
+        or item.get("resolved_model") is not None
+        or item.get("verification_basis")
+        != WARDROBE_GENERATED_VERIFICATION_BASIS
+        or item.get("aspect_ratio") != "1:1"
+        or item.get("ai_generated") is not True
+        or not prompt_evidence_valid
+        or not isinstance(content_hash, str)
+        or _CONTENT_HASH.fullmatch(content_hash) is None
+        or media_type not in _GENERATED_MEDIA_TYPES
+    ):
+        return None
+    raw_path = item.get("relative_path")
+    if not isinstance(raw_path, str) or not raw_path:
+        return None
+    candidate = (root_dir / raw_path).resolve()
+    try:
+        candidate.relative_to(asset_root)
+    except ValueError:
+        return None
+    if candidate.name != f"{garment_id}.png":
+        return None
+    try:
+        body = candidate.read_bytes()
+        validated_type, width, height = AssetService.validate_static_image(
+            body, media_type
+        )
+        with Image.open(BytesIO(body)) as image:
+            image.load()
+            expected_provenance = {
+                "AI-Generated": "true",
+                "Requested-Model": CPA_IMAGE_MODEL,
+                "Model-Reported": "false",
+                "Verification-Basis": WARDROBE_GENERATED_VERIFICATION_BASIS,
+                "Garment-ID": garment_id,
+                "Generation-Contract": WARDROBE_GENERATION_CONTRACT,
+            }
+            if any(
+                image.info.get(key) != value
+                for key, value in expected_provenance.items()
+            ):
+                return None
+    except (OSError, AssetError, UnidentifiedImageError, ValueError):
+        return None
+    if (
+        validated_type != media_type
+        or item.get("bytes") != len(body)
+        or item.get("width") != width
+        or item.get("height") != height
+        or hashlib.sha256(body).hexdigest() != content_hash
+    ):
+        return None
+    return body, media_type, prompt_hash, prompt_hash_status, content_hash
+
+
 class WardrobeCatalogAssetNotFound(KeyError):
     pass
 
@@ -101,10 +217,10 @@ class WardrobeCatalogAssetsResponse(BaseModel):
 class WardrobeCatalogAssetService:
     """Fail-closed, owner-bound view over a versioned generated-image manifest."""
 
-    _ASSET_SET = "wardrobe_generated_v1"
-    _ASSET_VERSION = "wardrobe_generated_v1_s12r2"
-    _HASH = re.compile(r"^[0-9a-f]{64}$")
-    _MEDIA_TYPES = {"image/png"}
+    _ASSET_SET = WARDROBE_GENERATED_ASSET_SET
+    _ASSET_VERSION = WARDROBE_GENERATED_ASSET_VERSION
+    _HASH = _CONTENT_HASH
+    _MEDIA_TYPES = _GENERATED_MEDIA_TYPES
 
     def __init__(self, settings: Settings, repository: FixtureRepository) -> None:
         self.settings = settings
@@ -157,27 +273,7 @@ class WardrobeCatalogAssetService:
             payload = json.loads(self.manifest_path.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError):
             return None, "WARDROBE_ASSET_MANIFEST_UNAVAILABLE"
-        if not isinstance(payload, dict):
-            return None, "WARDROBE_ASSET_MANIFEST_REJECTED"
-        if (
-            payload.get("schema_version") != 2
-            or payload.get("asset_set") != self._ASSET_SET
-            or payload.get("asset_version") != self._ASSET_VERSION
-            or payload.get("generation_contract")
-            != "wardrobe_catalog_single_garment_v1"
-            or payload.get("requested_model") != CPA_IMAGE_MODEL
-            or payload.get("request_model_pinned") is not True
-            or payload.get("model_reported") is not False
-            or payload.get("model_verified") is not False
-            or payload.get("resolved_model") is not None
-            or payload.get("verification_basis")
-            != "batch_exact_request_contract"
-            or payload.get("aspect_ratio") != "1:1"
-            or payload.get("ai_generated") is not True
-            or payload.get("metadata_status")
-            != "embedded_png_and_sidecar_manifest"
-            or not isinstance(payload.get("items"), list)
-        ):
+        if not validate_generated_v1_manifest(payload):
             return None, "WARDROBE_ASSET_MANIFEST_REJECTED"
         return payload, None
 
@@ -199,71 +295,14 @@ class WardrobeCatalogAssetService:
     def _validate_ready(
         self, item: dict[str, Any], garment_id: str, user_id: str
     ) -> tuple[bytes, str, str | None, str, str] | None:
-        prompt_hash = item.get("prompt_sha256")
-        prompt_hash_status = item.get("prompt_hash_status")
-        content_hash = item.get("sha256")
-        media_type = item.get("media_type")
-        prompt_evidence_valid = (
-            prompt_hash_status == "recorded_at_generation"
-            and isinstance(prompt_hash, str)
-            and self._HASH.fullmatch(prompt_hash) is not None
-        ) or (
-            prompt_hash_status == "not_preserved" and prompt_hash is None
+        return validate_generated_v1_reference(
+            root_dir=self.root_dir,
+            asset_root=self.asset_root,
+            item=item,
+            garment_id=garment_id,
+            user_id=user_id,
+            data_version=self.settings.data_version,
         )
-        if (
-            item.get("garment_id") != garment_id
-            or item.get("user_id") != user_id
-            or item.get("source_data_version") != self.settings.data_version
-            or item.get("status") != "succeeded"
-            or item.get("requested_model") != CPA_IMAGE_MODEL
-            or item.get("request_model_pinned") is not True
-            or item.get("model_reported") is not False
-            or item.get("model_verified") is not False
-            or item.get("resolved_model") is not None
-            or item.get("verification_basis")
-            != "batch_exact_request_contract"
-            or item.get("aspect_ratio") != "1:1"
-            or item.get("ai_generated") is not True
-            or not prompt_evidence_valid
-            or not isinstance(content_hash, str)
-            or not self._HASH.fullmatch(content_hash)
-            or media_type not in self._MEDIA_TYPES
-        ):
-            return None
-        path = self._path_for(item, garment_id)
-        if path is None:
-            return None
-        try:
-            body = path.read_bytes()
-            validated_type, width, height = AssetService.validate_static_image(
-                body, media_type
-            )
-            with Image.open(BytesIO(body)) as image:
-                image.load()
-                expected_provenance = {
-                    "AI-Generated": "true",
-                    "Requested-Model": CPA_IMAGE_MODEL,
-                    "Model-Reported": "false",
-                    "Verification-Basis": "batch_exact_request_contract",
-                    "Garment-ID": garment_id,
-                    "Generation-Contract": "wardrobe_catalog_single_garment_v1",
-                }
-                if any(
-                    image.info.get(key) != value
-                    for key, value in expected_provenance.items()
-                ):
-                    return None
-        except (OSError, AssetError, UnidentifiedImageError, ValueError):
-            return None
-        if (
-            validated_type != media_type
-            or item.get("bytes") != len(body)
-            or item.get("width") != width
-            or item.get("height") != height
-            or hashlib.sha256(body).hexdigest() != content_hash
-        ):
-            return None
-        return body, media_type, prompt_hash, prompt_hash_status, content_hash
 
     def list_for_user(self, user_id: str) -> WardrobeCatalogAssetsResponse:
         if self.repository.get_user(user_id) is None:
