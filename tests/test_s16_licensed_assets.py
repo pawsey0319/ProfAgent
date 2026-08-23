@@ -10,6 +10,7 @@ import ipaddress
 import json
 import math
 import ssl
+import sys
 import traceback
 from copy import deepcopy
 from dataclasses import replace
@@ -3092,3 +3093,719 @@ def test_vision_catalog_unhashable_slot_is_input_rejected_before_transport(
         _inspect_catalog(adapter, allowed_slot=["top"])  # type: ignore[arg-type]
     _assert_catalog_failure(vision_module, caught, "input_rejected")
     assert transport.calls == []
+
+
+# Task 4 contract: the CLI owns persistence but exposes an injectable
+# ``run_ingestion`` boundary.  The production command must wire its official
+# Openverse client, SafeImageFetcher, and Vision adapter into this boundary;
+# these tests deliberately use MockTransport and local doubles only.
+TASK4_CLI_PATH = Path(__file__).parents[1] / "scripts" / "ingest_licensed_wardrobe_assets.py"
+TASK4_OPENVERSE_BASE = "https://api.openverse.org/v1/images/"
+
+
+class _LazyLicensedIngestionCli:
+    """Make a missing CLI a RED assertion in a test body, not collection error."""
+
+    def __init__(self) -> None:
+        self._module: ModuleType | None = None
+
+    def _load(self) -> ModuleType:
+        if self._module is None:
+            if not TASK4_CLI_PATH.is_file():
+                pytest.fail(
+                    "Task 4 RED: scripts/ingest_licensed_wardrobe_assets.py is not implemented",
+                    pytrace=False,
+                )
+            module_name = "_task4_licensed_ingestion_cli"
+            spec = importlib.util.spec_from_file_location(module_name, TASK4_CLI_PATH)
+            assert spec is not None and spec.loader is not None
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            spec.loader.exec_module(module)
+            self._module = module
+        return self._module
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._load(), name)
+
+
+@pytest.fixture
+def licensed_ingestion_cli() -> Any:
+    return _LazyLicensedIngestionCli()
+
+
+def _task4_garment_rows(*garment_ids: str) -> list[dict[str, Any]]:
+    fixture = (
+        Path(__file__).parents[1]
+        / "data"
+        / "fixtures"
+        / "garments_s16_womenswear.jsonl"
+    )
+    wanted = set(garment_ids)
+    rows = [
+        json.loads(line)
+        for line in fixture.read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["garment_id"] in wanted
+    ]
+    assert {row["garment_id"] for row in rows} == wanted
+    return sorted(rows, key=lambda row: row["garment_id"])
+
+
+def _write_task4_garment_file(tmp_path: Path, *garment_ids: str) -> Path:
+    path = tmp_path / "controlled-garments.jsonl"
+    path.write_text(
+        "".join(
+            json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n"
+            for row in _task4_garment_rows(*garment_ids)
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _openverse_candidate(
+    *,
+    creator: str = "Openverse Creator",
+    source_url: str = "https://museum.example/object/1",
+    image_url: str = "https://images.example/object-1.png",
+    license_url: str = "https://creativecommons.org/licenses/by/4.0/",
+    **overrides: Any,
+) -> dict[str, Any]:
+    candidate: dict[str, Any] = {
+        "id": "openverse-image-1",
+        "license": "by",
+        "license_version": "4.0",
+        "license_url": license_url,
+        "creator": creator,
+        "foreign_landing_url": source_url,
+        "url": image_url,
+    }
+    candidate.update(overrides)
+    return candidate
+
+
+def _openverse_response(*candidates: dict[str, Any]) -> dict[str, Any]:
+    return {"result_count": len(candidates), "results": list(candidates)}
+
+
+class Task4SafeFetcher:
+    def __init__(self, result: Any | Exception, *, wait: bool = False) -> None:
+        self.result = result
+        self.wait = wait
+        self.urls: list[str] = []
+        self.active = 0
+        self.max_active = 0
+
+    async def fetch(self, url: str, **_kwargs: Any) -> Any:
+        self.urls.append(url)
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            if self.wait:
+                await asyncio.sleep(0)
+            if isinstance(self.result, Exception):
+                raise self.result
+            return self.result
+        finally:
+            self.active -= 1
+
+
+class Task4Vision:
+    def __init__(self, assessment: Any | Exception) -> None:
+        self.assessment = assessment
+        self.calls: list[dict[str, Any]] = []
+
+    async def inspect_catalog_asset(
+        self,
+        *,
+        image_bytes: bytes,
+        mime_type: str,
+        allowed_slot: str,
+    ) -> tuple[Any, dict[str, object]]:
+        self.calls.append(
+            {
+                "image_bytes": image_bytes,
+                "mime_type": mime_type,
+                "allowed_slot": allowed_slot,
+            }
+        )
+        if isinstance(self.assessment, Exception):
+            raise self.assessment
+        return self.assessment, {"operation": "catalog_asset_assessment"}
+
+
+def _task4_fetched_image(licensed_assets: ModuleType) -> Any:
+    payload = _make_image("PNG", size=(16, 12))
+    digest = hashlib.sha256(payload).hexdigest()
+    return licensed_assets.FetchedImage(
+        source_mime_type="image/png",
+        processed_mime_type="image/png",
+        original_sha256=digest,
+        processed_sha256=digest,
+        original_bytes=payload,
+        processed_bytes=payload,
+        width=16,
+        height=12,
+    )
+
+
+def _task4_assessment(vision_module: ModuleType, *, slot: str = "top") -> Any:
+    return vision_module.CatalogAssetAssessment(
+        slot=slot,
+        audience="womenswear",
+        contains_identifiable_person=False,
+        object_region=(0.0, 0.0, 1.0, 1.0),
+        confidence_band="high",
+        quality_issues=(),
+    )
+
+
+def _task4_config(
+    cli: ModuleType,
+    *,
+    garment_file: Path,
+    state_dir: Path,
+    dry_run: bool = False,
+    resume: bool = False,
+    candidate_budget: int = 2,
+    retry_budget: int = 1,
+    concurrency: int = 1,
+    total_budget: int = 2,
+) -> Any:
+    return cli.IngestionConfig(
+        provider="openverse",
+        license_allowlist=("CC0", "PDM", "CC-BY-2.0", "CC-BY-3.0", "CC-BY-4.0"),
+        garment_file=garment_file,
+        manifest_path=state_dir / "wardrobe_assets_v2.json",
+        sources_path=state_dir / "wardrobe_s16_sources.jsonl",
+        asset_directory=state_dir / "wardrobe_licensed_v1",
+        dry_run=dry_run,
+        resume=resume,
+        candidate_budget=candidate_budget,
+        retry_budget=retry_budget,
+        concurrency=concurrency,
+        total_budget=total_budget,
+    )
+
+
+async def _run_task4_ingestion(
+    cli: ModuleType,
+    *,
+    config: Any,
+    response_handler: Any,
+    fetcher: Task4SafeFetcher,
+    vision: Task4Vision,
+) -> Any:
+    transport = httpx.MockTransport(response_handler)
+    async with httpx.AsyncClient(
+        transport=transport, base_url=TASK4_OPENVERSE_BASE
+    ) as api_client:
+        return await cli.run_ingestion(
+            config=config,
+            api_client=api_client,
+            safe_fetcher=fetcher,
+            vision=vision,
+        )
+
+
+def _official_openverse_handler(payload: dict[str, Any]) -> Any:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.scheme == "https"
+        assert request.url.host == "api.openverse.org"
+        assert request.url.path.startswith("/v1/images/")
+        return httpx.Response(200, json=payload)
+
+    return handler
+
+
+def _task4_manifest(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_ingestion_accepts_only_complete_machine_readable_openverse_receipts(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    garment_file = _write_task4_garment_file(tmp_path, "g051")
+    state_dir = tmp_path / "state"
+    fetched = _task4_fetched_image(licensed_assets)
+    fetcher = Task4SafeFetcher(fetched)
+    vision = Task4Vision(_task4_assessment(vision_module))
+    config = _task4_config(
+        licensed_ingestion_cli, garment_file=garment_file, state_dir=state_dir
+    )
+
+    result = asyncio.run(
+        _run_task4_ingestion(
+            licensed_ingestion_cli,
+            config=config,
+            response_handler=_official_openverse_handler(
+                _openverse_response(_openverse_candidate())
+            ),
+            fetcher=fetcher,
+            vision=vision,
+        )
+    )
+
+    assert result.ready_ids == ("g051",)
+    assert result.quarantined_ids == ()
+    assert result.remaining_ids == ()
+    manifest = _task4_manifest(config.manifest_path)
+    item = manifest["items"][0]
+    assert {
+        "garment_id": item["garment_id"],
+        "user_id": item["user_id"],
+        "slot": item["slot"],
+        "audience": item["audience"],
+        "status": item["status"],
+        "source_kind": item["source_kind"],
+    } == {
+        "garment_id": "g051",
+        "user_id": "u01",
+        "slot": "top",
+        "audience": "unisex_womenswear_compatible",
+        "status": "ready",
+        "source_kind": "licensed_photo",
+    }
+    receipt = item["receipt_history"][-1]
+    assert receipt["provider"] == "openverse"
+    assert receipt["creator"] == "Openverse Creator"
+    assert receipt["source_url"] == "https://museum.example/object/1"
+    assert receipt["image_url"] == "https://images.example/object-1.png"
+    assert receipt["license_code"] == "CC-BY-4.0"
+    assert receipt["license_url"] == "https://creativecommons.org/licenses/by/4.0/"
+    assert fetcher.urls == ["https://images.example/object-1.png"]
+    assert vision.calls == [
+        {
+            "image_bytes": fetched.processed_bytes,
+            "mime_type": "image/png",
+            "allowed_slot": "top",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    [
+        "license",
+        "license_version",
+        "creator",
+        "license_url",
+        "foreign_landing_url",
+        "url",
+    ],
+)
+def test_ingestion_rejects_incomplete_openverse_metadata_before_image_or_vision(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+    missing_field: str,
+) -> None:
+    garment_file = _write_task4_garment_file(tmp_path, "g051")
+    state_dir = tmp_path / "state"
+    fetcher = Task4SafeFetcher(_task4_fetched_image(licensed_assets))
+    vision = Task4Vision(_task4_assessment(vision_module))
+    candidate = _openverse_candidate()
+    candidate.pop(missing_field)
+
+    result = asyncio.run(
+        _run_task4_ingestion(
+            licensed_ingestion_cli,
+            config=_task4_config(
+                licensed_ingestion_cli,
+                garment_file=garment_file,
+                state_dir=state_dir,
+                candidate_budget=1,
+            ),
+            response_handler=_official_openverse_handler(_openverse_response(candidate)),
+            fetcher=fetcher,
+            vision=vision,
+        )
+    )
+
+    assert result.ready_ids == ()
+    assert result.quarantined_ids == ("g051",)
+    assert result.remaining_ids == ("g051",)
+    assert fetcher.urls == []
+    assert vision.calls == []
+
+
+def test_ingestion_rejects_noncanonical_license_url_before_image_fetch(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    garment_file = _write_task4_garment_file(tmp_path, "g051")
+    state_dir = tmp_path / "state"
+    fetcher = Task4SafeFetcher(_task4_fetched_image(licensed_assets))
+    vision = Task4Vision(_task4_assessment(vision_module))
+    candidate = _openverse_candidate(
+        license_url="https://creativecommons.org/licenses/by/3.0/"
+    )
+
+    result = asyncio.run(
+        _run_task4_ingestion(
+            licensed_ingestion_cli,
+            config=_task4_config(
+                licensed_ingestion_cli, garment_file=garment_file, state_dir=state_dir
+            ),
+            response_handler=_official_openverse_handler(_openverse_response(candidate)),
+            fetcher=fetcher,
+            vision=vision,
+        )
+    )
+
+    assert result.ready_ids == ()
+    assert result.quarantined_ids == ("g051",)
+    assert result.remaining_ids == ("g051",)
+    assert fetcher.urls == []
+    assert vision.calls == []
+
+
+@pytest.mark.parametrize(
+    ("field", "tampered_value"),
+    [
+        ("user_id", "u99"),
+        ("slot", "dress"),
+        ("audience", "womenswear"),
+    ],
+)
+def test_ingestion_rejects_tampered_extension_identity_before_provider_access(
+    licensed_ingestion_cli: ModuleType,
+    tmp_path: Path,
+    field: str,
+    tampered_value: str,
+) -> None:
+    garment_file = tmp_path / "tampered-garments.jsonl"
+    row = _task4_garment_rows("g051")[0]
+    row[field] = tampered_value
+    garment_file.write_text(
+        json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    calls: list[httpx.Request] = []
+
+    def no_provider_access(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(500)
+
+    with pytest.raises((ValueError, ValidationError)):
+        asyncio.run(
+            _run_task4_ingestion(
+                licensed_ingestion_cli,
+                config=_task4_config(
+                    licensed_ingestion_cli,
+                    garment_file=garment_file,
+                    state_dir=tmp_path / "state",
+                ),
+                response_handler=no_provider_access,
+                fetcher=Task4SafeFetcher(RuntimeError("must_not_fetch")),
+                vision=Task4Vision(RuntimeError("must_not_assess")),
+            )
+        )
+    assert calls == []
+
+
+def test_ingestion_dry_run_leaves_assets_manifest_and_receipts_unmodified(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    garment_file = _write_task4_garment_file(tmp_path, "g051")
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    manifest_path = state_dir / "wardrobe_assets_v2.json"
+    sources_path = state_dir / "wardrobe_s16_sources.jsonl"
+    manifest_path.write_text('{"items": []}\n', encoding="utf-8")
+    sources_path.write_text('{"existing": true}\n', encoding="utf-8")
+    before = {
+        path: path.read_bytes()
+        for path in (manifest_path, sources_path)
+    }
+    fetcher = Task4SafeFetcher(_task4_fetched_image(licensed_assets))
+    vision = Task4Vision(_task4_assessment(vision_module))
+    config = _task4_config(
+        licensed_ingestion_cli,
+        garment_file=garment_file,
+        state_dir=state_dir,
+        dry_run=True,
+    )
+
+    result = asyncio.run(
+        _run_task4_ingestion(
+            licensed_ingestion_cli,
+            config=config,
+            response_handler=_official_openverse_handler(
+                _openverse_response(_openverse_candidate())
+            ),
+            fetcher=fetcher,
+            vision=vision,
+        )
+    )
+
+    assert result.dry_run is True
+    assert {path: path.read_bytes() for path in before} == before
+    assert not config.asset_directory.exists()
+
+
+def test_ingestion_resume_reuses_exact_existing_content_hash_without_new_receipt(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    garment_file = _write_task4_garment_file(tmp_path, "g051")
+    state_dir = tmp_path / "state"
+    fetched = _task4_fetched_image(licensed_assets)
+    first = asyncio.run(
+        _run_task4_ingestion(
+            licensed_ingestion_cli,
+            config=_task4_config(
+                licensed_ingestion_cli, garment_file=garment_file, state_dir=state_dir
+            ),
+            response_handler=_official_openverse_handler(
+                _openverse_response(_openverse_candidate())
+            ),
+            fetcher=Task4SafeFetcher(fetched),
+            vision=Task4Vision(_task4_assessment(vision_module)),
+        )
+    )
+    assert first.ready_ids == ("g051",)
+    before = _task4_manifest(state_dir / "wardrobe_assets_v2.json")
+
+    second = asyncio.run(
+        _run_task4_ingestion(
+            licensed_ingestion_cli,
+            config=_task4_config(
+                licensed_ingestion_cli,
+                garment_file=garment_file,
+                state_dir=state_dir,
+                resume=True,
+            ),
+            response_handler=_official_openverse_handler(
+                _openverse_response(_openverse_candidate())
+            ),
+            fetcher=Task4SafeFetcher(RuntimeError("fetch_must_not_run")),
+            vision=Task4Vision(RuntimeError("vision_must_not_run")),
+        )
+    )
+
+    after = _task4_manifest(state_dir / "wardrobe_assets_v2.json")
+    assert second.ready_ids == ("g051",)
+    assert second.reused_ids == ("g051",)
+    assert after == before
+    assert after["items"][0]["processed_sha256"] == fetched.processed_sha256
+
+
+def test_ingestion_source_change_appends_receipt_history_instead_of_overwriting(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    garment_file = _write_task4_garment_file(tmp_path, "g051")
+    state_dir = tmp_path / "state"
+    fetched = _task4_fetched_image(licensed_assets)
+    first_candidate = _openverse_candidate()
+    second_candidate = _openverse_candidate(
+        source_url="https://museum.example/object/2",
+        image_url="https://images.example/object-2.png",
+    )
+    for candidate in (first_candidate, second_candidate):
+        asyncio.run(
+            _run_task4_ingestion(
+                licensed_ingestion_cli,
+                config=_task4_config(
+                    licensed_ingestion_cli,
+                    garment_file=garment_file,
+                    state_dir=state_dir,
+                    resume=True,
+                ),
+                response_handler=_official_openverse_handler(_openverse_response(candidate)),
+                fetcher=Task4SafeFetcher(fetched),
+                vision=Task4Vision(_task4_assessment(vision_module)),
+            )
+        )
+
+    item = _task4_manifest(state_dir / "wardrobe_assets_v2.json")["items"][0]
+    assert [receipt["source_url"] for receipt in item["receipt_history"]] == [
+        "https://museum.example/object/1",
+        "https://museum.example/object/2",
+    ]
+    assert [receipt["image_url"] for receipt in item["receipt_history"]] == [
+        "https://images.example/object-1.png",
+        "https://images.example/object-2.png",
+    ]
+    source_history = [
+        json.loads(line)
+        for line in (state_dir / "wardrobe_s16_sources.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    assert [record["receipt"]["source_url"] for record in source_history] == [
+        "https://museum.example/object/1",
+        "https://museum.example/object/2",
+    ]
+
+
+@pytest.mark.parametrize("failure_kind", ["source", "safety", "vision"])
+def test_ingestion_failure_never_returns_false_ready_and_reports_exact_ids(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+    failure_kind: str,
+) -> None:
+    garment_file = _write_task4_garment_file(tmp_path, "g051")
+    state_dir = tmp_path / "state"
+    candidate = _openverse_candidate()
+    fetch_outcome: Any = _task4_fetched_image(licensed_assets)
+    vision_outcome: Any = _task4_assessment(vision_module)
+    if failure_kind == "source":
+        candidate = _openverse_candidate(license="nc", license_version="4.0")
+    elif failure_kind == "safety":
+        fetch_outcome = licensed_assets.ImageFetchError("decode_failed")
+    else:
+        vision_outcome = vision_module.VisionUnavailable(
+            "catalog_asset_quarantined", {"reason_code": "low_confidence"}
+        )
+
+    result = asyncio.run(
+        _run_task4_ingestion(
+            licensed_ingestion_cli,
+            config=_task4_config(
+                licensed_ingestion_cli, garment_file=garment_file, state_dir=state_dir
+            ),
+            response_handler=_official_openverse_handler(_openverse_response(candidate)),
+            fetcher=Task4SafeFetcher(fetch_outcome),
+            vision=Task4Vision(vision_outcome),
+        )
+    )
+
+    assert result.ready_ids == ()
+    assert result.quarantined_ids == ("g051",)
+    assert result.remaining_ids == ("g051",)
+    if config := getattr(result, "manifest_path", None):
+        manifest = _task4_manifest(config)
+        assert all(item["status"] != "ready" for item in manifest["items"])
+
+
+def test_ingestion_enforces_candidate_retry_concurrency_and_total_budgets(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    garment_file = _write_task4_garment_file(tmp_path, "g051", "g052")
+    state_dir = tmp_path / "state"
+    fetched = _task4_fetched_image(licensed_assets)
+    fetcher = Task4SafeFetcher(fetched, wait=True)
+    vision = Task4Vision(_task4_assessment(vision_module))
+    responses = [
+        httpx.Response(503, json={"detail": "bounded retry"}),
+        httpx.Response(
+            200,
+            json=_openverse_response(
+                _openverse_candidate(),
+                _openverse_candidate(
+                    source_url="https://museum.example/object/2",
+                    image_url="https://images.example/object-2.png",
+                ),
+            ),
+        ),
+        httpx.Response(
+            200,
+            json=_openverse_response(_openverse_candidate()),
+        ),
+    ]
+
+    def retrying_handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "api.openverse.org"
+        return responses.pop(0)
+
+    config = _task4_config(
+        licensed_ingestion_cli,
+        garment_file=garment_file,
+        state_dir=state_dir,
+        candidate_budget=1,
+        retry_budget=1,
+        concurrency=1,
+        total_budget=2,
+    )
+    result = asyncio.run(
+        _run_task4_ingestion(
+            licensed_ingestion_cli,
+            config=config,
+            response_handler=retrying_handler,
+            fetcher=fetcher,
+            vision=vision,
+        )
+    )
+
+    assert result.ready_ids == ("g051", "g052")
+    assert result.remaining_ids == ()
+    assert result.api_attempts == 3
+    assert result.candidate_attempts == 2
+    assert fetcher.max_active == 1
+    assert len(responses) == 0
+
+
+def test_ingestion_total_budget_leaves_unattempted_controlled_ids_remaining(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    garment_file = _write_task4_garment_file(tmp_path, "g051", "g052")
+    state_dir = tmp_path / "state"
+    result = asyncio.run(
+        _run_task4_ingestion(
+            licensed_ingestion_cli,
+            config=_task4_config(
+                licensed_ingestion_cli,
+                garment_file=garment_file,
+                state_dir=state_dir,
+                total_budget=1,
+            ),
+            response_handler=_official_openverse_handler(
+                _openverse_response(_openverse_candidate())
+            ),
+            fetcher=Task4SafeFetcher(_task4_fetched_image(licensed_assets)),
+            vision=Task4Vision(_task4_assessment(vision_module)),
+        )
+    )
+
+    assert result.ready_ids == ("g051",)
+    assert result.quarantined_ids == ()
+    assert result.remaining_ids == ("g052",)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("candidate_budget", 0),
+        ("retry_budget", -1),
+        ("concurrency", 0),
+        ("total_budget", 0),
+    ],
+)
+def test_ingestion_rejects_unbounded_or_nonpositive_budget_configuration(
+    licensed_ingestion_cli: ModuleType,
+    tmp_path: Path,
+    field: str,
+    value: int,
+) -> None:
+    kwargs = {field: value}
+    with pytest.raises((ValueError, ValidationError)):
+        _task4_config(
+            licensed_ingestion_cli,
+            garment_file=_write_task4_garment_file(tmp_path, "g051"),
+            state_dir=tmp_path / "state",
+            **kwargs,
+        )
