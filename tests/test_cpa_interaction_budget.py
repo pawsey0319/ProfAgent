@@ -402,7 +402,7 @@ def test_health_timeout_preserves_prior_text_verification_and_next_dialogue_atte
 
 
 def test_vision_interaction_budget_cancels_slow_provider_for_qualitative_fallback(
-    monkeypatch, offline_settings
+    offline_settings,
 ) -> None:
     settings = replace(
         offline_settings,
@@ -412,15 +412,15 @@ def test_vision_interaction_budget_cancels_slow_provider_for_qualitative_fallbac
     )
     state = {"attempted": 0, "cancelled": False}
 
-    async def slow_post(_self, _url, **_kwargs):
+    async def slow_transport(request: httpx.Request) -> httpx.Response:
         state["attempted"] += 1
         try:
             await asyncio.sleep(10)
         except asyncio.CancelledError:
             state["cancelled"] = True
             raise
+        return httpx.Response(200, request=request)
 
-    monkeypatch.setattr(httpx.AsyncClient, "post", slow_post)
     record = AssetRecord(
         asset_id="asset_budget",
         user_id="u01",
@@ -434,7 +434,9 @@ def test_vision_interaction_budget_cancels_slow_provider_for_qualitative_fallbac
         created_at=datetime.now().astimezone(),
         trace_id="trace_asset_budget",
     )
-    adapter = VisionAdapter(settings)
+    adapter = VisionAdapter(
+        settings, transport=httpx.MockTransport(slow_transport)
+    )
     started = time.perf_counter()
     with pytest.raises(VisionUnavailable) as captured:
         asyncio.run(adapter.inspect([(record, b"fakepng")]))

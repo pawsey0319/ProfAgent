@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import ipaddress
+import math
 import re
 import socket
 import ssl
@@ -10,7 +11,7 @@ import warnings
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path, PurePosixPath
-from typing import Any, Awaitable, Callable, Literal
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, Protocol
 
 import httpcore
 import httpx
@@ -41,6 +42,10 @@ from .config import (
     LICENSED_ASSET_WRITE_TIMEOUT_SECONDS,
     Settings,
 )
+from .models import Slot
+
+if TYPE_CHECKING:
+    from .vision import CatalogAssetAssessment
 
 
 LicenseCode = Literal[
@@ -458,12 +463,182 @@ class FetchedImage(BaseModel):
         return self
 
 
+class CatalogCroppedImage(BaseModel):
+    """In-memory local crop; deliberately carries no asset authority."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    input_sha256: StrictStr
+    processed_sha256: StrictStr
+    processed_mime_type: Literal["image/png"] = "image/png"
+    processed_bytes: StrictBytes
+    width: StrictInt = Field(gt=0)
+    height: StrictInt = Field(gt=0)
+    object_region: tuple[float, float, float, float]
+
+    @field_validator("input_sha256", "processed_sha256")
+    @classmethod
+    def _validate_crop_hash(cls, value: str) -> str:
+        if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+            raise ValueError("invalid_sha256")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_crop_content_hash(self) -> "CatalogCroppedImage":
+        if hashlib.sha256(self.processed_bytes).hexdigest() != self.processed_sha256:
+            raise ValueError("processed_hash_mismatch")
+        return self
+
+
 class ImageFetchError(Exception):
     def __init__(self, reason_code: ImageFetchReasonCode) -> None:
         if reason_code not in _FETCH_REASONS:
             raise ValueError("invalid_reason_code")
         self.reason_code = reason_code
         super().__init__(reason_code)
+
+
+class CatalogVisionInspector(Protocol):
+    async def inspect_catalog_asset(
+        self,
+        *,
+        image_bytes: bytes,
+        mime_type: str,
+        allowed_slot: Slot,
+    ) -> tuple[CatalogAssetAssessment, dict[str, Any]]: ...
+
+
+def _crop_catalog_image(
+    fetched_image: FetchedImage,
+    object_region: tuple[float, float, float, float],
+) -> CatalogCroppedImage:
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(BytesIO(fetched_image.processed_bytes)) as image:
+                if image.format != _MIME_TO_FORMAT[fetched_image.processed_mime_type]:
+                    raise ImageFetchError("mime_mismatch")
+                image.load()
+                if image.size != (fetched_image.width, fetched_image.height):
+                    raise ImageFetchError("decode_failed")
+                left, top, right, bottom = object_region
+                crop_box = (
+                    math.floor(left * fetched_image.width),
+                    math.floor(top * fetched_image.height),
+                    math.ceil(right * fetched_image.width),
+                    math.ceil(bottom * fetched_image.height),
+                )
+                if (
+                    crop_box[0] < 0
+                    or crop_box[1] < 0
+                    or crop_box[2] > fetched_image.width
+                    or crop_box[3] > fetched_image.height
+                    or crop_box[0] >= crop_box[2]
+                    or crop_box[1] >= crop_box[3]
+                ):
+                    raise ImageFetchError("decode_failed")
+                cropped = image.crop(crop_box)
+                if cropped.mode not in {"RGB", "RGBA", "L"}:
+                    target_mode = "RGBA" if "A" in cropped.getbands() else "RGB"
+                    cropped = cropped.convert(target_mode)
+                else:
+                    cropped = cropped.copy()
+                clean_crop = Image.frombytes(
+                    cropped.mode, cropped.size, cropped.tobytes()
+                )
+                output = BytesIO()
+                clean_crop.save(
+                    output, format="PNG", optimize=False, compress_level=9
+                )
+                processed_bytes = output.getvalue()
+                return CatalogCroppedImage(
+                    input_sha256=fetched_image.processed_sha256,
+                    processed_sha256=hashlib.sha256(processed_bytes).hexdigest(),
+                    processed_bytes=processed_bytes,
+                    width=clean_crop.width,
+                    height=clean_crop.height,
+                    object_region=object_region,
+                )
+    except ImageFetchError:
+        raise
+    except (
+        KeyError,
+        OSError,
+        SyntaxError,
+        TypeError,
+        UnidentifiedImageError,
+        ValueError,
+        Image.DecompressionBombError,
+        Image.DecompressionBombWarning,
+    ):
+        raise ImageFetchError("decode_failed") from None
+
+
+def _local_catalog_quarantine_trace(provider_trace: dict[str, Any]) -> dict[str, Any]:
+    allowed_models = {"grok-4.6-high", "grok-4.6-build"}
+    resolved_model = provider_trace.get("resolved_model")
+    model_verified = (
+        provider_trace.get("model_verified") is True
+        and resolved_model in allowed_models
+    )
+    latency_ms = provider_trace.get("latency_ms")
+    if (
+        isinstance(latency_ms, bool)
+        or not isinstance(latency_ms, (int, float))
+        or not math.isfinite(latency_ms)
+        or latency_ms < 0
+    ):
+        latency_ms = 0
+    budget = provider_trace.get("interaction_budget_seconds")
+    if (
+        isinstance(budget, bool)
+        or not isinstance(budget, (int, float))
+        or not math.isfinite(budget)
+        or not 0 < budget <= 10
+    ):
+        budget = 10.0
+    return {
+        "component": "vision",
+        "operation": "catalog_asset_assessment",
+        "status": "quarantined",
+        "reason_code": "input_rejected",
+        "requested_model": "grok4.6",
+        "transport_model": "grok-4.6-high",
+        "resolved_model": resolved_model if model_verified else None,
+        "model_verified": model_verified,
+        "schema": "catalog_asset_assessment_v1",
+        "image_logged": False,
+        "latency_ms": latency_ms,
+        "interaction_budget_seconds": budget,
+        "assessment_count": 0,
+        "quality_issue_count": 0,
+    }
+
+
+async def assess_and_crop_catalog_asset(
+    *,
+    vision: CatalogVisionInspector,
+    fetched_image: FetchedImage,
+    allowed_slot: Slot,
+) -> tuple[CatalogCroppedImage, CatalogAssetAssessment, dict[str, Any]]:
+    """Apply Provider advice locally without writing identity or manifest truth."""
+    assessment, provider_trace = await vision.inspect_catalog_asset(
+        image_bytes=fetched_image.processed_bytes,
+        mime_type=fetched_image.processed_mime_type,
+        allowed_slot=allowed_slot,
+    )
+    try:
+        cropped = _crop_catalog_image(
+            fetched_image, assessment.object_region
+        )
+    except ImageFetchError:
+        from .vision import VisionUnavailable
+
+        raise VisionUnavailable(
+            "catalog_asset_quarantined",
+            _local_catalog_quarantine_trace(provider_trace),
+        ) from None
+    return cropped, assessment, provider_trace
 
 
 Resolver = Callable[[str, int], Awaitable[tuple[str, ...]]]
@@ -944,6 +1119,8 @@ class SafeImageFetcher:
 
 __all__ = [
     "AssetStatus",
+    "CatalogCroppedImage",
+    "CatalogVisionInspector",
     "FetchedImage",
     "ImageFetchError",
     "ImageFetchReasonCode",
@@ -955,4 +1132,5 @@ __all__ = [
     "SafeImageConfig",
     "SafeImageFetcher",
     "SourceKind",
+    "assess_and_crop_catalog_asset",
 ]

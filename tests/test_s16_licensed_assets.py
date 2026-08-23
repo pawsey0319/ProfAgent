@@ -2191,7 +2191,7 @@ class CatalogVisionTransportSpy:
                 raise
         return httpx.Response(
             self.status_code,
-            content=self.response_body,
+            stream=httpx.ByteStream(self.response_body),
             headers={"content-type": "application/json"},
             request=request,
         )
@@ -2931,3 +2931,164 @@ def test_vision_catalog_signature_and_result_exclude_provider_authority_fields(
         "receipt",
         "relative_path",
     }.isdisjoint(vision_module.CatalogAssetAssessment.model_fields)
+
+
+def _fetched_png(licensed_assets: ModuleType, *, size: tuple[int, int]) -> Any:
+    payload = _make_image("PNG", size=size)
+    digest = hashlib.sha256(payload).hexdigest()
+    return licensed_assets.FetchedImage(
+        source_mime_type="image/png",
+        processed_mime_type="image/png",
+        original_sha256=digest,
+        processed_sha256=digest,
+        original_bytes=payload,
+        processed_bytes=payload,
+        width=size[0],
+        height=size[1],
+    )
+
+
+def test_catalog_asset_server_bridge_crops_fetched_image_without_authority_or_metadata(
+    vision_module: ModuleType,
+    licensed_assets: ModuleType,
+    offline_settings: Any,
+) -> None:
+    fetched = _fetched_png(licensed_assets, size=(10, 8))
+    before = fetched.model_dump(mode="python")
+    payload = _catalog_payload(object_region=[0.2, 0.25, 0.8, 0.75])
+    transport = CatalogVisionTransportSpy(_catalog_completion_bytes(payload))
+    adapter = _vision_adapter(vision_module, offline_settings, transport)
+
+    cropped, assessment, trace = asyncio.run(
+        licensed_assets.assess_and_crop_catalog_asset(
+            vision=adapter,
+            fetched_image=fetched,
+            allowed_slot="top",
+        )
+    )
+
+    assert isinstance(cropped, licensed_assets.CatalogCroppedImage)
+    assert set(type(cropped).model_fields) == {
+        "input_sha256",
+        "processed_sha256",
+        "processed_mime_type",
+        "processed_bytes",
+        "width",
+        "height",
+        "object_region",
+    }
+    assert {
+        "garment_id",
+        "user_id",
+        "owner_id",
+        "source_url",
+        "license",
+        "authorization",
+        "receipt",
+        "relative_path",
+        "status",
+    }.isdisjoint(type(cropped).model_fields)
+    assert assessment.object_region == (0.2, 0.25, 0.8, 0.75)
+    assert cropped.object_region == assessment.object_region
+    assert cropped.input_sha256 == fetched.processed_sha256
+    assert cropped.processed_mime_type == "image/png"
+    assert (cropped.width, cropped.height) == (6, 4)
+    assert hashlib.sha256(cropped.processed_bytes).hexdigest() == (
+        cropped.processed_sha256
+    )
+    with Image.open(BytesIO(cropped.processed_bytes)) as image:
+        assert image.format == "PNG"
+        assert image.size == (6, 4)
+        assert image.info == {}
+    assert fetched.model_dump(mode="python") == before
+    _assert_catalog_trace_is_minimized(trace, success=True)
+    assert len(transport.calls) == 1
+
+
+def test_catalog_asset_server_bridge_quarantines_local_processing_failure(
+    vision_module: ModuleType,
+    licensed_assets: ModuleType,
+    offline_settings: Any,
+) -> None:
+    invalid = b"not-a-decoded-image"
+    digest = hashlib.sha256(invalid).hexdigest()
+    fetched = licensed_assets.FetchedImage(
+        source_mime_type="image/png",
+        processed_mime_type="image/png",
+        original_sha256=digest,
+        processed_sha256=digest,
+        original_bytes=invalid,
+        processed_bytes=invalid,
+        width=10,
+        height=8,
+    )
+    transport = CatalogVisionTransportSpy(
+        _catalog_completion_bytes(_catalog_payload())
+    )
+    adapter = _vision_adapter(vision_module, offline_settings, transport)
+
+    with pytest.raises(vision_module.VisionUnavailable) as caught:
+        asyncio.run(
+            licensed_assets.assess_and_crop_catalog_asset(
+                vision=adapter,
+                fetched_image=fetched,
+                allowed_slot="top",
+            )
+        )
+
+    _assert_catalog_failure(vision_module, caught, "input_rejected")
+    assert len(transport.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "response_body",
+    [
+        b"[" * 2_000 + b"]" * 2_000,
+        _catalog_completion_bytes("[" * 2_000 + "]" * 2_000),
+    ],
+    ids=["outer-recursion", "inner-recursion"],
+)
+def test_vision_catalog_deeply_nested_json_is_controlled_quarantine(
+    vision_module: ModuleType,
+    offline_settings: Any,
+    response_body: bytes,
+) -> None:
+    transport = CatalogVisionTransportSpy(response_body)
+    adapter = _vision_adapter(vision_module, offline_settings, transport)
+    with pytest.raises(vision_module.VisionUnavailable) as caught:
+        _inspect_catalog(adapter)
+    _assert_catalog_failure(
+        vision_module, caught, "response_schema_invalid"
+    )
+    assert len(transport.calls) == 1
+
+
+def test_vision_catalog_oversize_provider_response_is_bounded_and_quarantined(
+    vision_module: ModuleType,
+    offline_settings: Any,
+) -> None:
+    assert 0 < vision_module.VISION_MAX_RESPONSE_BYTES <= 1024 * 1024
+    transport = CatalogVisionTransportSpy(
+        b"x" * (vision_module.VISION_MAX_RESPONSE_BYTES + 1)
+    )
+    adapter = _vision_adapter(vision_module, offline_settings, transport)
+    with pytest.raises(vision_module.VisionUnavailable) as caught:
+        _inspect_catalog(adapter)
+    _assert_catalog_failure(
+        vision_module, caught, "response_schema_invalid"
+    )
+    assert len(transport.calls) == 1
+
+
+def test_vision_catalog_unhashable_slot_is_input_rejected_before_transport(
+    vision_module: ModuleType,
+    offline_settings: Any,
+) -> None:
+    transport = CatalogVisionTransportSpy(
+        _catalog_completion_bytes(_catalog_payload())
+    )
+    adapter = _vision_adapter(vision_module, offline_settings, transport)
+    with pytest.raises(vision_module.VisionUnavailable) as caught:
+        _inspect_catalog(adapter, allowed_slot=["top"])  # type: ignore[arg-type]
+    _assert_catalog_failure(vision_module, caught, "input_rejected")
+    assert transport.calls == []

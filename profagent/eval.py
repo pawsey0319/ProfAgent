@@ -2494,8 +2494,15 @@ def _assurance_vision_transport(
             "ac13_owned_image_sent_to_mock",
         )
         if status != 200:
-            return httpx.Response(status, json={"error": "injected"})
-        return httpx.Response(200, json=payload)
+            body = json.dumps({"error": "injected"}).encode("utf-8")
+        else:
+            body = json.dumps(payload).encode("utf-8")
+        return httpx.Response(
+            status,
+            stream=httpx.ByteStream(body),
+            headers={"content-type": "application/json"},
+            request=request,
+        )
 
     return httpx.MockTransport(handler)
 

@@ -236,8 +236,15 @@ def vision_transport(payload: dict | None, *, status: int = 200) -> httpx.MockTr
             for part in user_content
         )
         if status != 200:
-            return httpx.Response(status, json={"error": "injected"})
-        return httpx.Response(200, json=payload)
+            body = json.dumps({"error": "injected"}).encode("utf-8")
+        else:
+            body = json.dumps(payload).encode("utf-8")
+        return httpx.Response(
+            status,
+            stream=httpx.ByteStream(body),
+            headers={"content-type": "application/json"},
+            request=request,
+        )
 
     return httpx.MockTransport(handler)
 

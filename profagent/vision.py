@@ -31,6 +31,7 @@ VISION_REPORTED_MODELS = CPA_REPORTED_MODELS
 VISIBLE_SLOTS = {"top", "bottom", "shoes", "overall"}
 MIN_REGION_CONFIDENCE = 0.70
 CATALOG_VISION_MAX_IMAGE_BYTES = 25 * 1024 * 1024
+VISION_MAX_RESPONSE_BYTES = 256 * 1024
 CATALOG_ASSESSMENT_SCHEMA = "catalog_asset_assessment_v1"
 CATALOG_AUDIENCES = ("womenswear", "unisex_womenswear_compatible")
 CATALOG_QUALITY_SIGNALS = (
@@ -248,7 +249,14 @@ def _closed_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def _load_json_without_duplicate_keys(value: bytes | str) -> Any:
-    return json.loads(value, object_pairs_hook=_closed_json_object)
+    try:
+        return json.loads(value, object_pairs_hook=_closed_json_object)
+    except (OverflowError, RecursionError):
+        raise ValueError("json_nesting_invalid") from None
+
+
+class _VisionResponseInvalid(Exception):
+    pass
 
 
 class VisionAdapter:
@@ -477,6 +485,7 @@ class VisionAdapter:
             "max_tokens": max_tokens,
         }
         headers = {"Content-Type": "application/json"}
+        headers["Accept-Encoding"] = "identity"
         if self.settings.cpa_api_key:
             headers["Authorization"] = f"Bearer {self.settings.cpa_api_key}"
         started = time.perf_counter()
@@ -489,15 +498,43 @@ class VisionAdapter:
                 trust_env=False,
                 transport=self.transport,
             ) as client:
-                provider_task = asyncio.create_task(
-                    client.post(
+                async def request_provider() -> tuple[int, bytes]:
+                    request = client.build_request(
+                        "POST",
                         f"{self.settings.cpa_base_url}/chat/completions",
                         headers=headers,
                         json=request_body,
                     )
+                    response = await client.send(request, stream=True)
+                    try:
+                        if response.status_code < 200 or response.status_code >= 300:
+                            return response.status_code, b""
+                        content_encoding = response.headers.get(
+                            "content-encoding", "identity"
+                        ).strip().lower()
+                        if content_encoding != "identity":
+                            raise _VisionResponseInvalid(
+                                "unsupported_content_encoding"
+                            )
+                        chunks: list[bytes] = []
+                        total = 0
+                        async for chunk in response.aiter_raw():
+                            total += len(chunk)
+                            if total > VISION_MAX_RESPONSE_BYTES:
+                                raise _VisionResponseInvalid(
+                                    "response_too_large"
+                                )
+                            chunks.append(chunk)
+                        return response.status_code, b"".join(chunks)
+                    finally:
+                        with suppress(Exception):
+                            await response.aclose()
+
+                provider_task = asyncio.create_task(
+                    request_provider()
                 )
                 try:
-                    response = await asyncio.wait_for(
+                    status_code, response_body = await asyncio.wait_for(
                         asyncio.shield(provider_task), timeout=interaction_budget
                     )
                 except (TimeoutError, asyncio.TimeoutError):
@@ -526,6 +563,14 @@ class VisionAdapter:
                     raise
         except VisionUnavailable:
             raise
+        except _VisionResponseInvalid:
+            latency_ms = round((time.perf_counter() - started) * 1000)
+            raise self._request_failure(
+                operation=operation,
+                reason_code="response_schema_invalid",
+                latency_ms=latency_ms,
+                schema=schema,
+            ) from None
         except httpx.TimeoutException:
             latency_ms = round((time.perf_counter() - started) * 1000)
             raise self._request_failure(
@@ -552,7 +597,7 @@ class VisionAdapter:
             ) from None
 
         latency_ms = round((time.perf_counter() - started) * 1000)
-        if response.status_code < 200 or response.status_code >= 300:
+        if status_code < 200 or status_code >= 300:
             raise self._request_failure(
                 operation=operation,
                 reason_code="http_error",
@@ -560,7 +605,7 @@ class VisionAdapter:
                 schema=schema,
             ) from None
         try:
-            envelope = _load_json_without_duplicate_keys(response.content)
+            envelope = _load_json_without_duplicate_keys(response_body)
             if not isinstance(envelope, dict) or set(envelope) != {
                 "model",
                 "choices",
@@ -641,6 +686,7 @@ class VisionAdapter:
             or len(image_bytes) > CATALOG_VISION_MAX_IMAGE_BYTES
             or not isinstance(mime_type, str)
             or mime_type not in CATALOG_MIME_TYPES
+            or not isinstance(allowed_slot, str)
             or allowed_slot not in CATALOG_SLOTS
         ):
             return False
