@@ -7,6 +7,8 @@ import json
 import logging
 import os
 import sys
+import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -53,6 +55,8 @@ DEFAULT_SOURCES_PATH = ROOT / "data" / "sources" / "wardrobe_s16_sources.jsonl"
 DEFAULT_ASSET_DIRECTORY = ROOT / "data" / "assets" / "wardrobe_licensed_v1"
 OPENVERSE_API_BASE = "https://api.openverse.org/v1/images/"
 OPENVERSE_RESPONSE_LIMIT = 1024 * 1024
+OPENVERSE_THUMBNAIL_ACCEPT = "image/png,image/jpeg,image/webp"
+OPENVERSE_THUMBNAIL_TOTAL_TIMEOUT_SECONDS = 20.0
 MANIFEST_INPUT_LIMIT = 4 * 1024 * 1024
 SOURCE_HISTORY_LIMIT = 8 * 1024 * 1024
 MAX_CANDIDATE_BUDGET = 10
@@ -509,7 +513,7 @@ def _normalize_openverse_candidate(
     }
     if not required.issubset(raw):
         raise ValueError("source_metadata_incomplete")
-    provider_item_id = _bounded_text(raw["id"], reason="source_metadata_invalid")
+    provider_item_id = _canonical_openverse_uuid(raw["id"])
     provider_license = _bounded_text(
         raw["license"], reason="source_metadata_invalid", maximum=32
     ).lower()
@@ -555,6 +559,17 @@ def _normalize_openverse_candidate(
     )
 
 
+def _canonical_openverse_uuid(value: Any) -> str:
+    provider_item_id = _bounded_text(value, reason="source_metadata_invalid", maximum=36)
+    try:
+        parsed = uuid.UUID(provider_item_id)
+    except (AttributeError, ValueError):
+        raise ValueError("source_metadata_invalid") from None
+    if str(parsed) != provider_item_id:
+        raise ValueError("source_metadata_invalid")
+    return provider_item_id
+
+
 def _validate_official_client(api_client: httpx.AsyncClient) -> None:
     base = api_client.base_url
     if (
@@ -579,6 +594,150 @@ def _validate_official_response(response: httpx.Response) -> None:
         or request_url.path != "/v1/images/"
     ):
         raise ValueError("unapproved_provider_endpoint")
+
+
+def _official_thumbnail_path(provider_item_id: str) -> str:
+    canonical_id = _canonical_openverse_uuid(provider_item_id)
+    return f"{canonical_id}/thumb/"
+
+
+def _validate_official_thumbnail_response(
+    response: httpx.Response,
+    *,
+    provider_item_id: str,
+) -> None:
+    expected = httpx.URL(f"{OPENVERSE_API_BASE}{_official_thumbnail_path(provider_item_id)}")
+    if response.request.method != "GET" or response.request.url != expected:
+        raise ImageFetchError("invalid_url")
+
+
+def _thumbnail_byte_validator(
+    safe_fetcher: Any,
+    *,
+    config: IngestionConfig,
+) -> SafeImageFetcher:
+    if isinstance(safe_fetcher, SafeImageFetcher):
+        return safe_fetcher
+    return SafeImageFetcher(
+        ready_dir=config.asset_directory,
+        quarantine_dir=config.asset_directory.parent / "quarantine",
+        config=SafeImageConfig(),
+    )
+
+
+@asynccontextmanager
+async def _send_stateless_official_request(
+    api_client: httpx.AsyncClient,
+    request: httpx.Request,
+) -> Any:
+    request.headers.pop("cookie", None)
+    response = await api_client.send(
+        request,
+        stream=True,
+        follow_redirects=False,
+    )
+    try:
+        yield response
+    finally:
+        try:
+            await response.aclose()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+
+
+async def _fetch_trusted_openverse_thumbnail(
+    *,
+    api_client: httpx.AsyncClient,
+    provider_item_id: str,
+    safe_fetcher: Any,
+    config: IngestionConfig,
+) -> FetchedImage:
+    validator = _thumbnail_byte_validator(safe_fetcher, config=config)
+    reason: str | None = None
+    try:
+        return await asyncio.wait_for(
+            _fetch_trusted_openverse_thumbnail_inner(
+                api_client=api_client,
+                provider_item_id=provider_item_id,
+                validator=validator,
+            ),
+            timeout=OPENVERSE_THUMBNAIL_TOTAL_TIMEOUT_SECONDS,
+        )
+    except asyncio.CancelledError:
+        raise
+    except ImageFetchError as exc:
+        reason = exc.reason_code
+    except (asyncio.TimeoutError, httpx.TimeoutException):
+        reason = "timeout"
+    except Exception:
+        reason = "network_error"
+    assert reason is not None
+    raise ImageFetchError(reason) from None
+
+
+async def _fetch_trusted_openverse_thumbnail_inner(
+    *,
+    api_client: httpx.AsyncClient,
+    provider_item_id: str,
+    validator: SafeImageFetcher,
+) -> FetchedImage:
+    path = _official_thumbnail_path(provider_item_id)
+    request = api_client.build_request(
+        "GET",
+        path,
+        headers={
+            "Accept": OPENVERSE_THUMBNAIL_ACCEPT,
+            "Accept-Encoding": "identity",
+        },
+    )
+    async with _send_stateless_official_request(api_client, request) as response:
+        _validate_official_thumbnail_response(
+            response,
+            provider_item_id=provider_item_id,
+        )
+        if response.status_code != 200:
+            raise ImageFetchError("http_status")
+        encodings = response.headers.get_list("content-encoding")
+        if len(encodings) > 1 or (
+            len(encodings) == 1 and encodings[0].strip().lower() != "identity"
+        ):
+            raise ImageFetchError("unsupported_content_encoding")
+        content_types = response.headers.get_list("content-type")
+        if len(content_types) != 1:
+            raise ImageFetchError("unsupported_mime")
+        source_mime = content_types[0].split(";", 1)[0].strip().lower()
+        if source_mime not in {"image/png", "image/jpeg", "image/webp"}:
+            raise ImageFetchError("unsupported_mime")
+        lengths = response.headers.get_list("content-length")
+        if len(lengths) > 1:
+            raise ImageFetchError("response_too_large")
+        if lengths:
+            try:
+                content_length = int(lengths[0])
+            except ValueError:
+                raise ImageFetchError("response_too_large") from None
+            if content_length < 0 or content_length > validator.max_response_bytes:
+                raise ImageFetchError("response_too_large")
+        if response.is_stream_consumed:
+            payload = response.content
+            if len(payload) > validator.max_response_bytes:
+                raise ImageFetchError("response_too_large")
+        else:
+            chunks: list[bytes] = []
+            total = 0
+            async for chunk in response.aiter_raw():
+                total += len(chunk)
+                if total > validator.max_response_bytes:
+                    raise ImageFetchError("response_too_large")
+                chunks.append(chunk)
+            payload = b"".join(chunks)
+    return await asyncio.to_thread(
+        validator.validate_local_bytes,
+        payload,
+        source_mime,
+    )
 
 
 def _parse_openverse_response(payload_bytes: bytes) -> tuple[Any, ...]:
@@ -671,7 +830,7 @@ async def _search_openverse(
             reason: _SearchReason | None = None
             payload_bytes = b""
             try:
-                stream_context = api_client.stream(
+                request = api_client.build_request(
                     "GET",
                     "",
                     params={
@@ -679,9 +838,15 @@ async def _search_openverse(
                         "license": license_param,
                         "page_size": config.candidate_budget,
                     },
-                    follow_redirects=False,
+                    headers={
+                        "Accept": "application/json",
+                        "Accept-Encoding": "identity",
+                    },
                 )
-                async with stream_context as response:
+                async with _send_stateless_official_request(
+                    api_client,
+                    request,
+                ) as response:
                     _validate_official_response(response)
                     if response.status_code == 429:
                         reason = "provider_rate_limited"
@@ -1271,8 +1436,12 @@ async def _attempt_openverse_garment(
                 existing_item=existing_item,
             )
         try:
-            assert source.image_url is not None
-            fetched = await safe_fetcher.fetch(source.image_url)
+            fetched = await _fetch_trusted_openverse_thumbnail(
+                api_client=api_client,
+                provider_item_id=source.provider_item_id,
+                safe_fetcher=safe_fetcher,
+                config=config,
+            )
             counters.vision_call_count += 1
             _record_vision_model_provenance(counters, vision)
             cropped, _, vision_trace = await assess_and_crop_catalog_asset(
@@ -1937,7 +2106,12 @@ async def _run_cli(config: IngestionConfig) -> IngestionResult:
         timeout=timeout,
         follow_redirects=False,
         trust_env=False,
-        headers={"User-Agent": "ProfAgent-R1-LicensedAssetIngestor/1.0"},
+        verify=True,
+        headers={
+            "User-Agent": "ProfAgent-R1-LicensedAssetIngestor/1.0",
+            "Accept": OPENVERSE_THUMBNAIL_ACCEPT,
+            "Accept-Encoding": "identity",
+        },
     ) as api_client:
         return await run_ingestion(config, api_client, fetcher, vision)
 

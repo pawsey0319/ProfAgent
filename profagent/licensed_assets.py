@@ -807,6 +807,39 @@ class SafeImageFetcher:
         # upstream exception cannot survive as cause or context.
         raise ImageFetchError(reason)
 
+    @property
+    def max_response_bytes(self) -> int:
+        """Expose the already-validated Task 2 byte cap to trusted byte transports."""
+
+        return self._config.max_response_bytes
+
+    def validate_local_bytes(
+        self,
+        payload: bytes,
+        source_mime: str,
+        expected_sha256: str | None = None,
+    ) -> FetchedImage:
+        """Apply the Task 2 local byte/hash/decode/normalization contract."""
+
+        if source_mime not in _MIME_TO_FORMAT:
+            raise ImageFetchError("unsupported_mime")
+        if len(payload) > self._config.max_response_bytes:
+            raise ImageFetchError("response_too_large")
+        original_hash = hashlib.sha256(payload).hexdigest()
+        if expected_sha256 is not None and original_hash != expected_sha256:
+            raise ImageFetchError("hash_mismatch")
+        processed, width, height = self._decode_and_normalize(payload, source_mime)
+        return FetchedImage(
+            source_mime_type=source_mime,
+            processed_mime_type="image/png",
+            original_sha256=original_hash,
+            processed_sha256=hashlib.sha256(processed).hexdigest(),
+            original_bytes=payload,
+            processed_bytes=processed,
+            width=width,
+            height=height,
+        )
+
     async def load_user_owned(
         self,
         path: Path,

@@ -3174,7 +3174,7 @@ def _openverse_candidate(
     **overrides: Any,
 ) -> dict[str, Any]:
     candidate: dict[str, Any] = {
-        "id": "openverse-image-1",
+        "id": _RULING_F_UUID,
         "license": "by",
         "license_version": "4.0",
         "license_url": license_url,
@@ -3317,13 +3317,36 @@ async def _run_task4_ingestion(
         )
 
 
-def _official_openverse_handler(payload: dict[str, Any]) -> Any:
+def _official_openverse_handler(
+    payload: dict[str, Any],
+    *,
+    thumbnail_response: httpx.Response | Exception | None = None,
+    thumbnail_requests: list[httpx.Request] | None = None,
+) -> Any:
+    expected_thumbnail_paths = {
+        f"/v1/images/{candidate['id']}/thumb/"
+        for candidate in payload.get("results", [])
+        if isinstance(candidate, dict) and isinstance(candidate.get("id"), str)
+    }
+
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "GET"
         assert request.url.scheme == "https"
         assert request.url.host == "api.openverse.org"
-        assert request.url.path.startswith("/v1/images/")
-        return httpx.Response(200, json=payload)
+        if request.url.path == "/v1/images/":
+            return httpx.Response(200, json=payload)
+        assert request.url.path in expected_thumbnail_paths
+        if thumbnail_requests is not None:
+            thumbnail_requests.append(request)
+        if isinstance(thumbnail_response, Exception):
+            raise thumbnail_response
+        if thumbnail_response is not None:
+            return thumbnail_response
+        return httpx.Response(
+            200,
+            content=_make_image("PNG", size=(16, 12)),
+            headers={"content-type": "image/png"},
+        )
 
     return handler
 
@@ -3392,14 +3415,11 @@ def test_ingestion_accepts_only_complete_machine_readable_openverse_receipts(
     assert receipt["image_url"] == "https://images.example/object-1.png"
     assert receipt["license_code"] == "CC-BY-4.0"
     assert receipt["license_url"] == "https://creativecommons.org/licenses/by/4.0/"
-    assert fetcher.urls == ["https://images.example/object-1.png"]
-    assert vision.calls == [
-        {
-            "image_bytes": fetched.processed_bytes,
-            "mime_type": "image/png",
-            "allowed_slot": "top",
-        }
-    ]
+    assert fetcher.urls == []
+    assert len(vision.calls) == 1
+    assert vision.calls[0]["image_bytes"].startswith(b"\x89PNG\r\n\x1a\n")
+    assert vision.calls[0]["mime_type"] == "image/png"
+    assert vision.calls[0]["allowed_slot"] == "top"
 
 
 @pytest.mark.parametrize(
@@ -3615,10 +3635,9 @@ def test_ingestion_resume_reuses_exact_existing_content_hash_without_new_receipt
     assert second.ready_ids == ("g051",)
     assert second.reused_ids == ("g051",)
     assert after == before
-    assert (
-        _task4_manifest_item(after, "g051")["processed_sha256"]
-        == fetched.processed_sha256
-    )
+    item = _task4_manifest_item(after, "g051")
+    asset_path = state_dir / "wardrobe_licensed_v1" / item["relative_path"]
+    assert item["processed_sha256"] == hashlib.sha256(asset_path.read_bytes()).hexdigest()
 
 
 def test_ingestion_source_change_appends_receipt_history_instead_of_overwriting(
@@ -3707,7 +3726,18 @@ def test_ingestion_failure_never_returns_false_ready_and_reports_exact_ids(
             config=_task4_config(
                 licensed_ingestion_cli, garment_file=garment_file, state_dir=state_dir
             ),
-            response_handler=_official_openverse_handler(_openverse_response(candidate)),
+            response_handler=_official_openverse_handler(
+                _openverse_response(candidate),
+                thumbnail_response=(
+                    httpx.Response(
+                        200,
+                        content=b"not-an-image",
+                        headers={"content-type": "image/png"},
+                    )
+                    if failure_kind == "safety"
+                    else None
+                ),
+            ),
             fetcher=Task4SafeFetcher(fetch_outcome),
             vision=Task4Vision(vision_outcome),
         )
@@ -3732,7 +3762,7 @@ def test_ingestion_enforces_candidate_retry_concurrency_and_total_budgets(
     fetched = _task4_fetched_image(licensed_assets)
     fetcher = Task4SafeFetcher(fetched, wait=True)
     vision = Task4Vision(_task4_assessment(vision_module))
-    responses = [
+    search_responses = [
         httpx.Response(503, json={"detail": "bounded retry"}),
         httpx.Response(
             200,
@@ -3752,7 +3782,14 @@ def test_ingestion_enforces_candidate_retry_concurrency_and_total_budgets(
 
     def retrying_handler(request: httpx.Request) -> httpx.Response:
         assert request.url.host == "api.openverse.org"
-        return responses.pop(0)
+        if request.url.path == "/v1/images/":
+            return search_responses.pop(0)
+        assert request.url.path == _RULING_F_THUMB_PATH
+        return httpx.Response(
+            200,
+            content=_make_image("PNG", size=(16, 12)),
+            headers={"content-type": "image/png"},
+        )
 
     config = _task4_config(
         licensed_ingestion_cli,
@@ -3777,8 +3814,9 @@ def test_ingestion_enforces_candidate_retry_concurrency_and_total_budgets(
     assert result.remaining_ids == ()
     assert result.api_attempts == 3
     assert result.candidate_attempts == 2
-    assert fetcher.max_active == 1
-    assert len(responses) == 0
+    assert fetcher.urls == []
+    assert fetcher.max_active == 0
+    assert len(search_responses) == 0
 
 
 def test_ingestion_total_budget_leaves_unattempted_controlled_ids_remaining(
@@ -4756,6 +4794,7 @@ def test_g051_diagnostic_canary_config_limits_search_candidates_fetches_and_pers
     )
     candidates = [
         _openverse_candidate(
+            id=f"123e4567-e89b-12d3-a456-42661417400{number}",
             source_url=f"https://museum.example/object/{number}",
             image_url=f"https://images.example/object-{number}.png",
         )
@@ -4763,13 +4802,20 @@ def test_g051_diagnostic_canary_config_limits_search_candidates_fetches_and_pers
     ]
     fetcher = Task4SafeFetcher(licensed_assets.ImageFetchError("decode_failed"))
     vision = Task4Vision(_task4_assessment(vision_module))
+    thumbnail_requests: list[httpx.Request] = []
 
     result = asyncio.run(
         _run_task4_ingestion(
             cli,
             config=config,
             response_handler=_official_openverse_handler(
-                _openverse_response(*candidates)
+                _openverse_response(*candidates),
+                thumbnail_response=httpx.Response(
+                    200,
+                    content=b"not-an-image",
+                    headers={"content-type": "image/png"},
+                ),
+                thumbnail_requests=thumbnail_requests,
             ),
             fetcher=fetcher,
             vision=vision,
@@ -4779,8 +4825,8 @@ def test_g051_diagnostic_canary_config_limits_search_candidates_fetches_and_pers
     assert result.dry_run is True
     assert result.api_attempts <= 3
     assert result.candidate_attempts == 3
-    assert len(fetcher.urls) == 3
-    assert fetcher.max_active == 1
+    assert fetcher.urls == []
+    assert len(thumbnail_requests) == 3
     assert vision.calls == []
     assert result.ready_ids == ()
     assert result.quarantined_ids == ("g051",)
@@ -5037,6 +5083,7 @@ def test_trusted_openverse_thumbnail_uses_only_same_canonical_uuid_path_and_task
         if request.url.path == "/v1/images/":
             return httpx.Response(
                 200,
+                headers={"set-cookie": "untrusted_search_state=private"},
                 json=_openverse_response(
                     _openverse_candidate(id=_RULING_F_UUID, image_url=source_url)
                 ),
@@ -5048,6 +5095,7 @@ def test_trusted_openverse_thumbnail_uses_only_same_canonical_uuid_path_and_task
         )
         assert request.headers["accept-encoding"] == "identity"
         assert request.headers["accept"] == "image/png,image/jpeg,image/webp"
+        assert "cookie" not in request.headers
         return httpx.Response(200, content=jpeg, headers={"content-type": "image/jpeg"})
 
     generic_fetcher = Task4SafeFetcher(
