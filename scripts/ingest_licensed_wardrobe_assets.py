@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import sys
 from dataclasses import dataclass, replace
@@ -59,6 +60,21 @@ MAX_RETRY_BUDGET = 3
 MAX_CONCURRENCY = 8
 MAX_TOTAL_BUDGET = 70
 MAX_SEARCH_BUDGET = 3
+
+IngestionFailureReason = Literal[
+    "candidate_budget_exhausted",
+    "no_results",
+    "provider_rate_limited",
+    "provider_auth_rejected",
+    "provider_unavailable",
+    "provider_schema_invalid",
+    "provider_response_too_large",
+    "source_takedown",
+    "total_budget_exhausted",
+    "user_owned_loader_unavailable",
+    "user_owned_source_missing",
+    "user_owned_source_rejected",
+]
 
 _PUBLIC_LICENSE_CODES = frozenset(
     {"CC0", "PDM", "CC-BY-2.0", "CC-BY-3.0", "CC-BY-4.0"}
@@ -192,6 +208,29 @@ class IngestionConfig(BaseModel):
         return self
 
 
+class ItemIngestionOutcome(BaseModel):
+    """Closed public status for one server-controlled garment ID."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    garment_id: str = Field(pattern=r"^g\d{3}$")
+    status: Literal["ready", "reused", "quarantined", "unattempted"]
+    reason_code: IngestionFailureReason | None = None
+
+    @model_validator(mode="after")
+    def _validate_status_reason(self) -> "ItemIngestionOutcome":
+        if self.status == "quarantined" and self.reason_code in {
+            None,
+            "total_budget_exhausted",
+        }:
+            raise ValueError("quarantined_reason_required")
+        if self.status == "unattempted" and self.reason_code != "total_budget_exhausted":
+            raise ValueError("unattempted_budget_reason_required")
+        if self.status in {"ready", "reused"} and self.reason_code is not None:
+            raise ValueError("successful_outcome_must_not_have_reason")
+        return self
+
+
 class IngestionResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -204,6 +243,9 @@ class IngestionResult(BaseModel):
     candidate_attempts: int = Field(ge=0)
     vision_call_count: int = Field(default=0, ge=0)
     vision_model_provenance: str | None = Field(default=None, max_length=100)
+    item_outcomes: tuple[ItemIngestionOutcome, ...] = Field(
+        default=(), max_length=120
+    )
     manifest_path: Path
 
 
@@ -246,7 +288,7 @@ class _NormalizedSource:
 class _AttemptOutcome:
     garment: Garment
     status: Literal["ready", "reused", "quarantined"]
-    failure_reason: str | None = None
+    failure_reason: IngestionFailureReason | None = None
     source: _NormalizedSource | None = None
     fetched: FetchedImage | None = None
     cropped: CatalogCroppedImage | None = None
@@ -275,6 +317,27 @@ class _SearchOutcome:
             f"candidate_count={len(self.candidates)}, "
             f"reason_code={self.reason_code!r})"
         )
+
+
+class _OpenverseTransportLogFilter(logging.Filter):
+    """Suppress official search request URLs so frozen queries never enter logs."""
+
+    _profagent_openverse_url_filter = True
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            return OPENVERSE_API_BASE not in record.getMessage()
+        except Exception:
+            return False
+
+
+def _suppress_openverse_transport_url_logging() -> None:
+    logger = logging.getLogger("httpx")
+    if not any(
+        getattr(item, "_profagent_openverse_url_filter", False)
+        for item in logger.filters
+    ):
+        logger.addFilter(_OpenverseTransportLogFilter())
 
 
 @dataclass
@@ -596,6 +659,7 @@ async def _search_openverse(
     config: IngestionConfig,
     counters: _Counters,
 ) -> _SearchOutcome:
+    _suppress_openverse_transport_url_logging()
     queries = _frozen_openverse_query_plan(garment)
     provider_licenses = (
         {
@@ -1758,6 +1822,21 @@ async def run_ingestion(
             }
         )
     )
+    item_outcomes = tuple(
+        ItemIngestionOutcome(
+            garment_id=outcome.garment.garment_id,
+            status=outcome.status,
+            reason_code=outcome.failure_reason,
+        )
+        for outcome in outcomes
+    ) + tuple(
+        ItemIngestionOutcome(
+            garment_id=garment.garment_id,
+            status="unattempted",
+            reason_code="total_budget_exhausted",
+        )
+        for garment in unattempted
+    )
 
     if not config.dry_run:
         replacements: dict[str, dict[str, Any]] = {}
@@ -1817,6 +1896,7 @@ async def run_ingestion(
         candidate_attempts=counters.candidate_attempts,
         vision_call_count=counters.vision_call_count,
         vision_model_provenance=counters.vision_model_provenance,
+        item_outcomes=item_outcomes,
         manifest_path=config.manifest_path,
     )
 
@@ -1848,6 +1928,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-map", type=Path)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--diagnostic-canary", action="store_true")
     return parser
 
 
@@ -1884,13 +1965,37 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit("user-owned requires --source-map and forbids --license")
         license_allowlist = ()
         source_map = args.source_map
+    if args.diagnostic_canary:
+        if args.provider != "openverse" or args.resume:
+            raise SystemExit(
+                "diagnostic canary requires openverse and forbids --resume"
+            )
+        try:
+            diagnostic_ids = tuple(
+                garment.garment_id
+                for garment in _controlled_garments(args.garment_file)
+            )
+        except (OSError, ValueError) as error:
+            raise SystemExit(
+                "diagnostic canary requires an exact controlled g051 garment file"
+            ) from error
+        if diagnostic_ids != ("g051",):
+            raise SystemExit(
+                "diagnostic canary requires an exact controlled g051 garment file"
+            )
     config = IngestionConfig(
         provider=args.provider,
         license_allowlist=license_allowlist,
         garment_file=args.garment_file,
         source_map=source_map,
-        dry_run=args.dry_run,
+        dry_run=True if args.diagnostic_canary else args.dry_run,
         resume=args.resume,
+        candidate_budget=3 if args.diagnostic_canary else 5,
+        retry_budget=0 if args.diagnostic_canary else 2,
+        concurrency=1 if args.diagnostic_canary else 3,
+        total_budget=1 if args.diagnostic_canary else 70,
+        search_budget=3,
+        diagnostic_canary=args.diagnostic_canary,
     )
     try:
         result = asyncio.run(_run_cli(config))
@@ -1905,4 +2010,10 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["IngestionConfig", "IngestionResult", "main", "run_ingestion"]
+__all__ = [
+    "IngestionConfig",
+    "IngestionResult",
+    "ItemIngestionOutcome",
+    "main",
+    "run_ingestion",
+]

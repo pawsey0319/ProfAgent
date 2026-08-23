@@ -8,6 +8,7 @@ import importlib
 import inspect
 import ipaddress
 import json
+import logging
 import math
 import os
 import ssl
@@ -4778,3 +4779,166 @@ def test_ingestion_vision_boundary_reports_only_call_count_and_model_provenance(
     assert result.vision_model_provenance == "mock-catalog-model-v1"
     result_fields = result.model_dump()
     assert not {"garment_id", "user_id", "source_url", "image_url", "license", "vision_trace"} & set(result_fields)
+
+
+def test_ingestion_result_exposes_only_closed_per_id_failure_reason(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    provider_prose = "private provider prose https://provider.example/private"
+
+    result = asyncio.run(
+        _run_task4_ingestion(
+            cli,
+            config=_task4_config(
+                cli,
+                garment_file=_write_task4_garment_file(tmp_path, "g051"),
+                state_dir=tmp_path / "state",
+                dry_run=True,
+                candidate_budget=3,
+                retry_budget=0,
+                concurrency=1,
+                total_budget=1,
+                search_budget=1,
+            ),
+            response_handler=lambda _request: httpx.Response(
+                429,
+                json={"detail": provider_prose},
+            ),
+            fetcher=Task4SafeFetcher(_task4_fetched_image(licensed_assets)),
+            vision=Task4Vision(_task4_assessment(vision_module)),
+        )
+    )
+
+    assert result.item_outcomes == (
+        cli.ItemIngestionOutcome(
+            garment_id="g051",
+            status="quarantined",
+            reason_code="provider_rate_limited",
+        ),
+    )
+    public_json = result.model_dump_json()
+    assert provider_prose not in public_json
+    assert "provider.example" not in public_json
+
+
+def test_openverse_query_is_not_exposed_by_httpx_info_transport_logging(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    vision_module: ModuleType,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    config = _task4_config(
+        cli,
+        garment_file=_write_task4_garment_file(tmp_path, "g051"),
+        state_dir=tmp_path / "state",
+        dry_run=True,
+        candidate_budget=3,
+        retry_budget=0,
+        concurrency=1,
+        total_budget=1,
+        search_budget=1,
+    )
+
+    with caplog.at_level(logging.INFO, logger="httpx"):
+        asyncio.run(
+            _run_task4_ingestion(
+                cli,
+                config=config,
+                response_handler=lambda _request: httpx.Response(
+                    200, json=_openverse_response()
+                ),
+                fetcher=Task4SafeFetcher(_task4_fetched_image(licensed_assets)),
+                vision=Task4Vision(_task4_assessment(vision_module)),
+            )
+        )
+
+    assert "navy synthetic blouse product flat lay" not in caplog.text
+    assert "api.openverse.org/v1/images/?q=" not in caplog.text
+
+
+def test_diagnostic_canary_cli_forces_closed_g051_dry_run_bounds(
+    licensed_ingestion_cli: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    garment_file = _write_task4_garment_file(tmp_path, "g051")
+    received: dict[str, Any] = {}
+
+    async def capture_run(config: Any) -> Any:
+        received["config"] = config
+        return cli.IngestionResult(
+            dry_run=True,
+            ready_ids=(),
+            reused_ids=(),
+            quarantined_ids=(),
+            remaining_ids=(),
+            api_attempts=0,
+            candidate_attempts=0,
+            manifest_path=config.manifest_path,
+        )
+
+    monkeypatch.setattr(cli, "_run_cli", capture_run)
+
+    exit_code = cli.main(
+        [
+            "--provider",
+            "openverse",
+            "--license",
+            "CC0",
+            "--garment-file",
+            str(garment_file),
+            "--diagnostic-canary",
+        ]
+    )
+
+    config = received["config"]
+    assert exit_code == 0
+    assert config.diagnostic_canary is True
+    assert config.dry_run is True
+    assert config.resume is False
+    assert config.candidate_budget == 3
+    assert config.retry_budget == 0
+    assert config.concurrency == 1
+    assert config.total_budget == 1
+    assert config.search_budget == 3
+    assert tuple(
+        garment.garment_id for garment in cli._controlled_garments(config.garment_file)
+    ) == ("g051",)
+
+
+def test_diagnostic_canary_cli_rejects_non_g051_before_run(
+    licensed_ingestion_cli: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    called = False
+
+    async def should_not_run(_config: Any) -> Any:
+        nonlocal called
+        called = True
+        raise AssertionError("diagnostic canary must fail before dependency setup")
+
+    monkeypatch.setattr(cli, "_run_cli", should_not_run)
+
+    with pytest.raises(SystemExit, match="g051"):
+        cli.main(
+            [
+                "--provider",
+                "openverse",
+                "--license",
+                "CC0",
+                "--garment-file",
+                str(_write_task4_garment_file(tmp_path, "g052")),
+                "--diagnostic-canary",
+            ]
+        )
+
+    assert called is False
