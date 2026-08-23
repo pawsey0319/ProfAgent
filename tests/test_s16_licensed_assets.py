@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import gzip
 import hashlib
 import importlib
 import inspect
 import ipaddress
+import json
+import math
 import ssl
 import traceback
+from copy import deepcopy
+from dataclasses import replace
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
@@ -19,6 +24,8 @@ import httpcore
 import pytest
 from PIL import Image, ImageCms, PngImagePlugin
 from pydantic import ValidationError
+
+from profagent.models import Slot
 
 
 PUBLIC_LICENSES = {
@@ -2078,3 +2085,849 @@ def test_raw_redirect_authority_edges_fail_before_redirect_dns_or_transport(
     _assert_content_free_error(licensed_assets, exc, "invalid_redirect", location)
     assert resolver.calls == [("public.example", 443)]
     assert len(transport.connect_calls) == 1
+
+
+# S16B Task 3: the CPA catalog operation is classification/crop advice only.
+# Garment identity, ownership, provenance, authorization, persistence, and the
+# final accept/quarantine transition stay server-owned outside the Provider.
+CATALOG_AUDIENCES = {"womenswear", "unisex_womenswear_compatible"}
+CATALOG_CONFIDENCE_BANDS = {"high", "medium", "low"}
+CATALOG_QUALITY_ISSUES = {
+    "logo_or_watermark",
+    "text_overlay",
+    "multiple_items",
+    "severe_occlusion",
+    "low_resolution",
+}
+CATALOG_FAILURE_REASONS = {
+    "input_rejected",
+    "timeout",
+    "provider_unavailable",
+    "http_error",
+    "response_schema_invalid",
+    "model_mismatch",
+    "slot_mismatch",
+    "audience_rejected",
+    "identifiable_person",
+    "low_confidence",
+    "invalid_region",
+    "quality_rejected",
+}
+CATALOG_TRACE_KEYS = {
+    "component",
+    "operation",
+    "status",
+    "reason_code",
+    "requested_model",
+    "transport_model",
+    "resolved_model",
+    "model_verified",
+    "schema",
+    "image_logged",
+    "latency_ms",
+    "interaction_budget_seconds",
+    "assessment_count",
+    "quality_issue_count",
+}
+CATALOG_IMAGE = _make_image("PNG", size=(24, 32))
+
+
+@pytest.fixture(scope="module")
+def vision_module() -> ModuleType:
+    return importlib.import_module("profagent.vision")
+
+
+def _catalog_payload(**overrides: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "slot": "top",
+        "audience": "womenswear",
+        "contains_identifiable_person": False,
+        "object_region": [0.1, 0.05, 0.9, 0.95],
+        "confidence_band": "high",
+        "quality_issues": [],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _catalog_completion_bytes(
+    payload: dict[str, Any] | str,
+    *,
+    model: str = "grok-4.6-high",
+    outer_overrides: dict[str, Any] | None = None,
+) -> bytes:
+    content = payload if isinstance(payload, str) else json.dumps(payload)
+    outer: dict[str, Any] = {
+        "model": model,
+        "choices": [{"message": {"content": content}}],
+    }
+    outer.update(outer_overrides or {})
+    return json.dumps(outer).encode("utf-8")
+
+
+class CatalogVisionTransportSpy:
+    def __init__(
+        self,
+        response_body: bytes,
+        *,
+        status_code: int = 200,
+        stall: bool = False,
+    ) -> None:
+        self.response_body = response_body
+        self.status_code = status_code
+        self.stall = stall
+        self.calls: list[httpx.Request] = []
+        self.request_json: list[dict[str, Any]] = []
+        self.cancelled = False
+
+    async def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.calls.append(request)
+        self.request_json.append(json.loads(request.content))
+        if self.stall:
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+        return httpx.Response(
+            self.status_code,
+            content=self.response_body,
+            headers={"content-type": "application/json"},
+            request=request,
+        )
+
+    @property
+    def transport(self) -> httpx.MockTransport:
+        return httpx.MockTransport(self)
+
+
+def _vision_adapter(
+    module: ModuleType,
+    offline_settings: Any,
+    transport: CatalogVisionTransportSpy,
+    *,
+    budget: float = 0.5,
+) -> Any:
+    settings = replace(
+        offline_settings,
+        cpa_text_enabled=True,
+        cpa_base_url="https://cpa.invalid/v1",
+        cpa_api_key="test-only-key",
+        cpa_timeout_seconds=1.0,
+        vision_interaction_budget_seconds=budget,
+    )
+    return module.VisionAdapter(settings, transport=transport.transport)
+
+
+def _inspect_catalog(
+    adapter: Any,
+    *,
+    image_bytes: bytes = CATALOG_IMAGE,
+    mime_type: str = "image/png",
+    allowed_slot: str = "top",
+) -> tuple[Any, dict[str, Any]]:
+    return asyncio.run(
+        adapter.inspect_catalog_asset(
+            image_bytes=image_bytes,
+            mime_type=mime_type,
+            allowed_slot=allowed_slot,
+        )
+    )
+
+
+def _assert_catalog_trace_is_minimized(
+    trace: dict[str, Any],
+    *,
+    success: bool,
+    expected_reason: str | None = None,
+) -> None:
+    assert set(trace) <= CATALOG_TRACE_KEYS
+    assert trace["component"] == "vision"
+    assert trace["operation"] == "catalog_asset_assessment"
+    assert trace["schema"] == "catalog_asset_assessment_v1"
+    assert trace["requested_model"] == "grok4.6"
+    assert trace["transport_model"] == "grok-4.6-high"
+    assert trace["image_logged"] is False
+    assert isinstance(trace["latency_ms"], (int, float))
+    assert trace["latency_ms"] >= 0
+    assert 0 < trace["interaction_budget_seconds"] <= 10
+    assert isinstance(trace["assessment_count"], int)
+    assert isinstance(trace["quality_issue_count"], int)
+    if success:
+        assert trace["status"] == "ok"
+        assert trace["reason_code"] is None
+        assert trace["resolved_model"] in {"grok-4.6-high", "grok-4.6-build"}
+        assert trace["model_verified"] is True
+        assert trace["assessment_count"] == 1
+    else:
+        assert trace["status"] == "quarantined"
+        assert expected_reason in CATALOG_FAILURE_REASONS
+        assert trace["reason_code"] == expected_reason
+        assert trace["model_verified"] is False or expected_reason not in {
+            "model_mismatch",
+            "response_schema_invalid",
+            "http_error",
+            "provider_unavailable",
+            "timeout",
+        }
+        assert trace["assessment_count"] == 0
+
+    rendered = json.dumps(trace, ensure_ascii=False, sort_keys=True)
+    encoded = base64.b64encode(CATALOG_IMAGE).decode("ascii").lower()
+    for forbidden in (
+        encoded,
+        "data:image",
+        "base64,",
+        "garment_id",
+        "g051",
+        "user_id",
+        "u01",
+        "source_url",
+        "creativecommons",
+        "license",
+        "authorization",
+        "provider secret prose",
+        "prompt",
+    ):
+        assert forbidden not in rendered.lower()
+
+
+def _assert_catalog_failure(
+    module: ModuleType,
+    caught: pytest.ExceptionInfo[BaseException],
+    expected_reason: str,
+) -> dict[str, Any]:
+    assert isinstance(caught.value, module.VisionUnavailable)
+    assert caught.value.reason == "catalog_asset_quarantined"
+    assert str(caught.value) == "catalog_asset_quarantined"
+    trace = caught.value.provider_trace
+    _assert_catalog_trace_is_minimized(
+        trace, success=False, expected_reason=expected_reason
+    )
+    return trace
+
+
+def test_vision_catalog_assessment_model_is_exact_frozen_and_closed(
+    vision_module: ModuleType,
+) -> None:
+    model = vision_module.CatalogAssetAssessment
+    assert set(model.model_fields) == {
+        "slot",
+        "audience",
+        "contains_identifiable_person",
+        "object_region",
+        "confidence_band",
+        "quality_issues",
+    }
+    assert model.model_config.get("extra") == "forbid"
+    assert model.model_config.get("frozen") is True
+    assert _literal_values(model.model_fields["slot"].annotation) == set(
+        get_args(Slot)
+    )
+    assert _literal_values(model.model_fields["audience"].annotation) == (
+        CATALOG_AUDIENCES
+    )
+    assert _literal_values(model.model_fields["confidence_band"].annotation) == (
+        CATALOG_CONFIDENCE_BANDS
+    )
+    assert _literal_values(vision_module.CatalogQualityIssueCode) == (
+        CATALOG_QUALITY_ISSUES
+    )
+
+    assessment = model.model_validate(_catalog_payload())
+    assert assessment.object_region == (0.1, 0.05, 0.9, 0.95)
+    assert assessment.quality_issues == ()
+    with pytest.raises(ValidationError):
+        assessment.slot = "bottom"
+    with pytest.raises(ValidationError):
+        model.model_validate({**_catalog_payload(), "provider_note": "forbidden"})
+
+
+@pytest.mark.parametrize("person_value", [0, 1, "false", "true", None])
+def test_vision_catalog_person_flag_is_strict_bool(
+    vision_module: ModuleType,
+    person_value: Any,
+) -> None:
+    with pytest.raises(ValidationError):
+        vision_module.CatalogAssetAssessment.model_validate(
+            _catalog_payload(contains_identifiable_person=person_value)
+        )
+
+
+@pytest.mark.parametrize(
+    "region",
+    [
+        (-0.1, 0.0, 0.8, 0.8),
+        (0.0, -0.1, 0.8, 0.8),
+        (0.0, 0.0, 1.1, 0.8),
+        (0.0, 0.0, 0.8, 1.1),
+        (0.5, 0.0, 0.5, 0.8),
+        (0.6, 0.0, 0.5, 0.8),
+        (0.0, 0.5, 0.8, 0.5),
+        (0.0, 0.6, 0.8, 0.5),
+        (math.nan, 0.0, 0.8, 0.8),
+        (0.0, math.inf, 0.8, 0.8),
+        (0.0, 0.0, -math.inf, 0.8),
+        (0.0, 0.0, 0.8),
+        "0,0,1,1",
+    ],
+)
+def test_vision_catalog_crop_is_finite_normalized_and_ordered(
+    vision_module: ModuleType,
+    region: Any,
+) -> None:
+    with pytest.raises(ValidationError):
+        vision_module.CatalogAssetAssessment.model_validate(
+            _catalog_payload(object_region=region)
+        )
+
+
+@pytest.mark.parametrize(
+    "quality_issues",
+    [
+        ["logo_or_watermark", "logo_or_watermark"],
+        ["provider_free_text"],
+        ["logo_or_watermark", "provider_free_text"],
+        "logo_or_watermark",
+    ],
+)
+def test_vision_catalog_quality_issue_codes_are_closed_and_unique(
+    vision_module: ModuleType,
+    quality_issues: Any,
+) -> None:
+    with pytest.raises(ValidationError):
+        vision_module.CatalogAssetAssessment.model_validate(
+            _catalog_payload(quality_issues=quality_issues)
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("slot", "overall"),
+        ("slot", "unknown"),
+        ("audience", "menswear"),
+        ("audience", "unknown"),
+        ("confidence_band", "very_high"),
+        ("confidence_band", 1),
+    ],
+)
+def test_vision_catalog_model_rejects_unknown_enum_values_and_types(
+    vision_module: ModuleType,
+    field: str,
+    value: Any,
+) -> None:
+    with pytest.raises(ValidationError):
+        vision_module.CatalogAssetAssessment.model_validate(
+            _catalog_payload(**{field: value})
+        )
+
+
+@pytest.mark.parametrize(
+    ("reported_model", "confidence", "audience"),
+    [
+        ("grok-4.6-high", "high", "womenswear"),
+        ("grok-4.6-build", "medium", "unisex_womenswear_compatible"),
+    ],
+)
+def test_vision_catalog_accepts_only_verified_high_or_medium_assessment(
+    vision_module: ModuleType,
+    offline_settings: Any,
+    reported_model: str,
+    confidence: str,
+    audience: str,
+) -> None:
+    payload = _catalog_payload(
+        audience=audience,
+        confidence_band=confidence,
+        object_region=[0.0, 0.0, 1.0, 1.0],
+    )
+    transport = CatalogVisionTransportSpy(
+        _catalog_completion_bytes(payload, model=reported_model)
+    )
+    adapter = _vision_adapter(vision_module, offline_settings, transport)
+    assessment, trace = _inspect_catalog(adapter)
+    assert isinstance(assessment, vision_module.CatalogAssetAssessment)
+    assert assessment.model_dump(mode="json") == payload
+    assert assessment.slot == "top"
+    assert assessment.confidence_band == confidence
+    assert trace["quality_issue_count"] == 0
+    _assert_catalog_trace_is_minimized(trace, success=True)
+    assert len(transport.calls) == 1
+
+
+def test_vision_catalog_request_is_minimized_and_contains_no_authority(
+    vision_module: ModuleType,
+    offline_settings: Any,
+) -> None:
+    transport = CatalogVisionTransportSpy(
+        _catalog_completion_bytes(_catalog_payload())
+    )
+    adapter = _vision_adapter(vision_module, offline_settings, transport)
+    _inspect_catalog(adapter)
+    assert len(transport.request_json) == 1
+    request = transport.request_json[0]
+    assert set(request) == {
+        "model",
+        "messages",
+        "response_format",
+        "temperature",
+        "max_tokens",
+    }
+    assert request["model"] == "grok-4.6-high"
+    assert request["response_format"] == {"type": "json_object"}
+    assert request["temperature"] == 0
+    serialized = json.dumps(request, ensure_ascii=False).lower()
+    assert base64.b64encode(CATALOG_IMAGE).decode("ascii").lower() in serialized
+    for required in (
+        "image/png",
+        "top",
+        "womenswear",
+        "unisex_womenswear_compatible",
+        *sorted(CATALOG_QUALITY_ISSUES),
+    ):
+        assert required in serialized
+    for forbidden in (
+        "garment_id",
+        "g051",
+        "user_id",
+        "u01",
+        "source_url",
+        "license",
+        "authorization",
+        "receipt",
+        "owner_id",
+    ):
+        assert forbidden not in serialized
+
+
+@pytest.mark.parametrize(
+    ("payload_overrides", "allowed_slot", "reason"),
+    [
+        ({"slot": "bottom"}, "top", "slot_mismatch"),
+        ({"audience": "menswear"}, "top", "audience_rejected"),
+        ({"contains_identifiable_person": True}, "top", "identifiable_person"),
+        ({"confidence_band": "low"}, "top", "low_confidence"),
+        ({"object_region": [0.8, 0.1, 0.2, 0.9]}, "top", "invalid_region"),
+        ({"object_region": [math.nan, 0.1, 0.9, 0.9]}, "top", "invalid_region"),
+        ({"quality_issues": ["logo_or_watermark"]}, "top", "quality_rejected"),
+        ({"quality_issues": ["text_overlay"]}, "top", "quality_rejected"),
+        ({"quality_issues": ["multiple_items"]}, "top", "quality_rejected"),
+        ({"quality_issues": ["severe_occlusion"]}, "top", "quality_rejected"),
+        ({"quality_issues": ["low_resolution"]}, "top", "quality_rejected"),
+    ],
+)
+def test_vision_catalog_server_rejects_unsafe_assessment_with_quarantine_reason(
+    vision_module: ModuleType,
+    offline_settings: Any,
+    payload_overrides: dict[str, Any],
+    allowed_slot: str,
+    reason: str,
+) -> None:
+    transport = CatalogVisionTransportSpy(
+        _catalog_completion_bytes(_catalog_payload(**payload_overrides))
+    )
+    adapter = _vision_adapter(vision_module, offline_settings, transport)
+    with pytest.raises(vision_module.VisionUnavailable) as caught:
+        _inspect_catalog(adapter, allowed_slot=allowed_slot)
+    _assert_catalog_failure(vision_module, caught, reason)
+    assert len(transport.calls) == 1
+
+
+def _catalog_malformed_completion_cases() -> list[tuple[str, bytes]]:
+    valid = _catalog_completion_bytes(_catalog_payload())
+    valid_outer = json.loads(valid)
+    cases: list[tuple[str, bytes]] = [
+        ("not-json", b"provider secret prose"),
+        (
+            "outer-extra",
+            json.dumps({**valid_outer, "provider_note": "secret"}).encode(),
+        ),
+        (
+            "outer-missing-model",
+            json.dumps({"choices": valid_outer["choices"]}).encode(),
+        ),
+        (
+            "outer-missing-choices",
+            json.dumps({"model": "grok-4.6-high"}).encode(),
+        ),
+        (
+            "choices-not-list",
+            json.dumps(
+                {"model": "grok-4.6-high", "choices": {"message": {}}}
+            ).encode(),
+        ),
+        (
+            "choices-empty",
+            json.dumps({"model": "grok-4.6-high", "choices": []}).encode(),
+        ),
+        (
+            "choices-two",
+            json.dumps(
+                {
+                    "model": "grok-4.6-high",
+                    "choices": valid_outer["choices"] * 2,
+                }
+            ).encode(),
+        ),
+        (
+            "choice-extra",
+            json.dumps(
+                {
+                    "model": "grok-4.6-high",
+                    "choices": [
+                        {
+                            "message": valid_outer["choices"][0]["message"],
+                            "finish_reason": "stop",
+                        }
+                    ],
+                }
+            ).encode(),
+        ),
+        (
+            "choice-missing-message",
+            json.dumps(
+                {"model": "grok-4.6-high", "choices": [{}]}
+            ).encode(),
+        ),
+        (
+            "choice-not-object",
+            json.dumps(
+                {"model": "grok-4.6-high", "choices": ["message"]}
+            ).encode(),
+        ),
+        (
+            "message-extra",
+            json.dumps(
+                {
+                    "model": "grok-4.6-high",
+                    "choices": [
+                        {
+                            "message": {
+                                **valid_outer["choices"][0]["message"],
+                                "role": "assistant",
+                            }
+                        }
+                    ],
+                }
+            ).encode(),
+        ),
+        (
+            "message-missing-content",
+            json.dumps(
+                {
+                    "model": "grok-4.6-high",
+                    "choices": [{"message": {}}],
+                }
+            ).encode(),
+        ),
+        (
+            "message-not-object",
+            json.dumps(
+                {
+                    "model": "grok-4.6-high",
+                    "choices": [{"message": "content"}],
+                }
+            ).encode(),
+        ),
+        (
+            "content-not-string",
+            json.dumps(
+                {
+                    "model": "grok-4.6-high",
+                    "choices": [{"message": {"content": _catalog_payload()}}],
+                }
+            ).encode(),
+        ),
+        (
+            "inner-not-json",
+            _catalog_completion_bytes("provider secret prose"),
+        ),
+        (
+            "inner-extra",
+            _catalog_completion_bytes(
+                {**_catalog_payload(), "garment_id": "g999"}
+            ),
+        ),
+        (
+            "inner-missing",
+            _catalog_completion_bytes(
+                {
+                    key: value
+                    for key, value in _catalog_payload().items()
+                    if key != "audience"
+                }
+            ),
+        ),
+        (
+            "inner-type",
+            _catalog_completion_bytes(
+                _catalog_payload(contains_identifiable_person=1)
+            ),
+        ),
+    ]
+    duplicate_outer = valid.replace(
+        b'{"model":', b'{"model":"grok-4.6-high","model":', 1
+    )
+    duplicate_choice = valid.replace(
+        b'{"message":',
+        b'{"message":{"content":"{}"},"message":',
+        1,
+    )
+    duplicate_message = valid.replace(
+        b'{"content":', b'{"content":"{}","content":', 1
+    )
+    duplicate_inner = _catalog_completion_bytes(
+        '{"slot":"top","slot":"bottom","audience":"womenswear",'
+        '"contains_identifiable_person":false,'
+        '"object_region":[0.1,0.1,0.9,0.9],'
+        '"confidence_band":"high","quality_issues":[]}'
+    )
+    cases.extend(
+        [
+            ("outer-duplicate", duplicate_outer),
+            ("choice-duplicate", duplicate_choice),
+            ("message-duplicate", duplicate_message),
+            ("inner-duplicate", duplicate_inner),
+        ]
+    )
+    return cases
+
+
+@pytest.mark.parametrize(
+    ("_label", "response_body"),
+    _catalog_malformed_completion_cases(),
+    ids=[label for label, _ in _catalog_malformed_completion_cases()],
+)
+def test_vision_catalog_rejects_closed_outer_inner_and_duplicate_key_violations(
+    vision_module: ModuleType,
+    offline_settings: Any,
+    _label: str,
+    response_body: bytes,
+) -> None:
+    transport = CatalogVisionTransportSpy(response_body)
+    adapter = _vision_adapter(vision_module, offline_settings, transport)
+    with pytest.raises(vision_module.VisionUnavailable) as caught:
+        _inspect_catalog(adapter)
+    _assert_catalog_failure(vision_module, caught, "response_schema_invalid")
+    assert len(transport.calls) == 1
+
+
+@pytest.mark.parametrize("reported_model", ["grok-4.5", "grok-4.6-high-preview", "", None])
+def test_vision_catalog_wrong_model_fails_without_mislabeling_fallback_source(
+    vision_module: ModuleType,
+    offline_settings: Any,
+    reported_model: Any,
+) -> None:
+    outer = {
+        "model": reported_model,
+        "choices": [{"message": {"content": json.dumps(_catalog_payload())}}],
+    }
+    transport = CatalogVisionTransportSpy(json.dumps(outer).encode())
+    adapter = _vision_adapter(vision_module, offline_settings, transport)
+    with pytest.raises(vision_module.VisionUnavailable) as caught:
+        _inspect_catalog(adapter)
+    trace = _assert_catalog_failure(vision_module, caught, "model_mismatch")
+    assert trace["resolved_model"] is None
+    assert trace["model_verified"] is False
+    health = adapter.health()
+    assert health["requested_model"] == "grok4.6"
+    assert health["transport_model"] == "grok-4.6-high"
+    assert health["resolved_model"] is None
+    assert health["model_verified"] is False
+
+
+@pytest.mark.parametrize(
+    ("image_bytes", "mime_type", "allowed_slot"),
+    [
+        (b"", "image/png", "top"),
+        ("not-bytes", "image/png", "top"),
+        (bytearray(b"not-immutable"), "image/png", "top"),
+        (CATALOG_IMAGE, "", "top"),
+        (CATALOG_IMAGE, "image/gif", "top"),
+        (CATALOG_IMAGE, "text/html", "top"),
+        (CATALOG_IMAGE, "image/png", "overall"),
+        (CATALOG_IMAGE, "image/png", "unknown"),
+    ],
+    ids=[
+        "empty-bytes",
+        "text-image",
+        "mutable-image",
+        "empty-mime",
+        "gif-mime",
+        "html-mime",
+        "non-catalog-slot",
+        "unknown-slot",
+    ],
+)
+def test_vision_catalog_invalid_input_is_blocked_before_transport(
+    vision_module: ModuleType,
+    offline_settings: Any,
+    image_bytes: Any,
+    mime_type: str,
+    allowed_slot: str,
+) -> None:
+    transport = CatalogVisionTransportSpy(
+        _catalog_completion_bytes(_catalog_payload())
+    )
+    adapter = _vision_adapter(vision_module, offline_settings, transport)
+    with pytest.raises(vision_module.VisionUnavailable) as caught:
+        _inspect_catalog(
+            adapter,
+            image_bytes=image_bytes,
+            mime_type=mime_type,
+            allowed_slot=allowed_slot,
+        )
+    _assert_catalog_failure(vision_module, caught, "input_rejected")
+    assert transport.calls == []
+
+
+def test_vision_catalog_oversize_input_is_blocked_before_transport(
+    vision_module: ModuleType,
+    offline_settings: Any,
+) -> None:
+    assert 0 < vision_module.CATALOG_VISION_MAX_IMAGE_BYTES <= 25 * 1024 * 1024
+    transport = CatalogVisionTransportSpy(
+        _catalog_completion_bytes(_catalog_payload())
+    )
+    adapter = _vision_adapter(vision_module, offline_settings, transport)
+    with pytest.raises(vision_module.VisionUnavailable) as caught:
+        _inspect_catalog(
+            adapter,
+            image_bytes=b"x" * (vision_module.CATALOG_VISION_MAX_IMAGE_BYTES + 1),
+        )
+    _assert_catalog_failure(vision_module, caught, "input_rejected")
+    assert transport.calls == []
+
+
+def test_vision_catalog_timeout_is_controlled_cancels_transport_and_mutates_nothing(
+    vision_module: ModuleType,
+    licensed_assets: ModuleType,
+    offline_settings: Any,
+) -> None:
+    existing_asset = licensed_assets.ProcessedWardrobeAsset.model_validate(
+        _asset_payload(licensed_assets)
+    )
+    manifest = {
+        "asset_version": "wardrobe_assets_v2",
+        "items": [existing_asset.model_dump(mode="json")],
+    }
+    before_asset = existing_asset.model_dump(mode="json")
+    before_manifest = deepcopy(manifest)
+    transport = CatalogVisionTransportSpy(
+        _catalog_completion_bytes(_catalog_payload()), stall=True
+    )
+    adapter = _vision_adapter(
+        vision_module, offline_settings, transport, budget=0.01
+    )
+    with pytest.raises(vision_module.VisionUnavailable) as caught:
+        _inspect_catalog(adapter)
+    _assert_catalog_failure(vision_module, caught, "timeout")
+    assert transport.cancelled is True
+    assert len(transport.calls) == 1
+    assert existing_asset.model_dump(mode="json") == before_asset
+    assert manifest == before_manifest
+
+
+def test_vision_catalog_invalid_assessment_has_zero_manifest_or_authority_mutation(
+    vision_module: ModuleType,
+    licensed_assets: ModuleType,
+    offline_settings: Any,
+) -> None:
+    existing_asset = licensed_assets.ProcessedWardrobeAsset.model_validate(
+        _asset_payload(licensed_assets)
+    )
+    manifest = {
+        "asset_version": "wardrobe_assets_v2",
+        "items": [existing_asset.model_dump(mode="json")],
+    }
+    before_asset = existing_asset.model_dump(mode="json")
+    before_manifest = deepcopy(manifest)
+    payload = _catalog_payload(
+        confidence_band="low",
+        garment_id="g999",
+        user_id="u99",
+        source_url="https://evil.example/source",
+        license="all-rights-reserved",
+        authorization=True,
+    )
+    transport = CatalogVisionTransportSpy(_catalog_completion_bytes(payload))
+    adapter = _vision_adapter(vision_module, offline_settings, transport)
+    with pytest.raises(vision_module.VisionUnavailable) as caught:
+        _inspect_catalog(adapter)
+    _assert_catalog_failure(
+        vision_module, caught, "response_schema_invalid"
+    )
+    assert existing_asset.model_dump(mode="json") == before_asset
+    assert manifest == before_manifest
+
+
+def test_vision_catalog_external_cancellation_propagates_and_cancels_mock_transport(
+    vision_module: ModuleType,
+    offline_settings: Any,
+) -> None:
+    async def exercise() -> tuple[bool, int]:
+        transport = CatalogVisionTransportSpy(
+            _catalog_completion_bytes(_catalog_payload()), stall=True
+        )
+        adapter = _vision_adapter(
+            vision_module, offline_settings, transport, budget=0.5
+        )
+        task = asyncio.create_task(
+            adapter.inspect_catalog_asset(
+                image_bytes=CATALOG_IMAGE,
+                mime_type="image/png",
+                allowed_slot="top",
+            )
+        )
+        for _ in range(100):
+            if transport.calls:
+                break
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return transport.cancelled, len(transport.calls)
+
+    assert asyncio.run(exercise()) == (True, 1)
+
+
+def test_vision_catalog_http_and_provider_errors_are_controlled_and_content_free(
+    vision_module: ModuleType,
+    offline_settings: Any,
+) -> None:
+    transport = CatalogVisionTransportSpy(
+        b'{"error":"provider secret prose"}', status_code=503
+    )
+    adapter = _vision_adapter(vision_module, offline_settings, transport)
+    with pytest.raises(vision_module.VisionUnavailable) as caught:
+        _inspect_catalog(adapter)
+    trace = _assert_catalog_failure(vision_module, caught, "http_error")
+    assert "provider secret prose" not in json.dumps(trace)
+    assert len(transport.calls) == 1
+
+
+def test_vision_catalog_signature_and_result_exclude_provider_authority_fields(
+    vision_module: ModuleType,
+) -> None:
+    signature = inspect.signature(vision_module.VisionAdapter.inspect_catalog_asset)
+    assert set(signature.parameters) == {
+        "self",
+        "image_bytes",
+        "mime_type",
+        "allowed_slot",
+    }
+    assert all(
+        parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        for name, parameter in signature.parameters.items()
+        if name != "self"
+    )
+    assert {
+        "garment_id",
+        "user_id",
+        "source_url",
+        "license",
+        "authorization",
+        "receipt",
+        "relative_path",
+    }.isdisjoint(vision_module.CatalogAssetAssessment.model_fields)
