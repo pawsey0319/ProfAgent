@@ -9,6 +9,7 @@ import inspect
 import ipaddress
 import json
 import math
+import os
 import ssl
 import sys
 import traceback
@@ -3271,21 +3272,28 @@ def _task4_config(
     retry_budget: int = 1,
     concurrency: int = 1,
     total_budget: int = 2,
+    search_budget: int | None = None,
+    diagnostic_canary: bool = False,
 ) -> Any:
-    return cli.IngestionConfig(
-        provider="openverse",
-        license_allowlist=("CC0", "PDM", "CC-BY-2.0", "CC-BY-3.0", "CC-BY-4.0"),
-        garment_file=garment_file,
-        manifest_path=state_dir / "wardrobe_assets_v2.json",
-        sources_path=state_dir / "wardrobe_s16_sources.jsonl",
-        asset_directory=state_dir / "wardrobe_licensed_v1",
-        dry_run=dry_run,
-        resume=resume,
-        candidate_budget=candidate_budget,
-        retry_budget=retry_budget,
-        concurrency=concurrency,
-        total_budget=total_budget,
-    )
+    kwargs: dict[str, Any] = {
+        "provider": "openverse",
+        "license_allowlist": ("CC0", "PDM", "CC-BY-2.0", "CC-BY-3.0", "CC-BY-4.0"),
+        "garment_file": garment_file,
+        "manifest_path": state_dir / "wardrobe_assets_v2.json",
+        "sources_path": state_dir / "wardrobe_s16_sources.jsonl",
+        "asset_directory": state_dir / "wardrobe_licensed_v1",
+        "dry_run": dry_run,
+        "resume": resume,
+        "candidate_budget": candidate_budget,
+        "retry_budget": retry_budget,
+        "concurrency": concurrency,
+        "total_budget": total_budget,
+    }
+    if search_budget is not None:
+        kwargs["search_budget"] = search_budget
+    if diagnostic_canary:
+        kwargs["diagnostic_canary"] = True
+    return cli.IngestionConfig(**kwargs)
 
 
 async def _run_task4_ingestion(
@@ -4429,3 +4437,344 @@ def test_ingestion_blank_state_rejects_mutated_v1_reference_before_provider_acce
     assert not config.manifest_path.exists()
     assert not config.sources_path.exists()
     assert not config.asset_directory.exists()
+
+
+@pytest.mark.parametrize(
+    ("response", "expected_reason"),
+    [
+        (
+            httpx.Response(200, json=_openverse_response()),
+            "no_results",
+        ),
+        (
+            httpx.Response(
+                429,
+                content=b"provider prose: wait at https://provider.example/private",
+            ),
+            "provider_rate_limited",
+        ),
+        (
+            httpx.Response(
+                401,
+                content=b"provider prose: account denied https://provider.example/private",
+            ),
+            "provider_auth_rejected",
+        ),
+        (
+            httpx.Response(
+                503,
+                content=b"provider prose: maintenance https://provider.example/private",
+            ),
+            "provider_unavailable",
+        ),
+        (
+            httpx.Response(
+                200,
+                content=b'{"results":"not a list"}',
+                headers={"content-type": "application/json"},
+            ),
+            "provider_schema_invalid",
+        ),
+        (
+            httpx.Response(
+                200,
+                content=b"x" * (1024 * 1024 + 1),
+                headers={"content-type": "application/json"},
+            ),
+            "provider_response_too_large",
+        ),
+    ],
+)
+def test_openverse_search_exposes_only_bounded_controlled_failure_reasons(
+    licensed_ingestion_cli: ModuleType,
+    tmp_path: Path,
+    response: httpx.Response,
+    expected_reason: str,
+) -> None:
+    """A changed status/schema branch must not leak provider-controlled details."""
+
+    cli = licensed_ingestion_cli._load()
+    config = _task4_config(
+        cli,
+        garment_file=_write_task4_garment_file(tmp_path, "g051"),
+        state_dir=tmp_path / "state",
+        candidate_budget=3,
+        retry_budget=0,
+        total_budget=1,
+    )
+    garment = cli._controlled_garments(config.garment_file)[0]
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return response
+
+    async def search() -> Any:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            base_url=TASK4_OPENVERSE_BASE,
+        ) as api_client:
+            return await cli._search_openverse(
+                api_client=api_client,
+                garment=garment,
+                config=config,
+                counters=cli._Counters(),
+            )
+
+    outcome = asyncio.run(search())
+
+    assert outcome.candidates == ()
+    assert outcome.reason_code == expected_reason
+    assert outcome.reason_code in {
+        "no_results",
+        "provider_rate_limited",
+        "provider_auth_rejected",
+        "provider_unavailable",
+        "provider_schema_invalid",
+        "provider_response_too_large",
+    }
+    public_outcome = repr(outcome)
+    assert "provider prose" not in public_outcome
+    assert "https://provider.example/private" not in public_outcome
+
+
+def test_g051_search_uses_frozen_bilingual_plan_and_shared_search_budget_without_persistence(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    vision_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    """Changing name/search prose must not change the closed diagnostic query plan."""
+
+    cli = licensed_ingestion_cli._load()
+    garment_file = _write_task4_garment_file(tmp_path, "g051")
+    config = _task4_config(
+        cli,
+        garment_file=garment_file,
+        state_dir=tmp_path / "state",
+        dry_run=True,
+        candidate_budget=3,
+        retry_budget=0,
+        concurrency=1,
+        total_budget=1,
+        search_budget=3,
+    )
+    queries: list[str] = []
+
+    def empty_results(request: httpx.Request) -> httpx.Response:
+        queries.append(str(request.url.params["q"]))
+        return httpx.Response(200, json=_openverse_response())
+
+    result = asyncio.run(
+        _run_task4_ingestion(
+            cli,
+            config=config,
+            response_handler=empty_results,
+            fetcher=Task4SafeFetcher(_task4_fetched_image(licensed_assets)),
+            vision=Task4Vision(_task4_assessment(vision_module)),
+        )
+    )
+
+    assert queries == [
+        "navy synthetic blouse product flat lay",
+        "navy synthetic blouse object flat lay",
+        "navy synthetic blouse flat lay 藏青色 合成材质 衬衫",
+    ]
+    assert result.api_attempts == 3
+    assert result.candidate_attempts == 0
+    assert result.remaining_ids == ("g051",)
+    assert "飘带衬衫" not in result.model_dump_json()
+    assert "飘带衬衫" not in capsys.readouterr().out
+    assert "飘带衬衫" not in caplog.text
+    assert not config.manifest_path.exists()
+    assert not config.sources_path.exists()
+    assert not config.asset_directory.exists()
+
+
+def test_cli_openverse_client_ignores_malformed_proxy_environment_without_auth_state(
+    licensed_ingestion_cli: ModuleType,
+    offline_settings: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Removing trust_env or adding proxy/auth/hooks must fail this constructor spy."""
+
+    cli = licensed_ingestion_cli._load()
+    monkeypatch.setenv("NO_PROXY", "%%%malformed-no-proxy%%%")
+    environment_before = dict(os.environ)
+    constructed: dict[str, Any] = {}
+    received: dict[str, Any] = {}
+
+    class OfficialClientSpy:
+        def __init__(self, **kwargs: Any) -> None:
+            constructed.update(kwargs)
+
+        async def __aenter__(self) -> "OfficialClientSpy":
+            return self
+
+        async def __aexit__(self, *_args: Any) -> None:
+            return None
+
+    class TestSettings:
+        @classmethod
+        def from_env(cls) -> Any:
+            return offline_settings
+
+    async def capture_run(
+        config: Any,
+        api_client: Any,
+        safe_fetcher: Any,
+        vision: Any,
+    ) -> Any:
+        received.update(
+            {
+                "config": config,
+                "api_client": api_client,
+                "safe_fetcher": safe_fetcher,
+                "vision": vision,
+            }
+        )
+        return cli.IngestionResult(
+            dry_run=True,
+            ready_ids=(),
+            reused_ids=(),
+            quarantined_ids=(),
+            remaining_ids=(),
+            api_attempts=0,
+            candidate_attempts=0,
+            manifest_path=config.manifest_path,
+        )
+
+    monkeypatch.setattr(cli, "Settings", TestSettings)
+    monkeypatch.setattr(cli, "SafeImageFetcher", lambda **_kwargs: object())
+    monkeypatch.setattr(cli, "VisionAdapter", lambda _settings: object())
+    monkeypatch.setattr(cli.httpx, "AsyncClient", OfficialClientSpy)
+    monkeypatch.setattr(cli, "run_ingestion", capture_run)
+    config = _task4_config(
+        cli,
+        garment_file=_write_task4_garment_file(tmp_path, "g051"),
+        state_dir=tmp_path / "state",
+        dry_run=True,
+        total_budget=1,
+    )
+
+    asyncio.run(cli._run_cli(config))
+
+    assert received["api_client"].__class__ is OfficialClientSpy
+    assert constructed["trust_env"] is False
+    assert constructed["follow_redirects"] is False
+    assert constructed["base_url"] == cli.OPENVERSE_API_BASE
+    assert not {"proxy", "proxies", "auth", "cookies", "event_hooks"} & set(constructed)
+    assert dict(os.environ) == environment_before
+
+
+def test_g051_diagnostic_canary_config_limits_search_candidates_fetches_and_persistence(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    """Raising any diagnostic canary bound must be rejected before an external run."""
+
+    cli = licensed_ingestion_cli._load()
+    config = _task4_config(
+        cli,
+        garment_file=_write_task4_garment_file(tmp_path, "g051"),
+        state_dir=tmp_path / "state",
+        dry_run=True,
+        candidate_budget=3,
+        retry_budget=0,
+        concurrency=1,
+        total_budget=1,
+        search_budget=3,
+        diagnostic_canary=True,
+    )
+    candidates = [
+        _openverse_candidate(
+            source_url=f"https://museum.example/object/{number}",
+            image_url=f"https://images.example/object-{number}.png",
+        )
+        for number in range(1, 4)
+    ]
+    fetcher = Task4SafeFetcher(licensed_assets.ImageFetchError("decode_failed"))
+    vision = Task4Vision(_task4_assessment(vision_module))
+
+    result = asyncio.run(
+        _run_task4_ingestion(
+            cli,
+            config=config,
+            response_handler=_official_openverse_handler(
+                _openverse_response(*candidates)
+            ),
+            fetcher=fetcher,
+            vision=vision,
+        )
+    )
+
+    assert result.dry_run is True
+    assert result.api_attempts <= 3
+    assert result.candidate_attempts == 3
+    assert len(fetcher.urls) == 3
+    assert fetcher.max_active == 1
+    assert vision.calls == []
+    assert result.ready_ids == ()
+    assert result.quarantined_ids == ("g051",)
+    assert result.remaining_ids == ("g051",)
+    assert not config.resume
+    assert not config.manifest_path.exists()
+    assert not config.sources_path.exists()
+    assert not config.asset_directory.exists()
+
+
+def test_ingestion_vision_boundary_reports_only_call_count_and_model_provenance(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    """A future authority argument or raw Vision trace must not cross the result boundary."""
+
+    cli = licensed_ingestion_cli._load()
+
+    class AuthorityFreeVision(Task4Vision):
+        model_provenance = "mock-catalog-model-v1"
+
+        async def inspect_catalog_asset(
+            self,
+            *,
+            image_bytes: bytes,
+            mime_type: str,
+            allowed_slot: str,
+        ) -> tuple[Any, dict[str, object]]:
+            assert image_bytes
+            assert mime_type == "image/png"
+            assert allowed_slot == "top"
+            return await super().inspect_catalog_asset(
+                image_bytes=image_bytes,
+                mime_type=mime_type,
+                allowed_slot=allowed_slot,
+            )
+
+    vision = AuthorityFreeVision(_task4_assessment(vision_module))
+    result = asyncio.run(
+        _run_task4_ingestion(
+            cli,
+            config=_task4_config(
+                cli,
+                garment_file=_write_task4_garment_file(tmp_path, "g051"),
+                state_dir=tmp_path / "state",
+                dry_run=True,
+                total_budget=1,
+            ),
+            response_handler=_official_openverse_handler(
+                _openverse_response(_openverse_candidate())
+            ),
+            fetcher=Task4SafeFetcher(_task4_fetched_image(licensed_assets)),
+            vision=vision,
+        )
+    )
+
+    assert result.vision_call_count == 1
+    assert result.vision_model_provenance == "mock-catalog-model-v1"
+    result_fields = result.model_dump()
+    assert not {"garment_id", "user_id", "source_url", "image_url", "license", "vision_trace"} & set(result_fields)
