@@ -3809,3 +3809,328 @@ def test_ingestion_rejects_unbounded_or_nonpositive_budget_configuration(
             state_dir=tmp_path / "state",
             **kwargs,
         )
+
+
+def _task4_mark_takedown(manifest_path: Path) -> bytes:
+    manifest = _task4_manifest(manifest_path)
+    item = manifest["items"][0]
+    item["status"] = "takedown"
+    item["processed_sha256"] = None
+    item["relative_path"] = None
+    item["failure_reason"] = "source_takedown"
+    payload = (
+        json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+    ).encode("utf-8")
+    manifest_path.write_bytes(payload)
+    return payload
+
+
+def test_ingestion_same_source_takedown_is_preserved_without_fetch_or_vision(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    garment_file = _write_task4_garment_file(tmp_path, "g051")
+    state_dir = tmp_path / "state"
+    config = _task4_config(
+        licensed_ingestion_cli,
+        garment_file=garment_file,
+        state_dir=state_dir,
+    )
+    asyncio.run(
+        _run_task4_ingestion(
+            licensed_ingestion_cli,
+            config=config,
+            response_handler=_official_openverse_handler(
+                _openverse_response(_openverse_candidate())
+            ),
+            fetcher=Task4SafeFetcher(_task4_fetched_image(licensed_assets)),
+            vision=Task4Vision(_task4_assessment(vision_module)),
+        )
+    )
+    before = _task4_mark_takedown(config.manifest_path)
+    fetcher = Task4SafeFetcher(RuntimeError("takedown_must_not_refetch"))
+    vision = Task4Vision(RuntimeError("takedown_must_not_reassess"))
+
+    result = asyncio.run(
+        _run_task4_ingestion(
+            licensed_ingestion_cli,
+            config=config,
+            response_handler=_official_openverse_handler(
+                _openverse_response(_openverse_candidate())
+            ),
+            fetcher=fetcher,
+            vision=vision,
+        )
+    )
+
+    assert result.ready_ids == ()
+    assert result.quarantined_ids == ("g051",)
+    assert result.remaining_ids == ("g051",)
+    assert fetcher.urls == []
+    assert vision.calls == []
+    assert config.manifest_path.read_bytes() == before
+
+
+def test_ingestion_takedown_allows_separately_provenanced_replacement(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    garment_file = _write_task4_garment_file(tmp_path, "g051")
+    state_dir = tmp_path / "state"
+    config = _task4_config(
+        licensed_ingestion_cli,
+        garment_file=garment_file,
+        state_dir=state_dir,
+        resume=True,
+    )
+    fetched = _task4_fetched_image(licensed_assets)
+    asyncio.run(
+        _run_task4_ingestion(
+            licensed_ingestion_cli,
+            config=config,
+            response_handler=_official_openverse_handler(
+                _openverse_response(_openverse_candidate())
+            ),
+            fetcher=Task4SafeFetcher(fetched),
+            vision=Task4Vision(_task4_assessment(vision_module)),
+        )
+    )
+    _task4_mark_takedown(config.manifest_path)
+
+    result = asyncio.run(
+        _run_task4_ingestion(
+            licensed_ingestion_cli,
+            config=config,
+            response_handler=_official_openverse_handler(
+                _openverse_response(
+                    _openverse_candidate(
+                        source_url="https://museum.example/object/2",
+                        image_url="https://images.example/object-2.png",
+                    )
+                )
+            ),
+            fetcher=Task4SafeFetcher(fetched),
+            vision=Task4Vision(_task4_assessment(vision_module)),
+        )
+    )
+
+    assert result.ready_ids == ("g051",)
+    item = _task4_manifest(config.manifest_path)["items"][0]
+    assert item["status"] == "ready"
+    assert [receipt["source_url"] for receipt in item["receipt_history"]] == [
+        "https://museum.example/object/1",
+        "https://museum.example/object/2",
+    ]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "unknown_id",
+        "wrong_owner",
+        "wrong_slot",
+        "wrong_audience",
+        "unsafe_ready_path",
+        "nonready_serveable",
+        "unknown_field",
+        "receipt_hash_mismatch",
+        "license_authority_mismatch",
+    ],
+)
+def test_ingestion_rejects_invalid_prior_manifest_before_provider_access(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    garment_file = _write_task4_garment_file(tmp_path, "g051")
+    state_dir = tmp_path / "state"
+    config = _task4_config(
+        licensed_ingestion_cli,
+        garment_file=garment_file,
+        state_dir=state_dir,
+        resume=True,
+    )
+    asyncio.run(
+        _run_task4_ingestion(
+            licensed_ingestion_cli,
+            config=config,
+            response_handler=_official_openverse_handler(
+                _openverse_response(_openverse_candidate())
+            ),
+            fetcher=Task4SafeFetcher(_task4_fetched_image(licensed_assets)),
+            vision=Task4Vision(_task4_assessment(vision_module)),
+        )
+    )
+    manifest = _task4_manifest(config.manifest_path)
+    item = manifest["items"][0]
+    if mutation == "unknown_id":
+        item["garment_id"] = "g999"
+    elif mutation == "wrong_owner":
+        item["user_id"] = "u02"
+    elif mutation == "wrong_slot":
+        item["slot"] = "dress"
+    elif mutation == "wrong_audience":
+        item["audience"] = "womenswear"
+    elif mutation == "unsafe_ready_path":
+        item["relative_path"] = "../escape.png"
+    elif mutation == "nonready_serveable":
+        item["status"] = "takedown"
+    elif mutation == "unknown_field":
+        item["unexpected"] = True
+    elif mutation == "receipt_hash_mismatch":
+        item["receipt_history"][-1]["processed_sha256"] = "0" * 64
+    else:
+        item["license"]["code"] = "CC-BY-3.0"
+    config.manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    provider_calls: list[httpx.Request] = []
+
+    def no_provider_access(request: httpx.Request) -> httpx.Response:
+        provider_calls.append(request)
+        return httpx.Response(500, json={"detail": "must_not_call"})
+
+    with pytest.raises(ValueError):
+        asyncio.run(
+            _run_task4_ingestion(
+                licensed_ingestion_cli,
+                config=config,
+                response_handler=no_provider_access,
+                fetcher=Task4SafeFetcher(RuntimeError("must_not_fetch")),
+                vision=Task4Vision(RuntimeError("must_not_assess")),
+            )
+        )
+    assert provider_calls == []
+
+
+def test_ingestion_invalid_source_history_cannot_publish_ready_manifest_or_bytes(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    garment_file = _write_task4_garment_file(tmp_path, "g051")
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    config = _task4_config(
+        licensed_ingestion_cli,
+        garment_file=garment_file,
+        state_dir=state_dir,
+    )
+    invalid_history = b'{"existing":true}'
+    config.sources_path.write_bytes(invalid_history)
+
+    with pytest.raises(ValueError):
+        asyncio.run(
+            _run_task4_ingestion(
+                licensed_ingestion_cli,
+                config=config,
+                response_handler=_official_openverse_handler(
+                    _openverse_response(_openverse_candidate())
+                ),
+                fetcher=Task4SafeFetcher(_task4_fetched_image(licensed_assets)),
+                vision=Task4Vision(_task4_assessment(vision_module)),
+            )
+        )
+
+    assert config.sources_path.read_bytes() == invalid_history
+    assert not config.manifest_path.exists()
+    assert not config.asset_directory.exists()
+
+
+def test_ingestion_receipt_write_failure_cannot_publish_ready_manifest(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    vision_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    garment_file = _write_task4_garment_file(tmp_path, "g051")
+    config = _task4_config(
+        cli,
+        garment_file=garment_file,
+        state_dir=tmp_path / "state",
+    )
+    original_atomic_write = cli._atomic_write_bytes
+
+    def fail_receipt_write(path: Path, payload: bytes) -> None:
+        if Path(path) == config.sources_path:
+            raise OSError("simulated_receipt_write_failure")
+        original_atomic_write(path, payload)
+
+    monkeypatch.setattr(cli, "_atomic_write_bytes", fail_receipt_write)
+
+    with pytest.raises(OSError, match="simulated_receipt_write_failure"):
+        asyncio.run(
+            _run_task4_ingestion(
+                cli,
+                config=config,
+                response_handler=_official_openverse_handler(
+                    _openverse_response(_openverse_candidate())
+                ),
+                fetcher=Task4SafeFetcher(_task4_fetched_image(licensed_assets)),
+                vision=Task4Vision(_task4_assessment(vision_module)),
+            )
+        )
+
+    assert not config.sources_path.exists()
+    assert not config.manifest_path.exists()
+
+
+def test_ingestion_cli_uses_settings_bound_safe_image_config(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    offline_settings: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    settings = replace(
+        offline_settings,
+        licensed_asset_max_response_bytes=123_456,
+    )
+    captured: dict[str, Any] = {}
+
+    def capture_fetcher(**kwargs: Any) -> object:
+        captured.update(kwargs)
+        return object()
+
+    async def capture_run(config: Any, *_args: Any, **_kwargs: Any) -> Any:
+        return cli.IngestionResult(
+            dry_run=True,
+            ready_ids=(),
+            reused_ids=(),
+            quarantined_ids=(),
+            remaining_ids=(),
+            api_attempts=0,
+            candidate_attempts=0,
+            manifest_path=config.manifest_path,
+        )
+
+    class TestSettings:
+        @classmethod
+        def from_env(cls) -> Any:
+            return settings
+
+    monkeypatch.setattr(cli, "Settings", TestSettings)
+    monkeypatch.setattr(cli, "SafeImageFetcher", capture_fetcher)
+    monkeypatch.setattr(cli, "VisionAdapter", lambda _settings: object())
+    monkeypatch.setattr(cli, "run_ingestion", capture_run)
+    config = cli.IngestionConfig(
+        provider="user-owned",
+        garment_file=_write_task4_garment_file(tmp_path, "g051"),
+        source_map=tmp_path / "sources.jsonl",
+        dry_run=True,
+    )
+
+    asyncio.run(cli._run_cli(config))
+
+    assert captured["config"] == licensed_assets.SafeImageConfig.from_settings(settings)

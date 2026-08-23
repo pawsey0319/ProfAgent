@@ -27,6 +27,7 @@ from profagent.licensed_assets import (
     LicenseCode,
     LicensedSourceReceipt,
     PublicLicenseReceipt,
+    SafeImageConfig,
     SafeImageFetcher,
     assess_and_crop_catalog_asset,
     public_license_from_source,
@@ -36,6 +37,7 @@ from profagent.vision import VisionAdapter, VisionUnavailable
 
 
 CONTROLLED_GARMENT_FILE = ROOT / "data" / "fixtures" / "garments_s16_womenswear.jsonl"
+BASE_GARMENT_FILE = ROOT / "data" / "fixtures" / "garments.jsonl"
 DEFAULT_MANIFEST_PATH = ROOT / "data" / "manifests" / "wardrobe_assets_v2.json"
 DEFAULT_SOURCES_PATH = ROOT / "data" / "sources" / "wardrobe_s16_sources.jsonl"
 DEFAULT_ASSET_DIRECTORY = ROOT / "data" / "assets" / "wardrobe_licensed_v1"
@@ -74,6 +76,51 @@ _CANONICAL_OPENVERSE_LICENSES: dict[tuple[str, str], tuple[LicenseCode, str]] = 
     ),
 }
 _RETRIABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+_HASH_CHARS = frozenset("0123456789abcdef")
+_MANIFEST_ITEM_KEYS = frozenset(
+    {
+        "garment_id",
+        "user_id",
+        "slot",
+        "audience",
+        "source_kind",
+        "status",
+        "original_sha256",
+        "processed_sha256",
+        "relative_path",
+        "license",
+        "receipt_history",
+    }
+)
+_RECEIPT_KEYS = frozenset(
+    {
+        "provider",
+        "provider_item_id",
+        "provider_license",
+        "provider_license_version",
+        "license_code",
+        "license_url",
+        "creator",
+        "source_url",
+        "image_url",
+        "source_ref",
+        "expected_sha256",
+        "attribution",
+        "imported_at",
+        "original_sha256",
+        "processed_sha256",
+        "processing",
+    }
+)
+_CONTROLLED_FAILURE_REASONS = frozenset(
+    {
+        "candidate_budget_exhausted",
+        "source_takedown",
+        "user_owned_loader_unavailable",
+        "user_owned_source_missing",
+        "user_owned_source_rejected",
+    }
+)
 
 
 class IngestionConfig(BaseModel):
@@ -201,6 +248,19 @@ def _read_jsonl(path: Path, *, limit: int) -> list[Any]:
         return [json.loads(line) for line in lines if line.strip()]
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError("invalid_jsonl_file") from exc
+
+
+def _authoritative_garments() -> dict[str, Garment]:
+    authoritative: dict[str, Garment] = {}
+    for path in (BASE_GARMENT_FILE, CONTROLLED_GARMENT_FILE):
+        for row in _read_jsonl(path, limit=MANIFEST_INPUT_LIMIT):
+            garment = Garment.model_validate(row)
+            if garment.garment_id in authoritative:
+                raise ValueError("duplicate_authoritative_garment")
+            authoritative[garment.garment_id] = garment
+    if len(authoritative) != 120:
+        raise ValueError("authoritative_garment_count_mismatch")
+    return authoritative
 
 
 def _controlled_garments(garment_file: Path) -> tuple[Garment, ...]:
@@ -444,21 +504,325 @@ async def _search_openverse(
     return ()
 
 
-def _load_existing_manifest(path: Path) -> dict[str, Any]:
+def _is_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(char in _HASH_CHARS for char in value)
+    )
+
+
+def _parse_imported_at(value: Any) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError("invalid_receipt_timestamp")
+    try:
+        imported_at = datetime.fromisoformat(value)
+    except ValueError:
+        raise ValueError("invalid_receipt_timestamp") from None
+    if imported_at.tzinfo is None:
+        raise ValueError("invalid_receipt_timestamp")
+    return imported_at
+
+
+def _validated_receipt(
+    raw: Any,
+    *,
+    garment_id: str,
+) -> tuple[_NormalizedSource, str, str]:
+    if not isinstance(raw, dict) or set(raw) != _RECEIPT_KEYS:
+        raise ValueError("invalid_source_receipt")
+    if raw.get("processing") != "safe_decode_normalize_then_server_crop":
+        raise ValueError("invalid_source_receipt")
+    original_sha256 = raw.get("original_sha256")
+    processed_sha256 = raw.get("processed_sha256")
+    if not _is_sha256(original_sha256) or not _is_sha256(processed_sha256):
+        raise ValueError("invalid_source_receipt")
+    provider_item_id = _bounded_text(
+        raw.get("provider_item_id"), reason="invalid_source_receipt"
+    )
+    provider_license = _bounded_text(
+        raw.get("provider_license"),
+        reason="invalid_source_receipt",
+        maximum=32,
+    )
+    provider_version = _bounded_text(
+        raw.get("provider_license_version"),
+        reason="invalid_source_receipt",
+        maximum=40,
+    )
+    provider = raw.get("provider")
+    image_url = raw.get("image_url")
+    source_ref = raw.get("source_ref")
+    expected_sha256 = raw.get("expected_sha256")
+    if provider == "openverse":
+        _bounded_text(raw.get("creator"), reason="invalid_source_receipt", maximum=200)
+        _validate_https_url(raw.get("source_url"), reason="invalid_source_receipt")
+        canonical = _CANONICAL_OPENVERSE_LICENSES.get(
+            (provider_license, provider_version)
+        )
+        if (
+            canonical is None
+            or raw.get("license_code") != canonical[0]
+            or raw.get("license_url") != canonical[1]
+            or source_ref is not None
+            or expected_sha256 is not None
+        ):
+            raise ValueError("invalid_source_receipt")
+        image_url = _validate_https_url(
+            image_url, reason="invalid_source_receipt"
+        )
+    elif provider == "user_upload":
+        if (
+            provider_item_id != garment_id
+            or provider_license != "user-owned"
+            or provider_version != "owner-asserted-v1"
+            or image_url is not None
+            or not isinstance(source_ref, str)
+            or not source_ref
+            or "\\" in source_ref
+            or ":" in source_ref
+            or not _is_sha256(expected_sha256)
+            or expected_sha256 != original_sha256
+        ):
+            raise ValueError("invalid_source_receipt")
+        pure = PurePosixPath(source_ref)
+        if pure.is_absolute() or any(part in {"", ".", ".."} for part in pure.parts):
+            raise ValueError("invalid_source_receipt")
+    else:
+        raise ValueError("unsupported_manifest_provider")
+    source_receipt = LicensedSourceReceipt(
+        provider=provider,
+        source_url=raw.get("source_url"),
+        creator=raw.get("creator"),
+        license_code=raw.get("license_code"),
+        license_url=raw.get("license_url"),
+        attribution=raw.get("attribution"),
+        imported_at=_parse_imported_at(raw.get("imported_at")),
+    )
+    return (
+        _NormalizedSource(
+            provider_item_id=provider_item_id,
+            source_receipt=source_receipt,
+            image_url=image_url,
+            provider_license=provider_license,
+            provider_license_version=provider_version,
+            source_ref=source_ref,
+            expected_sha256=expected_sha256,
+        ),
+        original_sha256,
+        processed_sha256,
+    )
+
+
+def _validate_source_record(
+    raw: Any,
+    *,
+    authoritative: dict[str, Garment],
+) -> tuple[str, str]:
+    if not isinstance(raw, dict) or set(raw) != {"garment_id", "receipt"}:
+        raise ValueError("invalid_source_history")
+    garment_id = raw.get("garment_id")
+    if not isinstance(garment_id, str) or garment_id not in authoritative:
+        raise ValueError("invalid_source_history")
+    _validated_receipt(raw.get("receipt"), garment_id=garment_id)
+    fingerprint = json.dumps(
+        raw["receipt"], ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return garment_id, fingerprint
+
+
+def _load_source_history(
+    path: Path,
+    *,
+    authoritative: dict[str, Garment],
+) -> tuple[bytes, frozenset[tuple[str, str]]]:
     if not path.exists():
-        return {"manifest_version": "wardrobe_assets_v2", "items": []}
-    payload = _load_json(path, limit=MANIFEST_INPUT_LIMIT)
-    if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+        return b"", frozenset()
+    try:
+        if path.stat().st_size > SOURCE_HISTORY_LIMIT:
+            raise ValueError("source_history_too_large")
+        payload = path.read_bytes()
+    except OSError as exc:
+        raise ValueError("invalid_source_history") from exc
+    if payload and not payload.endswith(b"\n"):
+        raise ValueError("invalid_source_history")
+    try:
+        rows = [json.loads(line) for line in payload.splitlines() if line]
+    except (UnicodeError, json.JSONDecodeError, RecursionError):
+        raise ValueError("invalid_source_history") from None
+    fingerprints = {
+        _validate_source_record(row, authoritative=authoritative) for row in rows
+    }
+    if len(fingerprints) != len(rows):
+        raise ValueError("duplicate_source_receipt")
+    return payload, frozenset(fingerprints)
+
+
+def _validate_manifest_item(
+    raw: Any,
+    *,
+    authoritative: dict[str, Garment],
+    asset_directory: Path,
+    durable_receipts: frozenset[tuple[str, str]],
+    staged_assets: dict[str, bytes] | None = None,
+) -> None:
+    if not isinstance(raw, dict):
         raise ValueError("invalid_asset_manifest")
-    items = payload["items"]
-    if len(items) > 120 or any(not isinstance(item, dict) for item in items):
+    keys = set(raw)
+    if keys not in {_MANIFEST_ITEM_KEYS, _MANIFEST_ITEM_KEYS | {"failure_reason"}}:
         raise ValueError("invalid_asset_manifest")
-    garment_ids = [item.get("garment_id") for item in items]
-    if any(not isinstance(item_id, str) for item_id in garment_ids):
+    garment_id = raw.get("garment_id")
+    truth = authoritative.get(garment_id) if isinstance(garment_id, str) else None
+    if truth is None or any(
+        raw.get(key) != value
+        for key, value in {
+            "user_id": truth.user_id,
+            "slot": truth.slot,
+            "audience": truth.audience,
+        }.items()
+    ):
+        raise ValueError("manifest_authority_mismatch")
+    source_kind = raw.get("source_kind")
+    if source_kind not in {"licensed_photo", "user_owned_photo"}:
+        raise ValueError("invalid_manifest_source_kind")
+    status = raw.get("status")
+    if status not in {"ready", "missing", "failed", "quarantined", "takedown"}:
+        raise ValueError("invalid_manifest_status")
+    failure_reason = raw.get("failure_reason")
+    if failure_reason is not None and failure_reason not in _CONTROLLED_FAILURE_REASONS:
+        raise ValueError("invalid_manifest_failure_reason")
+    if status == "ready" and failure_reason is not None:
+        raise ValueError("ready_asset_has_failure_reason")
+    if status == "takedown" and failure_reason != "source_takedown":
+        raise ValueError("invalid_takedown_reason")
+    if status in {"missing", "failed", "quarantined"} and failure_reason is None:
+        raise ValueError("missing_manifest_failure_reason")
+    history = raw.get("receipt_history")
+    if not isinstance(history, list) or len(history) > 100:
+        raise ValueError("invalid_receipt_history")
+    validated_history = [
+        _validated_receipt(receipt, garment_id=garment_id) for receipt in history
+    ]
+    identities = [entry[0].identity() for entry in validated_history]
+    if len({json.dumps(item, sort_keys=True) for item in identities}) != len(identities):
+        raise ValueError("duplicate_receipt_history")
+    for receipt in history:
+        receipt_fingerprint = json.dumps(
+            receipt,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if (garment_id, receipt_fingerprint) not in durable_receipts:
+            raise ValueError("manifest_receipt_not_durable")
+    if status in {"ready", "takedown"} and not validated_history:
+        raise ValueError("missing_authoritative_receipt")
+    latest = validated_history[-1] if validated_history else None
+    expected_providers = {
+        "licensed_photo": {"openverse", "partner_api"},
+        "user_owned_photo": {"user_upload"},
+    }
+    if latest is not None and latest[0].source_receipt.provider not in expected_providers[source_kind]:
+        raise ValueError("manifest_source_kind_mismatch")
+    license_payload = raw.get("license")
+    public_license = (
+        PublicLicenseReceipt.model_validate(license_payload)
+        if license_payload is not None
+        else None
+    )
+    if status in {"ready", "takedown"} and public_license is None:
+        raise ValueError("missing_manifest_license")
+    if latest is not None and public_license is not None:
+        expected_license = public_license_from_source(latest[0].source_receipt)
+        if public_license != expected_license:
+            raise ValueError("manifest_license_mismatch")
+    original_sha256 = raw.get("original_sha256")
+    processed_sha256 = raw.get("processed_sha256")
+    relative_path = raw.get("relative_path")
+    if status == "ready":
+        if (
+            not _is_sha256(original_sha256)
+            or not _is_sha256(processed_sha256)
+            or latest is None
+            or latest[1] != original_sha256
+            or latest[2] != processed_sha256
+        ):
+            raise ValueError("invalid_ready_hash_binding")
+        path = _safe_asset_path(asset_directory, relative_path)
+        if path is None or relative_path != f"{garment_id}/{processed_sha256}.png":
+            raise ValueError("unsafe_ready_path")
+        staged = None if staged_assets is None else staged_assets.get(relative_path)
+        if staged is not None:
+            payload = staged
+        else:
+            if not path.is_file() or path.is_symlink():
+                raise ValueError("missing_ready_asset")
+            try:
+                if path.stat().st_size > 25 * 1024 * 1024:
+                    raise ValueError("ready_asset_too_large")
+                payload = path.read_bytes()
+            except OSError as exc:
+                raise ValueError("missing_ready_asset") from exc
+        if hashlib.sha256(payload).hexdigest() != processed_sha256:
+            raise ValueError("ready_asset_hash_mismatch")
+    else:
+        if processed_sha256 is not None or relative_path is not None:
+            raise ValueError("nonready_asset_is_serveable")
+        if original_sha256 is not None and not _is_sha256(original_sha256):
+            raise ValueError("invalid_nonready_hash")
+        if status == "takedown":
+            if latest is None or latest[1] != original_sha256:
+                raise ValueError("invalid_takedown_hash_binding")
+        elif original_sha256 is not None or public_license is not None:
+            raise ValueError("invalid_nonready_authority")
+
+
+def _validate_manifest_payload(
+    payload: Any,
+    *,
+    authoritative: dict[str, Garment],
+    asset_directory: Path,
+    durable_receipts: frozenset[tuple[str, str]],
+    staged_assets: dict[str, bytes] | None = None,
+) -> dict[str, Any]:
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"manifest_version", "items"}
+        or payload.get("manifest_version") != "wardrobe_assets_v2"
+        or not isinstance(payload.get("items"), list)
+        or len(payload["items"]) > 120
+    ):
         raise ValueError("invalid_asset_manifest")
+    garment_ids: list[str] = []
+    for item in payload["items"]:
+        _validate_manifest_item(
+            item,
+            authoritative=authoritative,
+            asset_directory=asset_directory,
+            durable_receipts=durable_receipts,
+            staged_assets=staged_assets,
+        )
+        garment_ids.append(item["garment_id"])
     if len(set(garment_ids)) != len(garment_ids):
         raise ValueError("duplicate_manifest_garment")
-    return {**payload, "manifest_version": "wardrobe_assets_v2"}
+    return payload
+
+
+def _load_existing_manifest(
+    path: Path,
+    *,
+    authoritative: dict[str, Garment],
+    asset_directory: Path,
+    durable_receipts: frozenset[tuple[str, str]],
+) -> dict[str, Any]:
+    if not path.exists():
+        return {"manifest_version": "wardrobe_assets_v2", "items": []}
+    return _validate_manifest_payload(
+        _load_json(path, limit=MANIFEST_INPUT_LIMIT),
+        authoritative=authoritative,
+        asset_directory=asset_directory,
+        durable_receipts=durable_receipts,
+    )
 
 
 def _receipt_identity(receipt: Any) -> dict[str, Any] | None:
@@ -540,6 +904,20 @@ def _reusable_item(
         return False
 
 
+def _is_same_source_takedown(
+    existing_item: dict[str, Any] | None,
+    source: _NormalizedSource,
+) -> bool:
+    if not isinstance(existing_item, dict) or existing_item.get("status") != "takedown":
+        return False
+    history = existing_item.get("receipt_history")
+    return (
+        isinstance(history, list)
+        and bool(history)
+        and _receipt_identity(history[-1]) == source.identity()
+    )
+
+
 async def _attempt_openverse_garment(
     *,
     garment: Garment,
@@ -564,6 +942,14 @@ async def _attempt_openverse_garment(
             )
         except ValueError:
             continue
+        if _is_same_source_takedown(existing_item, source):
+            return _AttemptOutcome(
+                garment=garment,
+                status="quarantined",
+                failure_reason="source_takedown",
+                source=source,
+                existing_item=existing_item,
+            )
         if config.resume and _reusable_item(
             existing_item=existing_item,
             garment=garment,
@@ -702,6 +1088,14 @@ async def _attempt_user_owned_garment(
     try:
         fetched = await loader(path, expected_sha256=expected_sha256)
         source = replace(source, expected_sha256=fetched.original_sha256)
+        if _is_same_source_takedown(existing_item, source):
+            return _AttemptOutcome(
+                garment=garment,
+                status="quarantined",
+                failure_reason="source_takedown",
+                source=source,
+                existing_item=existing_item,
+            )
         if config.resume and _reusable_item(
             existing_item=existing_item,
             garment=garment,
@@ -807,10 +1201,14 @@ def _quarantined_manifest_item(outcome: _AttemptOutcome) -> dict[str, Any]:
         "slot": outcome.garment.slot,
         "audience": outcome.garment.audience,
         "source_kind": (
-            "user_owned_photo"
-            if outcome.source is not None
-            and outcome.source.source_receipt.provider == "user_upload"
-            else "licensed_photo"
+            outcome.existing_item["source_kind"]
+            if outcome.source is None and outcome.existing_item is not None
+            else (
+                "user_owned_photo"
+                if outcome.source is not None
+                and outcome.source.source_receipt.provider == "user_upload"
+                else "licensed_photo"
+            )
         ),
         "status": "quarantined",
         "original_sha256": None,
@@ -839,25 +1237,29 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     _atomic_write_bytes(path, encoded)
 
 
-def _append_source_records(path: Path, records: list[dict[str, Any]]) -> None:
-    if not records:
-        return
-    existing = b""
-    if path.exists():
-        if path.stat().st_size > SOURCE_HISTORY_LIMIT:
-            raise ValueError("source_history_too_large")
-        existing = path.read_bytes()
-        if existing and not existing.endswith(b"\n"):
-            raise ValueError("invalid_source_history")
-    appended = b"".join(
-        (
-            json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
-        ).encode("utf-8")
-        for record in records
-    )
-    if len(existing) + len(appended) > SOURCE_HISTORY_LIMIT:
+def _prepare_source_history(
+    existing: bytes,
+    existing_fingerprints: frozenset[tuple[str, str]],
+    records: list[dict[str, Any]],
+    *,
+    authoritative: dict[str, Garment],
+) -> tuple[bytes, frozenset[tuple[str, str]]]:
+    fingerprints = set(existing_fingerprints)
+    encoded: list[bytes] = []
+    for record in records:
+        fingerprint = _validate_source_record(record, authoritative=authoritative)
+        if fingerprint in fingerprints:
+            raise ValueError("duplicate_source_receipt")
+        fingerprints.add(fingerprint)
+        encoded.append(
+            (json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n").encode(
+                "utf-8"
+            )
+        )
+    payload = existing + b"".join(encoded)
+    if len(payload) > SOURCE_HISTORY_LIMIT:
         raise ValueError("source_history_too_large")
-    _atomic_write_bytes(path, existing + appended)
+    return payload, frozenset(fingerprints)
 
 
 def _upsert_items(
@@ -890,11 +1292,22 @@ async def run_ingestion(
             raise ValueError("openverse_client_required")
         _validate_official_client(api_client)
 
-    manifest = (
-        {"manifest_version": "wardrobe_assets_v2", "items": []}
-        if config.dry_run
-        else _load_existing_manifest(config.manifest_path)
-    )
+    authoritative = _authoritative_garments()
+    if config.dry_run:
+        source_history = b""
+        durable_receipts: frozenset[tuple[str, str]] = frozenset()
+        manifest = {"manifest_version": "wardrobe_assets_v2", "items": []}
+    else:
+        source_history, durable_receipts = _load_source_history(
+            config.sources_path,
+            authoritative=authoritative,
+        )
+        manifest = _load_existing_manifest(
+            config.manifest_path,
+            authoritative=authoritative,
+            asset_directory=config.asset_directory,
+            durable_receipts=durable_receipts,
+        )
     existing_by_id = {
         item["garment_id"]: item
         for item in manifest["items"]
@@ -963,6 +1376,7 @@ async def run_ingestion(
     if not config.dry_run:
         replacements: dict[str, dict[str, Any]] = {}
         source_records: list[dict[str, Any]] = []
+        staged_assets: dict[str, bytes] = {}
         for outcome in outcomes:
             if outcome.status == "reused":
                 assert outcome.existing_item is not None
@@ -970,20 +1384,42 @@ async def run_ingestion(
             elif outcome.status == "ready":
                 item, source_record = _ready_manifest_item(outcome)
                 assert outcome.cropped is not None
-                asset_path = _safe_asset_path(
-                    config.asset_directory, item["relative_path"]
-                )
-                if asset_path is None:
-                    raise ValueError("unsafe_asset_path")
-                _atomic_write_bytes(asset_path, outcome.cropped.processed_bytes)
+                staged_assets[item["relative_path"]] = outcome.cropped.processed_bytes
                 replacements[outcome.garment.garment_id] = item
                 source_records.append(source_record)
+            elif (
+                outcome.existing_item is not None
+                and outcome.existing_item.get("status") == "takedown"
+            ):
+                assert outcome.existing_item is not None
+                replacements[outcome.garment.garment_id] = outcome.existing_item
             else:
                 replacements[outcome.garment.garment_id] = (
                     _quarantined_manifest_item(outcome)
                 )
-        _atomic_write_json(config.manifest_path, _upsert_items(manifest, replacements))
-        _append_source_records(config.sources_path, source_records)
+        new_manifest = _upsert_items(manifest, replacements)
+        new_source_history, new_durable_receipts = _prepare_source_history(
+            source_history,
+            durable_receipts,
+            source_records,
+            authoritative=authoritative,
+        )
+        _validate_manifest_payload(
+            new_manifest,
+            authoritative=authoritative,
+            asset_directory=config.asset_directory,
+            durable_receipts=new_durable_receipts,
+            staged_assets=staged_assets,
+        )
+        for relative_path, payload in staged_assets.items():
+            asset_path = _safe_asset_path(config.asset_directory, relative_path)
+            if asset_path is None:
+                raise ValueError("unsafe_asset_path")
+            _atomic_write_bytes(asset_path, payload)
+        if new_source_history != source_history:
+            _atomic_write_bytes(config.sources_path, new_source_history)
+        if new_manifest != manifest:
+            _atomic_write_json(config.manifest_path, new_manifest)
 
     return IngestionResult(
         dry_run=config.dry_run,
@@ -1028,10 +1464,11 @@ def _parser() -> argparse.ArgumentParser:
 
 
 async def _run_cli(config: IngestionConfig) -> IngestionResult:
-    settings = Settings()
+    settings = Settings.from_env()
     fetcher = SafeImageFetcher(
         ready_dir=config.asset_directory,
         quarantine_dir=config.asset_directory.parent / "quarantine",
+        config=SafeImageConfig.from_settings(settings),
     )
     vision = VisionAdapter(settings)
     if config.provider != "openverse":
