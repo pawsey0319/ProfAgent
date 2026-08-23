@@ -4722,6 +4722,14 @@ def test_cli_openverse_client_ignores_malformed_proxy_environment_without_auth_s
     assert constructed["follow_redirects"] is False
     assert constructed["base_url"] == cli.OPENVERSE_API_BASE
     assert not {"proxy", "proxies", "auth", "cookies", "event_hooks"} & set(constructed)
+    assert constructed.get("verify", True) is True
+    assert constructed["headers"]["Accept-Encoding"] == "identity"
+    assert constructed["headers"]["Accept"] == "image/png,image/jpeg,image/webp"
+    timeout = constructed["timeout"]
+    assert 0 < timeout.connect <= 5.0
+    assert 0 < timeout.read <= 15.0
+    assert 0 < timeout.write <= 5.0
+    assert 0 < timeout.pool <= 5.0
     assert dict(os.environ) == environment_before
 
 
@@ -4998,3 +5006,324 @@ def test_diagnostic_canary_cli_rejects_non_g051_before_run(
         )
 
     assert called is False
+
+
+# Ruling F: a fake/non-global DNS answer for api.openverse.org must not relax
+# Task 2's generic fetcher.  The only contemplated exception is a separate,
+# exact UUID-to-official-thumbnail path which remains inside the official
+# Openverse client boundary and then reuses Task 2 decoding/normalization.
+_RULING_F_UUID = "123e4567-e89b-12d3-a456-426614174000"
+_RULING_F_OTHER_UUID = "123e4567-e89b-12d3-a456-426614174001"
+_RULING_F_THUMB_PATH = f"/v1/images/{_RULING_F_UUID}/thumb/"
+
+
+def test_trusted_openverse_thumbnail_uses_only_same_canonical_uuid_path_and_task2_normalization(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    """Using metadata url/host instead of the validated UUID would be an SSRF bypass."""
+
+    cli = licensed_ingestion_cli._load()
+    thumbnail_requests: list[httpx.Request] = []
+    source_url = (
+        "https://api.openverse.org/v1/images/"
+        f"{_RULING_F_OTHER_UUID}/thumb/"
+    )
+    jpeg = _make_image("JPEG", size=(16, 12))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/images/":
+            return httpx.Response(
+                200,
+                json=_openverse_response(
+                    _openverse_candidate(id=_RULING_F_UUID, image_url=source_url)
+                ),
+            )
+        thumbnail_requests.append(request)
+        assert request.method == "GET"
+        assert request.url == httpx.URL(
+            f"https://api.openverse.org{_RULING_F_THUMB_PATH}"
+        )
+        assert request.headers["accept-encoding"] == "identity"
+        assert request.headers["accept"] == "image/png,image/jpeg,image/webp"
+        return httpx.Response(200, content=jpeg, headers={"content-type": "image/jpeg"})
+
+    generic_fetcher = Task4SafeFetcher(
+        licensed_assets.ImageFetchError("unsafe_address")
+    )
+    vision = Task4Vision(_task4_assessment(vision_module))
+    result = asyncio.run(
+        _run_task4_ingestion(
+            cli,
+            config=_task4_config(
+                cli,
+                garment_file=_write_task4_garment_file(tmp_path, "g051"),
+                state_dir=tmp_path / "state",
+                dry_run=True,
+                candidate_budget=1,
+                retry_budget=0,
+                concurrency=1,
+                total_budget=1,
+                search_budget=1,
+            ),
+            response_handler=handler,
+            fetcher=generic_fetcher,
+            vision=vision,
+        )
+    )
+
+    assert result.ready_ids == ("g051",)
+    assert len(thumbnail_requests) == 1
+    assert generic_fetcher.urls == []
+    assert len(vision.calls) == 1
+    # JPEG input is normalized locally by the already accepted Task 2 proof
+    # before the authority-free Vision bridge sees it.
+    assert set(vision.calls[0]) == {"image_bytes", "mime_type", "allowed_slot"}
+    assert vision.calls[0]["mime_type"] == "image/png"
+    assert vision.calls[0]["allowed_slot"] == "top"
+    assert vision.calls[0]["image_bytes"].startswith(b"\x89PNG\r\n\x1a\n")
+
+
+@pytest.mark.parametrize(
+    "provider_item_id",
+    [
+        "123e4567-e89b-12d3-a456-426614174000/../other",
+        "123e4567-e89b-12d3-a456-426614174000%2fother",
+        "123e4567-e89b-12d3-a456-426614174000?other",
+        "123e4567-e89b-12d3-a456-426614174000#other",
+        "123e4567-e89b-12d3-a456-426614174000@api.openverse.org",
+        "123e4567-e89b-12d3-a456-426614174000:443",
+        "123E4567-E89B-12D3-A456-426614174000",
+        "not-a-canonical-uuid",
+    ],
+)
+def test_trusted_thumbnail_rejects_noncanonical_or_url_shaped_provider_id_before_any_thumbnail_request(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+    provider_item_id: str,
+) -> None:
+    """A malformed Openverse ID must never become a path, URL, or generic fetch."""
+
+    cli = licensed_ingestion_cli._load()
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        assert request.url.path == "/v1/images/"
+        return httpx.Response(
+            200,
+            json=_openverse_response(_openverse_candidate(id=provider_item_id)),
+        )
+
+    generic_fetcher = Task4SafeFetcher(
+        licensed_assets.ImageFetchError("unsafe_address")
+    )
+    vision = Task4Vision(_task4_assessment(vision_module))
+    result = asyncio.run(
+        _run_task4_ingestion(
+            cli,
+            config=_task4_config(
+                cli,
+                garment_file=_write_task4_garment_file(tmp_path, "g051"),
+                state_dir=tmp_path / "state",
+                dry_run=True,
+                candidate_budget=1,
+                retry_budget=0,
+                concurrency=1,
+                total_budget=1,
+                search_budget=1,
+            ),
+            response_handler=handler,
+            fetcher=generic_fetcher,
+            vision=vision,
+        )
+    )
+
+    assert result.quarantined_ids == ("g051",)
+    assert result.item_outcomes[0].reason_code == "candidate_budget_exhausted"
+    assert len(calls) == 1
+    assert generic_fetcher.urls == []
+    assert vision.calls == []
+
+
+@pytest.mark.parametrize(
+    ("thumbnail_response", "secret"),
+    [
+        (httpx.Response(302, headers={"location": "https://evil.example/image.png"}), "evil.example"),
+        (
+            httpx.Response(
+                200,
+                content=gzip.compress(_make_image("PNG")),
+                headers={"content-type": "image/png", "content-encoding": "gzip"},
+            ),
+            "gzip",
+        ),
+        (
+            httpx.Response(
+                200,
+                content=b"x" * (26 * 1024 * 1024),
+                headers={"content-type": "image/png"},
+            ),
+            "x" * 32,
+        ),
+        (
+            httpx.Response(
+                200,
+                content=b"<private-html-body>",
+                headers={"content-type": "text/html"},
+            ),
+            "private-html-body",
+        ),
+        (
+            httpx.Response(
+                200,
+                content=b"not-a-real-image",
+                headers={"content-type": "image/png"},
+            ),
+            "not-a-real-image",
+        ),
+    ],
+    ids=["redirect", "nonidentity", "oversize", "mime", "decode"],
+)
+def test_trusted_thumbnail_rejects_unsafe_response_before_vision_without_leaking_content(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    vision_module: ModuleType,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+    thumbnail_response: httpx.Response,
+    secret: str,
+) -> None:
+    """Redirect/body/MIME failures must stop before Vision and expose only a closed outcome."""
+
+    cli = licensed_ingestion_cli._load()
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/v1/images/":
+            return httpx.Response(
+                200,
+                json=_openverse_response(_openverse_candidate(id=_RULING_F_UUID)),
+            )
+        assert request.url.path == _RULING_F_THUMB_PATH
+        return thumbnail_response
+
+    generic_fetcher = Task4SafeFetcher(
+        licensed_assets.ImageFetchError("unsafe_address")
+    )
+    vision = Task4Vision(_task4_assessment(vision_module))
+    with caplog.at_level(logging.INFO):
+        result = asyncio.run(
+            _run_task4_ingestion(
+                cli,
+                config=_task4_config(
+                    cli,
+                    garment_file=_write_task4_garment_file(tmp_path, "g051"),
+                    state_dir=tmp_path / "state",
+                    dry_run=True,
+                    candidate_budget=1,
+                    retry_budget=0,
+                    concurrency=1,
+                    total_budget=1,
+                    search_budget=1,
+                ),
+                response_handler=handler,
+                fetcher=generic_fetcher,
+                vision=vision,
+            )
+        )
+
+    assert result.ready_ids == ()
+    assert result.quarantined_ids == ("g051",)
+    assert result.item_outcomes[0].reason_code == "candidate_budget_exhausted"
+    assert [request.url.path for request in requests] == [
+        "/v1/images/",
+        _RULING_F_THUMB_PATH,
+    ]
+    assert generic_fetcher.urls == []
+    assert vision.calls == []
+    public_surface = result.model_dump_json() + caplog.text
+    assert secret not in public_surface
+    assert "evil.example" not in public_surface
+
+
+def test_trusted_thumbnail_timeout_is_content_free_and_does_not_fall_back_to_generic_fetch(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    vision_module: ModuleType,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    private_error = "upstream thumbnail timeout with private receipt"
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/v1/images/":
+            return httpx.Response(
+                200,
+                json=_openverse_response(_openverse_candidate(id=_RULING_F_UUID)),
+            )
+        raise httpx.ReadTimeout(private_error, request=request)
+
+    generic_fetcher = Task4SafeFetcher(licensed_assets.ImageFetchError("unsafe_address"))
+    vision = Task4Vision(_task4_assessment(vision_module))
+    with caplog.at_level(logging.INFO):
+        result = asyncio.run(
+            _run_task4_ingestion(
+                cli,
+                config=_task4_config(
+                    cli,
+                    garment_file=_write_task4_garment_file(tmp_path, "g051"),
+                    state_dir=tmp_path / "state",
+                    dry_run=True,
+                    candidate_budget=1,
+                    retry_budget=0,
+                    concurrency=1,
+                    total_budget=1,
+                    search_budget=1,
+                ),
+                response_handler=handler,
+                fetcher=generic_fetcher,
+                vision=vision,
+            )
+        )
+
+    assert result.quarantined_ids == ("g051",)
+    assert result.item_outcomes[0].reason_code == "candidate_budget_exhausted"
+    assert [request.url.path for request in requests] == [
+        "/v1/images/",
+        _RULING_F_THUMB_PATH,
+    ]
+    assert generic_fetcher.urls == []
+    assert vision.calls == []
+    assert private_error not in result.model_dump_json() + caplog.text
+
+
+def test_generic_fetcher_still_rejects_arbitrary_openverse_thumbnail_host_as_unsafe_address(
+    licensed_assets: ModuleType,
+    tmp_path: Path,
+) -> None:
+    """The trusted exception is not a general api.openverse.org DNS exception."""
+
+    url = f"https://api.openverse.org{_RULING_F_THUMB_PATH}"
+    resolver = ResolverSpy({"api.openverse.org": ("10.0.0.7",)})
+    transport = TransportSpy({})
+    error = _run_fetch_failure(
+        module=licensed_assets,
+        url=url,
+        resolver=resolver,
+        transport=transport,
+        ready_dir=tmp_path / "ready",
+        quarantine_dir=tmp_path / "quarantine",
+    )
+
+    _assert_content_free_error(licensed_assets, error, "unsafe_address", url)
+    assert resolver.calls == [("api.openverse.org", 443)]
+    assert transport.calls == []
