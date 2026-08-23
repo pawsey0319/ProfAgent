@@ -174,6 +174,29 @@ def _canonical_attribution(code: str, creator: str | None) -> str:
     return f"{creator} / {label}" if creator is not None else label
 
 
+def public_license_from_source(
+    source: "LicensedSourceReceipt",
+) -> "PublicLicenseReceipt":
+    """Derive displayable license truth from a validated source receipt."""
+    if source.license_code in _PUBLIC_LICENSES:
+        name, url, _ = _CANONICAL_LICENSES[source.license_code]
+        return PublicLicenseReceipt(
+            code=source.license_code,
+            name=name,
+            url=url,
+            author=source.creator,
+            attribution=source.attribution,
+        )
+    controlled = _CONTROLLED_NONPUBLIC[source.license_code]
+    return PublicLicenseReceipt(
+        code=source.license_code,
+        name=controlled,
+        url=None,
+        author=None,
+        attribution=controlled,
+    )
+
+
 def _bounded_identity(value: str | None) -> str | None:
     checked = _nonblank(value)
     if checked is not None and (
@@ -522,6 +545,18 @@ def _crop_catalog_image(
                 if image.size != (fetched_image.width, fetched_image.height):
                     raise ImageFetchError("decode_failed")
                 left, top, right, bottom = object_region
+                if (
+                    object_region == (0.0, 0.0, 1.0, 1.0)
+                    and fetched_image.processed_mime_type == "image/png"
+                ):
+                    return CatalogCroppedImage(
+                        input_sha256=fetched_image.processed_sha256,
+                        processed_sha256=fetched_image.processed_sha256,
+                        processed_bytes=fetched_image.processed_bytes,
+                        width=fetched_image.width,
+                        height=fetched_image.height,
+                        object_region=object_region,
+                    )
                 crop_box = (
                     math.floor(left * fetched_image.width),
                     math.floor(top * fetched_image.height),
@@ -574,7 +609,11 @@ def _crop_catalog_image(
         raise ImageFetchError("decode_failed") from None
 
 
-def _local_catalog_quarantine_trace(provider_trace: dict[str, Any]) -> dict[str, Any]:
+def _local_catalog_quarantine_trace(
+    provider_trace: dict[str, Any],
+    *,
+    reason_code: str = "input_rejected",
+) -> dict[str, Any]:
     allowed_models = {"grok-4.6-high", "grok-4.6-build"}
     resolved_model = provider_trace.get("resolved_model")
     model_verified = (
@@ -601,7 +640,7 @@ def _local_catalog_quarantine_trace(provider_trace: dict[str, Any]) -> dict[str,
         "component": "vision",
         "operation": "catalog_asset_assessment",
         "status": "quarantined",
-        "reason_code": "input_rejected",
+        "reason_code": reason_code,
         "requested_model": "grok4.6",
         "transport_model": "grok-4.6-high",
         "resolved_model": resolved_model if model_verified else None,
@@ -627,13 +666,39 @@ async def assess_and_crop_catalog_asset(
         mime_type=fetched_image.processed_mime_type,
         allowed_slot=allowed_slot,
     )
+    from .vision import CatalogAssetAssessment, VisionUnavailable
+
+    if not isinstance(provider_trace, dict):
+        provider_trace = {}
+    reason_code: str | None = None
+    if not isinstance(assessment, CatalogAssetAssessment):
+        reason_code = "response_schema_invalid"
+    elif assessment.slot != allowed_slot:
+        reason_code = "slot_mismatch"
+    elif assessment.audience not in {
+        "womenswear",
+        "unisex_womenswear_compatible",
+    }:
+        reason_code = "audience_rejected"
+    elif assessment.contains_identifiable_person:
+        reason_code = "identifiable_person"
+    elif assessment.confidence_band == "low":
+        reason_code = "low_confidence"
+    elif assessment.quality_issues:
+        reason_code = "quality_rejected"
+    if reason_code is not None:
+        raise VisionUnavailable(
+            "catalog_asset_quarantined",
+            _local_catalog_quarantine_trace(
+                provider_trace,
+                reason_code=reason_code,
+            ),
+        ) from None
     try:
         cropped = _crop_catalog_image(
             fetched_image, assessment.object_region
         )
     except ImageFetchError:
-        from .vision import VisionUnavailable
-
         raise VisionUnavailable(
             "catalog_asset_quarantined",
             _local_catalog_quarantine_trace(provider_trace),
@@ -741,6 +806,68 @@ class SafeImageFetcher:
         # This raise deliberately occurs outside every except block so an
         # upstream exception cannot survive as cause or context.
         raise ImageFetchError(reason)
+
+    async def load_user_owned(
+        self,
+        path: Path,
+        expected_sha256: str | None = None,
+    ) -> FetchedImage:
+        """Safely decode one explicit local user-owned source without networking."""
+        reason: ImageFetchReasonCode | None = None
+        try:
+            return await asyncio.to_thread(
+                self._load_user_owned_sync,
+                Path(path),
+                expected_sha256,
+            )
+        except asyncio.CancelledError:
+            raise
+        except ImageFetchError as exc:
+            reason = exc.reason_code
+        except Exception:
+            reason = "decode_failed"
+        assert reason is not None
+        raise ImageFetchError(reason)
+
+    def _load_user_owned_sync(
+        self,
+        path: Path,
+        expected_sha256: str | None,
+    ) -> FetchedImage:
+        suffix_to_mime = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".webp": "image/webp",
+        }
+        source_mime = suffix_to_mime.get(path.suffix.lower())
+        if source_mime is None or path.is_symlink() or not path.is_file():
+            raise ImageFetchError("decode_failed")
+        try:
+            if path.stat().st_size > self._config.max_response_bytes:
+                raise ImageFetchError("response_too_large")
+            with path.open("rb") as source:
+                original = source.read(self._config.max_response_bytes + 1)
+        except ImageFetchError:
+            raise
+        except OSError:
+            raise ImageFetchError("decode_failed") from None
+        if len(original) > self._config.max_response_bytes:
+            raise ImageFetchError("response_too_large")
+        original_hash = hashlib.sha256(original).hexdigest()
+        if expected_sha256 is not None and original_hash != expected_sha256:
+            raise ImageFetchError("hash_mismatch")
+        processed, width, height = self._decode_and_normalize(original, source_mime)
+        return FetchedImage(
+            source_mime_type=source_mime,
+            processed_mime_type="image/png",
+            original_sha256=original_hash,
+            processed_sha256=hashlib.sha256(processed).hexdigest(),
+            original_bytes=original,
+            processed_bytes=processed,
+            width=width,
+            height=height,
+        )
 
     async def _fetch_inner(
         self, url: str, expected_sha256: str | None
@@ -1133,4 +1260,5 @@ __all__ = [
     "SafeImageFetcher",
     "SourceKind",
     "assess_and_crop_catalog_asset",
+    "public_license_from_source",
 ]
