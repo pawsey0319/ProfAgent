@@ -58,6 +58,7 @@ MAX_CANDIDATE_BUDGET = 10
 MAX_RETRY_BUDGET = 3
 MAX_CONCURRENCY = 8
 MAX_TOTAL_BUDGET = 70
+MAX_SEARCH_BUDGET = 3
 
 _PUBLIC_LICENSE_CODES = frozenset(
     {"CC0", "PDM", "CC-BY-2.0", "CC-BY-3.0", "CC-BY-4.0"}
@@ -84,7 +85,6 @@ _CANONICAL_OPENVERSE_LICENSES: dict[tuple[str, str], tuple[LicenseCode, str]] = 
         "https://creativecommons.org/licenses/by/4.0/",
     ),
 }
-_RETRIABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 _HASH_CHARS = frozenset("0123456789abcdef")
 _MANIFEST_ITEM_KEYS = frozenset(
     {
@@ -124,6 +124,12 @@ _RECEIPT_KEYS = frozenset(
 _CONTROLLED_FAILURE_REASONS = frozenset(
     {
         "candidate_budget_exhausted",
+        "no_results",
+        "provider_rate_limited",
+        "provider_auth_rejected",
+        "provider_unavailable",
+        "provider_schema_invalid",
+        "provider_response_too_large",
         "source_takedown",
         "user_owned_loader_unavailable",
         "user_owned_source_missing",
@@ -150,6 +156,8 @@ class IngestionConfig(BaseModel):
     retry_budget: StrictInt = Field(default=2, ge=0, le=MAX_RETRY_BUDGET)
     concurrency: StrictInt = Field(default=3, gt=0, le=MAX_CONCURRENCY)
     total_budget: StrictInt = Field(default=70, gt=0, le=MAX_TOTAL_BUDGET)
+    search_budget: StrictInt = Field(default=3, gt=0, le=MAX_SEARCH_BUDGET)
+    diagnostic_canary: bool = False
 
     @field_validator("license_allowlist")
     @classmethod
@@ -171,6 +179,16 @@ class IngestionConfig(BaseModel):
             raise ValueError("invalid_user_owned_inputs")
         if len({self.manifest_path, self.sources_path}) != 2:
             raise ValueError("state_paths_must_be_distinct")
+        if self.diagnostic_canary and (
+            self.provider != "openverse"
+            or not self.dry_run
+            or self.resume
+            or self.candidate_budget > 3
+            or self.retry_budget != 0
+            or self.concurrency != 1
+            or self.total_budget != 1
+        ):
+            raise ValueError("invalid_diagnostic_canary_bounds")
         return self
 
 
@@ -184,6 +202,8 @@ class IngestionResult(BaseModel):
     remaining_ids: tuple[str, ...]
     api_attempts: int = Field(ge=0)
     candidate_attempts: int = Field(ge=0)
+    vision_call_count: int = Field(default=0, ge=0)
+    vision_model_provenance: str | None = Field(default=None, max_length=100)
     manifest_path: Path
 
 
@@ -234,10 +254,35 @@ class _AttemptOutcome:
     existing_item: dict[str, Any] | None = None
 
 
+_SearchReason = Literal[
+    "no_results",
+    "provider_rate_limited",
+    "provider_auth_rejected",
+    "provider_unavailable",
+    "provider_schema_invalid",
+    "provider_response_too_large",
+]
+
+
+@dataclass(frozen=True, repr=False)
+class _SearchOutcome:
+    candidates: tuple[Any, ...]
+    reason_code: _SearchReason | None
+
+    def __repr__(self) -> str:
+        return (
+            "_SearchOutcome("
+            f"candidate_count={len(self.candidates)}, "
+            f"reason_code={self.reason_code!r})"
+        )
+
+
 @dataclass
 class _Counters:
     api_attempts: int = 0
     candidate_attempts: int = 0
+    vision_call_count: int = 0
+    vision_model_provenance: str | None = None
 
 
 def _load_json(path: Path, *, limit: int) -> Any:
@@ -490,14 +535,68 @@ def _parse_openverse_response(payload_bytes: bytes) -> tuple[Any, ...]:
     return tuple(payload["results"])
 
 
+_QUERY_PRODUCTS: dict[str, tuple[str, str]] = {
+    "top": ("blouse", "衬衫"),
+    "bottom": ("trousers", "裤装"),
+    "dress": ("dress", "连衣裙"),
+    "outer": ("jacket", "外套"),
+    "shoes": ("shoes", "鞋"),
+    "bag": ("handbag", "手提包"),
+    "accessory": ("accessory", "配饰"),
+}
+_QUERY_COLORS_ZH: dict[str, str] = {
+    "beige": "米色",
+    "black": "黑色",
+    "blue": "蓝色",
+    "brown": "棕色",
+    "gray": "灰色",
+    "green": "绿色",
+    "khaki": "卡其色",
+    "navy": "藏青色",
+    "orange": "橙色",
+    "pink": "粉色",
+    "purple": "紫色",
+    "red": "红色",
+    "white": "白色",
+    "yellow": "黄色",
+}
+_QUERY_MATERIALS_ZH: dict[str, str] = {
+    "cotton": "棉质",
+    "knit": "针织",
+    "denim": "牛仔",
+    "wool": "羊毛",
+    "linen": "亚麻",
+    "leather": "皮革",
+    "synthetic": "合成材质",
+}
+
+
+def _frozen_openverse_query_plan(garment: Garment) -> tuple[str, ...]:
+    try:
+        product_en, product_zh = _QUERY_PRODUCTS[garment.slot]
+        color_zh = _QUERY_COLORS_ZH[garment.color]
+        material_zh = _QUERY_MATERIALS_ZH[garment.material]
+    except KeyError:
+        raise ValueError("unsupported_query_authority") from None
+    english = f"{garment.color} {garment.material} {product_en}"
+    return (
+        f"{english} product flat lay",
+        f"{english} object flat lay",
+        (
+            f"{english} flat lay "
+            f"{color_zh} {material_zh} {product_zh}"
+        ),
+    )
+
+
 async def _search_openverse(
     *,
     api_client: httpx.AsyncClient,
     garment: Garment,
     config: IngestionConfig,
     counters: _Counters,
-) -> tuple[Any, ...]:
-    query = f"{garment.name} {garment.slot} {garment.search_text}"[:500]
+) -> _SearchOutcome:
+    queries = _frozen_openverse_query_plan(garment)
     provider_licenses = (
         {
             "CC0": "cc0",
@@ -509,53 +608,79 @@ async def _search_openverse(
         for code in config.license_allowlist
     )
     license_param = ",".join(dict.fromkeys(provider_licenses))
-    for attempt in range(config.retry_budget + 1):
-        counters.api_attempts += 1
-        try:
-            async with api_client.stream(
-                "GET",
-                "",
-                params={
-                    "q": query,
-                    "license": license_param,
-                    "page_size": config.candidate_budget,
-                },
-                follow_redirects=False,
-            ) as response:
-                _validate_official_response(response)
-                if response.status_code in _RETRIABLE_STATUS_CODES:
-                    retriable = True
-                    payload_bytes = b""
-                elif response.status_code != 200:
-                    return ()
-                else:
-                    retriable = False
-                    content_type = response.headers.get("content-type", "")
-                    if content_type.split(";", 1)[0].strip().lower() != "application/json":
-                        raise ValueError("provider_response_invalid")
-                    chunks: list[bytes] = []
-                    total = 0
-                    async for chunk in response.aiter_bytes():
-                        total += len(chunk)
-                        if total > OPENVERSE_RESPONSE_LIMIT:
-                            raise ValueError("provider_response_too_large")
-                        chunks.append(chunk)
-                    payload_bytes = b"".join(chunks)
-        except (httpx.HTTPError, ValueError):
-            if attempt < config.retry_budget:
+    searches_used = 0
+    last_reason: _SearchReason = "no_results"
+    for query in queries:
+        retries_used = 0
+        while searches_used < config.search_budget:
+            searches_used += 1
+            counters.api_attempts += 1
+            reason: _SearchReason | None = None
+            payload_bytes = b""
+            try:
+                stream_context = api_client.stream(
+                    "GET",
+                    "",
+                    params={
+                        "q": query,
+                        "license": license_param,
+                        "page_size": config.candidate_budget,
+                    },
+                    follow_redirects=False,
+                )
+                async with stream_context as response:
+                    _validate_official_response(response)
+                    if response.status_code == 429:
+                        reason = "provider_rate_limited"
+                    elif response.status_code in {401, 403}:
+                        reason = "provider_auth_rejected"
+                    elif response.status_code != 200:
+                        reason = "provider_unavailable"
+                    else:
+                        content_type = response.headers.get("content-type", "")
+                        if (
+                            content_type.split(";", 1)[0].strip().lower()
+                            != "application/json"
+                        ):
+                            reason = "provider_schema_invalid"
+                        else:
+                            chunks: list[bytes] = []
+                            total = 0
+                            async for chunk in response.aiter_bytes():
+                                total += len(chunk)
+                                if total > OPENVERSE_RESPONSE_LIMIT:
+                                    reason = "provider_response_too_large"
+                                    break
+                                chunks.append(chunk)
+                            if reason is None:
+                                payload_bytes = b"".join(chunks)
+            except httpx.HTTPError:
+                reason = "provider_unavailable"
+
+            if reason is None:
+                try:
+                    candidates = _parse_openverse_response(payload_bytes)
+                except ValueError:
+                    return _SearchOutcome((), "provider_schema_invalid")
+                if candidates:
+                    return _SearchOutcome(candidates, None)
+                last_reason = "no_results"
+                break
+
+            last_reason = reason
+            if (
+                reason in {"provider_rate_limited", "provider_unavailable"}
+                and retries_used < config.retry_budget
+                and searches_used < config.search_budget
+            ):
+                retries_used += 1
                 await asyncio.sleep(0)
                 continue
-            return ()
-        if retriable:
-            if attempt < config.retry_budget:
-                await asyncio.sleep(0)
-                continue
-            return ()
-        try:
-            return _parse_openverse_response(payload_bytes)
-        except ValueError:
-            return ()
-    return ()
+            return _SearchOutcome((), reason)
+
+        if searches_used >= config.search_budget:
+            break
+    return _SearchOutcome((), last_reason)
 
 
 def _is_sha256(value: Any) -> bool:
@@ -1023,6 +1148,24 @@ def _is_same_source_takedown(
     )
 
 
+def _record_vision_model_provenance(
+    counters: _Counters,
+    source: Any,
+) -> None:
+    value = (
+        source.get("resolved_model")
+        if isinstance(source, dict)
+        else getattr(source, "model_provenance", None)
+    )
+    if (
+        isinstance(value, str)
+        and value
+        and len(value) <= 100
+        and all(char.isalnum() or char in "-._:/" for char in value)
+    ):
+        counters.vision_model_provenance = value
+
+
 async def _attempt_openverse_garment(
     *,
     garment: Garment,
@@ -1033,13 +1176,20 @@ async def _attempt_openverse_garment(
     existing_item: dict[str, Any] | None,
     counters: _Counters,
 ) -> _AttemptOutcome:
-    raw_candidates = await _search_openverse(
+    search_outcome = await _search_openverse(
         api_client=api_client,
         garment=garment,
         config=config,
         counters=counters,
     )
-    for raw in raw_candidates[: config.candidate_budget]:
+    if not search_outcome.candidates:
+        return _AttemptOutcome(
+            garment=garment,
+            status="quarantined",
+            failure_reason=search_outcome.reason_code or "provider_unavailable",
+            existing_item=existing_item,
+        )
+    for raw in search_outcome.candidates[: config.candidate_budget]:
         counters.candidate_attempts += 1
         try:
             source = _normalize_openverse_candidate(
@@ -1070,14 +1220,19 @@ async def _attempt_openverse_garment(
         try:
             assert source.image_url is not None
             fetched = await safe_fetcher.fetch(source.image_url)
-            cropped, _, _ = await assess_and_crop_catalog_asset(
+            counters.vision_call_count += 1
+            _record_vision_model_provenance(counters, vision)
+            cropped, _, vision_trace = await assess_and_crop_catalog_asset(
                 vision=vision,
                 fetched_image=fetched,
                 allowed_slot=garment.slot,
             )
+            _record_vision_model_provenance(counters, vision_trace)
         except asyncio.CancelledError:
             raise
-        except (ImageFetchError, VisionUnavailable, ValueError, TypeError):
+        except (ImageFetchError, VisionUnavailable, ValueError, TypeError) as error:
+            if isinstance(error, VisionUnavailable):
+                _record_vision_model_provenance(counters, error.provider_trace)
             continue
         return _AttemptOutcome(
             garment=garment,
@@ -1213,14 +1368,19 @@ async def _attempt_user_owned_garment(
                 source=source,
                 existing_item=existing_item,
             )
-        cropped, _, _ = await assess_and_crop_catalog_asset(
+        counters.vision_call_count += 1
+        _record_vision_model_provenance(counters, vision)
+        cropped, _, vision_trace = await assess_and_crop_catalog_asset(
             vision=vision,
             fetched_image=fetched,
             allowed_slot=garment.slot,
         )
+        _record_vision_model_provenance(counters, vision_trace)
     except asyncio.CancelledError:
         raise
-    except (ImageFetchError, VisionUnavailable, ValueError, TypeError):
+    except (ImageFetchError, VisionUnavailable, ValueError, TypeError) as error:
+        if isinstance(error, VisionUnavailable):
+            _record_vision_model_provenance(counters, error.provider_trace)
         return _AttemptOutcome(
             garment=garment,
             status="quarantined",
@@ -1499,6 +1659,10 @@ async def run_ingestion(
 ) -> IngestionResult:
     """Run bounded ingestion with all network and Vision dependencies injected."""
     garments = _controlled_garments(config.garment_file)
+    if config.diagnostic_canary and tuple(
+        garment.garment_id for garment in garments
+    ) != ("g051",):
+        raise ValueError("invalid_diagnostic_canary_garment")
     if config.provider == "openverse":
         if api_client is None:
             raise ValueError("openverse_client_required")
@@ -1651,6 +1815,8 @@ async def run_ingestion(
         remaining_ids=remaining_ids,
         api_attempts=counters.api_attempts,
         candidate_attempts=counters.candidate_attempts,
+        vision_call_count=counters.vision_call_count,
+        vision_model_provenance=counters.vision_model_provenance,
         manifest_path=config.manifest_path,
     )
 
@@ -1700,6 +1866,7 @@ async def _run_cli(config: IngestionConfig) -> IngestionResult:
         base_url=OPENVERSE_API_BASE,
         timeout=timeout,
         follow_redirects=False,
+        trust_env=False,
         headers={"User-Agent": "ProfAgent-R1-LicensedAssetIngestor/1.0"},
     ) as api_client:
         return await run_ingestion(config, api_client, fetcher, vision)
