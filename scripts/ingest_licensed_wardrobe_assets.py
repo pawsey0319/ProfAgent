@@ -533,7 +533,10 @@ def _normalize_openverse_candidate(
     source_url = _validate_https_url(
         raw["foreign_landing_url"], reason="source_url_invalid"
     )
-    image_url = _validate_https_url(raw["url"], reason="image_url_invalid")
+    # The provider's raw image URL is required metadata, but it is not a trusted
+    # byte endpoint and must never become fetch provenance or receipt identity.
+    _validate_https_url(raw["url"], reason="image_url_invalid")
+    image_url = _official_thumbnail_url(provider_item_id)
     attribution_label = {
         "CC0": "CC0 1.0",
         "PDM": "Public Domain Mark 1.0",
@@ -559,14 +562,18 @@ def _normalize_openverse_candidate(
     )
 
 
-def _canonical_openverse_uuid(value: Any) -> str:
-    provider_item_id = _bounded_text(value, reason="source_metadata_invalid", maximum=36)
+def _canonical_openverse_uuid(
+    value: Any,
+    *,
+    reason: str = "source_metadata_invalid",
+) -> str:
+    provider_item_id = _bounded_text(value, reason=reason, maximum=36)
     try:
         parsed = uuid.UUID(provider_item_id)
     except (AttributeError, ValueError):
-        raise ValueError("source_metadata_invalid") from None
+        raise ValueError(reason) from None
     if str(parsed) != provider_item_id:
-        raise ValueError("source_metadata_invalid")
+        raise ValueError(reason)
     return provider_item_id
 
 
@@ -599,6 +606,15 @@ def _validate_official_response(response: httpx.Response) -> None:
 def _official_thumbnail_path(provider_item_id: str) -> str:
     canonical_id = _canonical_openverse_uuid(provider_item_id)
     return f"{canonical_id}/thumb/"
+
+
+def _official_thumbnail_url(
+    provider_item_id: str,
+    *,
+    reason: str = "source_metadata_invalid",
+) -> str:
+    canonical_id = _canonical_openverse_uuid(provider_item_id, reason=reason)
+    return f"{OPENVERSE_API_BASE}{canonical_id}/thumb/"
 
 
 def _validate_official_thumbnail_response(
@@ -953,6 +969,9 @@ def _validated_receipt(
     if provider == "openverse":
         if processing != "safe_decode_normalize_then_server_crop":
             raise ValueError("invalid_source_receipt")
+        provider_item_id = _canonical_openverse_uuid(
+            provider_item_id, reason="invalid_source_receipt"
+        )
         _bounded_text(raw.get("creator"), reason="invalid_source_receipt", maximum=200)
         _validate_https_url(raw.get("source_url"), reason="invalid_source_receipt")
         canonical = _CANONICAL_OPENVERSE_LICENSES.get(
@@ -966,9 +985,12 @@ def _validated_receipt(
             or expected_sha256 is not None
         ):
             raise ValueError("invalid_source_receipt")
-        image_url = _validate_https_url(
-            image_url, reason="invalid_source_receipt"
+        canonical_image_url = _official_thumbnail_url(
+            provider_item_id, reason="invalid_source_receipt"
         )
+        if image_url != canonical_image_url:
+            raise ValueError("invalid_source_receipt")
+        image_url = canonical_image_url
     elif provider == "user_upload":
         if (
             processing != "safe_decode_normalize_then_server_crop"

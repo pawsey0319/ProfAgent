@@ -3412,7 +3412,9 @@ def test_ingestion_accepts_only_complete_machine_readable_openverse_receipts(
     assert receipt["provider"] == "openverse"
     assert receipt["creator"] == "Openverse Creator"
     assert receipt["source_url"] == "https://museum.example/object/1"
-    assert receipt["image_url"] == "https://images.example/object-1.png"
+    assert receipt["image_url"] == (
+        f"https://api.openverse.org/v1/images/{_RULING_F_UUID}/thumb/"
+    )
     assert receipt["license_code"] == "CC-BY-4.0"
     assert receipt["license_url"] == "https://creativecommons.org/licenses/by/4.0/"
     assert fetcher.urls == []
@@ -3678,8 +3680,8 @@ def test_ingestion_source_change_appends_receipt_history_instead_of_overwriting(
         "https://museum.example/object/2",
     ]
     assert [receipt["image_url"] for receipt in item["receipt_history"]] == [
-        "https://images.example/object-1.png",
-        "https://images.example/object-2.png",
+        f"https://api.openverse.org/v1/images/{_RULING_F_UUID}/thumb/",
+        f"https://api.openverse.org/v1/images/{_RULING_F_UUID}/thumb/",
     ]
     source_history = [
         json.loads(line)
@@ -3934,6 +3936,142 @@ def test_ingestion_same_source_takedown_is_preserved_without_fetch_or_vision(
     assert fetcher.urls == []
     assert vision.calls == []
     assert config.manifest_path.read_bytes() == before
+
+
+def test_same_openverse_uuid_with_different_raw_url_cannot_bypass_takedown(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    config = _task4_config(
+        cli,
+        garment_file=_write_task4_garment_file(tmp_path, "g051"),
+        state_dir=tmp_path / "state",
+        resume=True,
+    )
+    first_candidate = _openverse_candidate(
+        image_url="https://images.example/provider-raw-a.png"
+    )
+    first = asyncio.run(
+        _run_task4_ingestion(
+            cli,
+            config=config,
+            response_handler=_official_openverse_handler(
+                _openverse_response(first_candidate)
+            ),
+            fetcher=Task4SafeFetcher(_task4_fetched_image(licensed_assets)),
+            vision=Task4Vision(_task4_assessment(vision_module)),
+        )
+    )
+    assert first.ready_ids == ("g051",)
+    before = _task4_mark_takedown(config.manifest_path)
+    thumbnail_requests: list[httpx.Request] = []
+
+    result = asyncio.run(
+        _run_task4_ingestion(
+            cli,
+            config=config,
+            response_handler=_official_openverse_handler(
+                _openverse_response(
+                    _openverse_candidate(
+                        image_url="https://attacker.example/provider-raw-b.png"
+                    )
+                ),
+                thumbnail_requests=thumbnail_requests,
+            ),
+            fetcher=Task4SafeFetcher(RuntimeError("takedown_must_not_refetch")),
+            vision=Task4Vision(RuntimeError("takedown_must_not_reassess")),
+        )
+    )
+
+    assert result.ready_ids == ()
+    assert result.quarantined_ids == ("g051",)
+    assert result.item_outcomes[0].reason_code == "source_takedown"
+    assert thumbnail_requests == []
+    assert config.manifest_path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("field", "forged_value"),
+    [
+        ("provider_item_id", "123E4567-E89B-12D3-A456-426614174000"),
+        (
+            "image_url",
+            "https://api.openverse.org/v1/images/"
+            "123e4567-e89b-12d3-a456-426614174001/thumb/",
+        ),
+    ],
+    ids=["noncanonical_uuid", "endpoint_uuid_mismatch"],
+)
+def test_preserved_openverse_receipt_requires_canonical_uuid_bound_thumbnail_endpoint(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+    field: str,
+    forged_value: str,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    config = _task4_config(
+        cli,
+        garment_file=_write_task4_garment_file(tmp_path, "g051"),
+        state_dir=tmp_path / "state",
+        resume=True,
+    )
+    asyncio.run(
+        _run_task4_ingestion(
+            cli,
+            config=config,
+            response_handler=_official_openverse_handler(
+                _openverse_response(_openverse_candidate())
+            ),
+            fetcher=Task4SafeFetcher(_task4_fetched_image(licensed_assets)),
+            vision=Task4Vision(_task4_assessment(vision_module)),
+        )
+    )
+
+    manifest = _task4_manifest(config.manifest_path)
+    _task4_manifest_item(manifest, "g051")["receipt_history"][-1][field] = (
+        forged_value
+    )
+    config.manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    source_records = [
+        json.loads(line)
+        for line in config.sources_path.read_text(encoding="utf-8").splitlines()
+    ]
+    source_record = next(
+        record for record in source_records if record["garment_id"] == "g051"
+    )
+    source_record["receipt"][field] = forged_value
+    config.sources_path.write_text(
+        "".join(
+            json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+            for record in source_records
+        ),
+        encoding="utf-8",
+    )
+    provider_calls: list[httpx.Request] = []
+
+    def no_provider_access(request: httpx.Request) -> httpx.Response:
+        provider_calls.append(request)
+        return httpx.Response(500)
+
+    with pytest.raises(ValueError, match="invalid_source_receipt"):
+        asyncio.run(
+            _run_task4_ingestion(
+                cli,
+                config=config,
+                response_handler=no_provider_access,
+                fetcher=Task4SafeFetcher(RuntimeError("must_not_fetch")),
+                vision=Task4Vision(RuntimeError("must_not_assess")),
+            )
+        )
+    assert provider_calls == []
 
 
 def test_ingestion_takedown_allows_separately_provenanced_replacement(
