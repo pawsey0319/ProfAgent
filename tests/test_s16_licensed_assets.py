@@ -3323,6 +3323,12 @@ def _task4_manifest(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _task4_manifest_item(manifest: dict[str, Any], garment_id: str) -> dict[str, Any]:
+    return next(
+        item for item in manifest["items"] if item["garment_id"] == garment_id
+    )
+
+
 def test_ingestion_accepts_only_complete_machine_readable_openverse_receipts(
     licensed_ingestion_cli: ModuleType,
     licensed_assets: ModuleType,
@@ -3354,7 +3360,7 @@ def test_ingestion_accepts_only_complete_machine_readable_openverse_receipts(
     assert result.quarantined_ids == ()
     assert result.remaining_ids == ()
     manifest = _task4_manifest(config.manifest_path)
-    item = manifest["items"][0]
+    item = _task4_manifest_item(manifest, "g051")
     assert {
         "garment_id": item["garment_id"],
         "user_id": item["user_id"],
@@ -3600,7 +3606,10 @@ def test_ingestion_resume_reuses_exact_existing_content_hash_without_new_receipt
     assert second.ready_ids == ("g051",)
     assert second.reused_ids == ("g051",)
     assert after == before
-    assert after["items"][0]["processed_sha256"] == fetched.processed_sha256
+    assert (
+        _task4_manifest_item(after, "g051")["processed_sha256"]
+        == fetched.processed_sha256
+    )
 
 
 def test_ingestion_source_change_appends_receipt_history_instead_of_overwriting(
@@ -3633,7 +3642,9 @@ def test_ingestion_source_change_appends_receipt_history_instead_of_overwriting(
             )
         )
 
-    item = _task4_manifest(state_dir / "wardrobe_assets_v2.json")["items"][0]
+    item = _task4_manifest_item(
+        _task4_manifest(state_dir / "wardrobe_assets_v2.json"), "g051"
+    )
     assert [receipt["source_url"] for receipt in item["receipt_history"]] == [
         "https://museum.example/object/1",
         "https://museum.example/object/2",
@@ -3648,7 +3659,12 @@ def test_ingestion_source_change_appends_receipt_history_instead_of_overwriting(
             encoding="utf-8"
         ).splitlines()
     ]
-    assert [record["receipt"]["source_url"] for record in source_history] == [
+    openverse_history = [
+        record
+        for record in source_history
+        if record["receipt"]["provider"] == "openverse"
+    ]
+    assert [record["receipt"]["source_url"] for record in openverse_history] == [
         "https://museum.example/object/1",
         "https://museum.example/object/2",
     ]
@@ -3693,7 +3709,7 @@ def test_ingestion_failure_never_returns_false_ready_and_reports_exact_ids(
     assert result.remaining_ids == ("g051",)
     if config := getattr(result, "manifest_path", None):
         manifest = _task4_manifest(config)
-        assert all(item["status"] != "ready" for item in manifest["items"])
+        assert _task4_manifest_item(manifest, "g051")["status"] != "ready"
 
 
 def test_ingestion_enforces_candidate_retry_concurrency_and_total_budgets(
@@ -3813,7 +3829,7 @@ def test_ingestion_rejects_unbounded_or_nonpositive_budget_configuration(
 
 def _task4_mark_takedown(manifest_path: Path) -> bytes:
     manifest = _task4_manifest(manifest_path)
-    item = manifest["items"][0]
+    item = _task4_manifest_item(manifest, "g051")
     item["status"] = "takedown"
     item["processed_sha256"] = None
     item["relative_path"] = None
@@ -3919,7 +3935,7 @@ def test_ingestion_takedown_allows_separately_provenanced_replacement(
     )
 
     assert result.ready_ids == ("g051",)
-    item = _task4_manifest(config.manifest_path)["items"][0]
+    item = _task4_manifest_item(_task4_manifest(config.manifest_path), "g051")
     assert item["status"] == "ready"
     assert [receipt["source_url"] for receipt in item["receipt_history"]] == [
         "https://museum.example/object/1",
@@ -3968,7 +3984,7 @@ def test_ingestion_rejects_invalid_prior_manifest_before_provider_access(
         )
     )
     manifest = _task4_manifest(config.manifest_path)
-    item = manifest["items"][0]
+    item = _task4_manifest_item(manifest, "g051")
     if mutation == "unknown_id":
         item["garment_id"] = "g999"
     elif mutation == "wrong_owner":
@@ -4304,3 +4320,112 @@ def test_ingestion_rejects_forged_ai_reference_before_provider_access(
             )
         )
     assert provider_calls == []
+
+
+def test_ingestion_blank_state_composes_50_verified_ai_references_and_mock_extension(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    config = _task4_config(
+        licensed_ingestion_cli,
+        garment_file=_write_task4_garment_file(tmp_path, "g051"),
+        state_dir=tmp_path / "state",
+    )
+
+    result = asyncio.run(
+        _run_task4_ingestion(
+            licensed_ingestion_cli,
+            config=config,
+            response_handler=_official_openverse_handler(
+                _openverse_response(_openverse_candidate())
+            ),
+            fetcher=Task4SafeFetcher(_task4_fetched_image(licensed_assets)),
+            vision=Task4Vision(_task4_assessment(vision_module)),
+        )
+    )
+
+    assert result.ready_ids == ("g051",)
+    items = _task4_manifest(config.manifest_path)["items"]
+    assert len(items) == 51
+    ai_items = [
+        item for item in items if item["source_kind"] == "ai_generated_reference"
+    ]
+    assert [item["garment_id"] for item in ai_items] == [
+        f"g{number:03d}" for number in range(1, 51)
+    ]
+    assert all(item["status"] == "ready" for item in ai_items)
+    assert all(item["license"]["code"] == "ai-generated" for item in ai_items)
+    assert all(
+        item["original_sha256"]
+        == item["processed_sha256"]
+        == item["receipt_history"][-1]["expected_sha256"]
+        for item in ai_items
+    )
+    assert all(
+        item["receipt_history"][-1]["provider"] == "cpa_generated"
+        for item in ai_items
+    )
+    source_records = [
+        json.loads(line)
+        for line in config.sources_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(source_records) == 51
+    assert sum(
+        record["receipt"]["provider"] == "cpa_generated"
+        for record in source_records
+    ) == 50
+    extension = next(item for item in items if item["garment_id"] == "g051")
+    assert extension["source_kind"] == "licensed_photo"
+    assert extension["status"] == "ready"
+
+
+def test_ingestion_blank_state_rejects_mutated_v1_reference_before_provider_access(
+    licensed_ingestion_cli: ModuleType,
+    licensed_assets: ModuleType,
+    vision_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    root = Path(__file__).parents[1]
+    v1_manifest = json.loads(
+        (root / "data" / "manifests" / "wardrobe_generated_v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    v1_manifest["items"][-1]["sha256"] = "0" * 64
+    mutated_manifest = tmp_path / "mutated-wardrobe-generated-v1.json"
+    mutated_manifest.write_text(
+        json.dumps(v1_manifest, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "AI_REFERENCE_MANIFEST", mutated_manifest)
+    cli._verified_ai_reference.cache_clear()
+    provider_calls: list[httpx.Request] = []
+
+    def no_provider_access(request: httpx.Request) -> httpx.Response:
+        provider_calls.append(request)
+        return httpx.Response(500)
+
+    config = _task4_config(
+        cli,
+        garment_file=_write_task4_garment_file(tmp_path, "g051"),
+        state_dir=tmp_path / "state",
+    )
+    with pytest.raises(ValueError):
+        asyncio.run(
+            _run_task4_ingestion(
+                cli,
+                config=config,
+                response_handler=no_provider_access,
+                fetcher=Task4SafeFetcher(RuntimeError("must_not_fetch")),
+                vision=Task4Vision(RuntimeError("must_not_assess")),
+            )
+        )
+
+    assert provider_calls == []
+    assert not config.manifest_path.exists()
+    assert not config.sources_path.exists()
+    assert not config.asset_directory.exists()

@@ -772,6 +772,14 @@ def _validate_manifest_item(
         "ai_generated_reference",
     }:
         raise ValueError("invalid_manifest_source_kind")
+    if (
+        truth.data_version == "fixtures_v1.0"
+        and source_kind != "ai_generated_reference"
+    ) or (
+        truth.data_version == "fixtures_s16_womenswear_v1"
+        and source_kind == "ai_generated_reference"
+    ):
+        raise ValueError("manifest_source_kind_mismatch")
     status = raw.get("status")
     if status not in {"ready", "missing", "failed", "quarantined", "takedown"}:
         raise ValueError("invalid_manifest_status")
@@ -1376,6 +1384,113 @@ def _upsert_items(
     }
 
 
+def _ai_reference_manifest_state(
+    garment: Garment,
+    reference: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    sha256 = reference["sha256"]
+    imported_at = reference["provenance_normalized_at"]
+    source_receipt = LicensedSourceReceipt(
+        provider="cpa_generated",
+        source_url=None,
+        creator=None,
+        license_code="ai-generated",
+        license_url=None,
+        attribution="AI 生成参考",
+        imported_at=_parse_imported_at(imported_at),
+    )
+    source = _NormalizedSource(
+        provider_item_id=garment.garment_id,
+        source_receipt=source_receipt,
+        image_url=None,
+        provider_license="ai-generated",
+        provider_license_version=WARDROBE_GENERATED_ASSET_VERSION,
+        source_ref=(
+            "data/manifests/wardrobe_generated_v1.json"
+            f"#{garment.garment_id}"
+        ),
+        expected_sha256=sha256,
+    )
+    receipt = {
+        **source.identity(),
+        "imported_at": imported_at,
+        "original_sha256": sha256,
+        "processed_sha256": sha256,
+        "processing": "verified_s12r_ai_reference_passthrough",
+    }
+    item = {
+        "garment_id": garment.garment_id,
+        "user_id": garment.user_id,
+        "slot": garment.slot,
+        "audience": garment.audience,
+        "source_kind": "ai_generated_reference",
+        "status": "ready",
+        "original_sha256": sha256,
+        "processed_sha256": sha256,
+        "relative_path": reference["relative_path"],
+        "license": public_license_from_source(source_receipt).model_dump(mode="json"),
+        "receipt_history": [receipt],
+    }
+    return item, {"garment_id": garment.garment_id, "receipt": receipt}
+
+
+def _compose_verified_ai_references(
+    *,
+    manifest: dict[str, Any],
+    source_history: bytes,
+    durable_receipts: frozenset[tuple[str, str]],
+    authoritative: dict[str, Garment],
+    asset_directory: Path,
+) -> tuple[dict[str, Any], bytes, frozenset[tuple[str, str]]]:
+    base_garments = tuple(
+        sorted(
+            (
+                garment
+                for garment in authoritative.values()
+                if garment.data_version == "fixtures_v1.0"
+                and garment.source_id == "fixtures"
+            ),
+            key=lambda garment: garment.garment_id,
+        )
+    )
+    expected_ids = tuple(f"g{index:03d}" for index in range(1, 51))
+    if tuple(garment.garment_id for garment in base_garments) != expected_ids:
+        raise ValueError("invalid_ai_reference_authority")
+
+    existing_by_id = {item["garment_id"]: item for item in manifest["items"]}
+    replacements: dict[str, dict[str, Any]] = {}
+    source_records: list[dict[str, Any]] = []
+    for garment in base_garments:
+        reference = _verified_ai_reference(garment.garment_id)
+        if garment.garment_id in existing_by_id:
+            continue
+        item, source_record = _ai_reference_manifest_state(garment, reference)
+        receipt_fingerprint = json.dumps(
+            source_record["receipt"],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        replacements[garment.garment_id] = item
+        if (garment.garment_id, receipt_fingerprint) not in durable_receipts:
+            source_records.append(source_record)
+
+    composed_history, composed_receipts = _prepare_source_history(
+        source_history,
+        durable_receipts,
+        source_records,
+        authoritative=authoritative,
+    )
+    composed_manifest = _upsert_items(manifest, replacements)
+    _validate_manifest_payload(
+        composed_manifest,
+        authoritative=authoritative,
+        asset_directory=asset_directory,
+        durable_receipts=composed_receipts,
+    )
+    return composed_manifest, composed_history, composed_receipts
+
+
 async def run_ingestion(
     config: IngestionConfig,
     api_client: httpx.AsyncClient | None,
@@ -1391,19 +1506,29 @@ async def run_ingestion(
 
     authoritative = _authoritative_garments()
     if config.dry_run:
-        source_history = b""
+        persisted_source_history = source_history = b""
         durable_receipts: frozenset[tuple[str, str]] = frozenset()
-        manifest = {"manifest_version": "wardrobe_assets_v2", "items": []}
+        persisted_manifest = manifest = {
+            "manifest_version": "wardrobe_assets_v2",
+            "items": [],
+        }
     else:
-        source_history, durable_receipts = _load_source_history(
+        persisted_source_history, durable_receipts = _load_source_history(
             config.sources_path,
             authoritative=authoritative,
         )
-        manifest = _load_existing_manifest(
+        persisted_manifest = _load_existing_manifest(
             config.manifest_path,
             authoritative=authoritative,
             asset_directory=config.asset_directory,
             durable_receipts=durable_receipts,
+        )
+        manifest, source_history, durable_receipts = _compose_verified_ai_references(
+            manifest=persisted_manifest,
+            source_history=persisted_source_history,
+            durable_receipts=durable_receipts,
+            authoritative=authoritative,
+            asset_directory=config.asset_directory,
         )
     existing_by_id = {
         item["garment_id"]: item
@@ -1513,9 +1638,9 @@ async def run_ingestion(
             if asset_path is None:
                 raise ValueError("unsafe_asset_path")
             _atomic_write_bytes(asset_path, payload)
-        if new_source_history != source_history:
+        if new_source_history != persisted_source_history:
             _atomic_write_bytes(config.sources_path, new_source_history)
-        if new_manifest != manifest:
+        if new_manifest != persisted_manifest:
             _atomic_write_json(config.manifest_path, new_manifest)
 
     return IngestionResult(
