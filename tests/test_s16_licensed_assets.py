@@ -6600,3 +6600,92 @@ def test_valid_existing_diagnostic_is_read_only_and_never_resumes_ready(
     assert not vision.calls
     assert private_png.read_bytes() == png_before
     assert diagnostics.read_bytes() == diagnostic_before
+
+
+@pytest.mark.parametrize("surface", ["image_model_provenance", "vision_model_provenance"])
+def test_existing_diagnostic_model_provenance_rebinds_server_policy_before_provider(
+    licensed_ingestion_cli: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+    surface: str,
+) -> None:
+    """Legal attacker tokens and verified contradictions never survive a new run."""
+
+    cli = licensed_ingestion_cli._load()
+    for index, updates in enumerate((
+        {"requested_model": "attacker-request-model"},
+        {"resolved_model": "attacker-resolved-model", "model_verified": True},
+        {"resolved_model": None, "model_verified": True},
+    )):
+        case_root = tmp_path / f"{surface}-{index}"
+        case_root.mkdir()
+        config, private_png, diagnostics, marker, _, _ = _rii_seed_private_truth(
+            cli, vision_module, case_root
+        )
+        rows = _ri_rows(diagnostics)
+        rows[0][surface].update(updates)
+        diagnostics.write_text(
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+            encoding="utf-8",
+        )
+        durable = (private_png.read_bytes(), diagnostics.read_bytes(),
+                   config.manifest_path.read_bytes(), config.sources_path.read_bytes())
+        provider = RulingGImageProvider(
+            b"", error=AssertionError("provider must not run")
+        )
+        with pytest.raises(ValueError, match="invalid_private_quarantine_diagnostics"):
+            _rg_run(cli, config, provider, Task4Vision(AssertionError("Vision must not run")))
+        assert provider.prompts == [] and not marker.exists()
+        assert durable == (private_png.read_bytes(), diagnostics.read_bytes(),
+                           config.manifest_path.read_bytes(), config.sources_path.read_bytes())
+
+
+@pytest.mark.parametrize(
+    "corruptions",
+    [("prompt_drift", "missing_png", "marker"), ("duplicate_tx", "provenance")],
+)
+def test_cpa_dry_run_validates_all_private_truth_before_provider_without_mutation(
+    licensed_ingestion_cli: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+    corruptions: tuple[str, ...],
+) -> None:
+    """Dry-run is read-only, but it is not an integrity-validation bypass."""
+
+    cli = licensed_ingestion_cli._load()
+    for corruption in corruptions:
+        case_root = tmp_path / corruption
+        case_root.mkdir()
+        config, private_png, diagnostics, marker, _, _ = _rii_seed_private_truth(
+            cli, vision_module, case_root
+        )
+        rows = _ri_rows(diagnostics)
+        if corruption == "prompt_drift":
+            rows[0]["prompt_sha256"] = "f" * 64
+        elif corruption == "missing_png":
+            private_png.unlink()
+        elif corruption == "duplicate_tx":
+            rows.append(dict(rows[0]))
+        elif corruption == "provenance":
+            rows[0]["vision_model_provenance"]["requested_model"] = "attacker-model"
+        else:
+            marker.write_text("{}", encoding="utf-8")
+        if corruption not in {"missing_png", "marker"}:
+            diagnostics.write_text(
+                "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+                encoding="utf-8",
+            )
+        paths = (private_png, diagnostics, config.manifest_path, config.sources_path, marker)
+        durable = tuple((path.exists(), path.read_bytes() if path.exists() else None)
+                        for path in paths)
+        provider = RulingGImageProvider(
+            b"", error=AssertionError("dry-run provider must not run")
+        )
+        with pytest.raises(ValueError, match="private_quarantine"):
+            _rg_run(
+                cli, config.model_copy(update={"dry_run": True}), provider,
+                Task4Vision(AssertionError("Vision must not run")),
+            )
+        assert provider.prompts == []
+        assert durable == tuple((path.exists(), path.read_bytes() if path.exists() else None)
+                                for path in paths)
