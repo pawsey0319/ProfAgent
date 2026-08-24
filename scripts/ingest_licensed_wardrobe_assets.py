@@ -37,6 +37,7 @@ from profagent.licensed_assets import (
     public_license_from_source,
 )
 from profagent.models import Garment
+from profagent.providers import ProviderUnavailable
 from profagent.vision import VisionAdapter, VisionUnavailable
 from profagent.wardrobe_assets import (
     WARDROBE_GENERATED_ASSET_SET,
@@ -64,6 +65,24 @@ MAX_RETRY_BUDGET = 3
 MAX_CONCURRENCY = 8
 MAX_TOTAL_BUDGET = 70
 MAX_SEARCH_BUDGET = 3
+CPA_GENERATED_PROMPT_VERSION = "womenswear_catalog_reference_prompt_v1"
+
+_CPA_GENERATED_RECEIPT_FIELDS = frozenset(
+    {
+        "bound_garment_id",
+        "bound_user_id",
+        "prompt_template_version",
+        "prompt_sha256",
+        "requested_model",
+        "transport_model",
+        "request_model_pinned",
+        "cpa_trace_verified",
+        "model_reported",
+        "resolved_model",
+        "model_verified",
+        "verification_basis",
+    }
+)
 
 IngestionFailureReason = Literal[
     "candidate_budget_exhausted",
@@ -141,6 +160,7 @@ _RECEIPT_KEYS = frozenset(
         "processing",
     }
 )
+_CPA_GENERATED_RECEIPT_KEYS = _RECEIPT_KEYS | _CPA_GENERATED_RECEIPT_FIELDS
 _CONTROLLED_FAILURE_REASONS = frozenset(
     {
         "candidate_budget_exhausted",
@@ -163,7 +183,7 @@ class IngestionConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    provider: Literal["openverse", "user-owned"]
+    provider: Literal["openverse", "user-owned", "cpa-generated"]
     license_allowlist: tuple[LicenseCode, ...] = ()
     garment_file: Path
     source_map: Path | None = None
@@ -195,8 +215,14 @@ class IngestionConfig(BaseModel):
         if self.provider == "openverse":
             if not self.license_allowlist or self.source_map is not None:
                 raise ValueError("invalid_openverse_inputs")
-        elif self.source_map is None or self.license_allowlist:
+        elif self.provider == "user-owned" and (
+            self.source_map is None or self.license_allowlist
+        ):
             raise ValueError("invalid_user_owned_inputs")
+        elif self.provider == "cpa-generated" and (
+            self.source_map is not None or self.license_allowlist
+        ):
+            raise ValueError("invalid_cpa_generated_inputs")
         if len({self.manifest_path, self.sources_path}) != 2:
             raise ValueError("state_paths_must_be_distinct")
         if self.diagnostic_canary and (
@@ -298,6 +324,10 @@ class _AttemptOutcome:
     cropped: CatalogCroppedImage | None = None
     public_license: PublicLicenseReceipt | None = None
     existing_item: dict[str, Any] | None = None
+    receipt_extensions: dict[str, Any] | None = None
+    source_kind: Literal[
+        "licensed_photo", "user_owned_photo", "ai_generated_reference"
+    ] | None = None
 
 
 _SearchReason = Literal[
@@ -937,13 +967,112 @@ def _parse_imported_at(value: Any) -> datetime:
     return imported_at
 
 
+_CPA_PRODUCT_NOUN = {
+    "top": "blouse",
+    "bottom": "trousers",
+    "dress": "dress",
+    "outer": "jacket",
+    "shoes": "shoes",
+    "bag": "handbag",
+    "accessory": "accessory",
+}
+_CPA_COLORS = frozenset(
+    {"beige", "black", "blue", "brown", "gray", "green", "khaki", "navy",
+     "orange", "pink", "purple", "red", "white", "yellow"}
+)
+_CPA_MATERIALS = frozenset(
+    {"cotton", "denim", "knit", "leather", "linen", "synthetic", "wool"}
+)
+_CPA_STYLES = frozenset(
+    {"business", "classic", "formal", "simple", "smart", "soft", "sporty",
+     "street", "vintage"}
+)
+_CPA_OCCASIONS = frozenset(
+    {"commute", "daily", "date", "home", "interview", "meeting", "outdoor",
+     "party", "sports", "travel"}
+)
+
+
+def _cpa_generated_prompt(garment: Garment) -> str:
+    """Build a deterministic prompt from server-owned closed vocabulary only."""
+
+    noun = _CPA_PRODUCT_NOUN.get(garment.slot)
+    styles = tuple(garment.styles)
+    occasions = tuple(garment.occasions)
+    if (
+        noun is None
+        or garment.color not in _CPA_COLORS
+        or garment.material not in _CPA_MATERIALS
+        or not styles
+        or any(value not in _CPA_STYLES for value in styles)
+        or not occasions
+        or any(value not in _CPA_OCCASIONS for value in occasions)
+        or len(styles) > 4
+        or len(occasions) > 4
+    ):
+        raise ValueError("invalid_cpa_generated_prompt_inputs")
+    prompt = (
+        f"Create a clean catalog photograph of a single women's {noun}; "
+        f"color {garment.color}; material {garment.material}; "
+        f"style {', '.join(styles)}; occasion {', '.join(occasions)}. "
+        "Show one isolated item as a flat lay on a neutral background. "
+        "No person, model, mannequin, logo, watermark, writing, or extra item."
+    )
+    if len(prompt) > 700:
+        raise ValueError("invalid_cpa_generated_prompt_inputs")
+    return prompt
+
+
+def _validated_cpa_model_receipt(
+    raw: Any,
+    *,
+    allowlist: tuple[str, ...],
+) -> dict[str, Any]:
+    if not isinstance(raw, dict) or not allowlist or len(set(allowlist)) != len(allowlist):
+        raise ValueError("invalid_cpa_model_receipt")
+    requested = raw.get("requested_model")
+    transport = raw.get("transport_model")
+    if (
+        not isinstance(requested, str)
+        or not isinstance(transport, str)
+        or requested not in allowlist
+        or transport not in allowlist
+        or raw.get("request_model_pinned") is not True
+        or raw.get("cpa_trace_verified") is not True
+        or not isinstance(raw.get("model_reported"), bool)
+        or not isinstance(raw.get("model_verified"), bool)
+    ):
+        raise ValueError("invalid_cpa_model_receipt")
+    if raw["model_reported"]:
+        if (
+            raw.get("resolved_model") != transport
+            or raw.get("model_verified") is not True
+            or raw.get("verification_basis") != "reported_model_exact"
+        ):
+            raise ValueError("invalid_cpa_model_receipt")
+    elif (
+        raw.get("resolved_model") is not None
+        or raw.get("model_verified") is not False
+        or raw.get("verification_basis") != "exact_request_with_cpa_trace"
+    ):
+        raise ValueError("invalid_cpa_model_receipt")
+    return {key: raw.get(key) for key in _CPA_GENERATED_RECEIPT_FIELDS if key not in {
+        "bound_garment_id", "bound_user_id", "prompt_template_version", "prompt_sha256"
+    }}
+
+
 def _validated_receipt(
     raw: Any,
     *,
-    garment_id: str,
+    garment: Garment,
+    image_model_allowlist: tuple[str, ...] = (),
 ) -> tuple[_NormalizedSource, str, str]:
-    if not isinstance(raw, dict) or set(raw) != _RECEIPT_KEYS:
+    if not isinstance(raw, dict) or frozenset(raw) not in {
+        _RECEIPT_KEYS,
+        _CPA_GENERATED_RECEIPT_KEYS,
+    }:
         raise ValueError("invalid_source_receipt")
+    garment_id = garment.garment_id
     processing = raw.get("processing")
     original_sha256 = raw.get("original_sha256")
     processed_sha256 = raw.get("processed_sha256")
@@ -1012,7 +1141,7 @@ def _validated_receipt(
         pure = PurePosixPath(source_ref)
         if pure.is_absolute() or any(part in {"", ".", ".."} for part in pure.parts):
             raise ValueError("invalid_source_receipt")
-    elif provider == "cpa_generated":
+    elif provider == "cpa_generated" and set(raw) == _RECEIPT_KEYS:
         reference = _verified_ai_reference(garment_id)
         reference_sha256 = reference["sha256"]
         expected_source_ref = (
@@ -1036,6 +1165,29 @@ def _validated_receipt(
             or raw.get("imported_at") != reference.get("provenance_normalized_at")
         ):
             raise ValueError("invalid_ai_reference_receipt")
+    elif provider == "cpa_generated":
+        prompt = _cpa_generated_prompt(garment)
+        prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        _validated_cpa_model_receipt(raw, allowlist=image_model_allowlist)
+        if (
+            processing != "safe_decode_normalize_then_server_crop"
+            or provider_item_id != prompt_sha256
+            or provider_license != "ai-generated"
+            or provider_version != CPA_GENERATED_PROMPT_VERSION
+            or raw.get("license_code") != "ai-generated"
+            or raw.get("license_url") is not None
+            or raw.get("creator") is not None
+            or raw.get("source_url") is not None
+            or image_url is not None
+            or source_ref is not None
+            or expected_sha256 != original_sha256
+            or raw.get("attribution") != "AI 生成参考"
+            or raw.get("bound_garment_id") != garment.garment_id
+            or raw.get("bound_user_id") != garment.user_id
+            or raw.get("prompt_template_version") != CPA_GENERATED_PROMPT_VERSION
+            or raw.get("prompt_sha256") != prompt_sha256
+        ):
+            raise ValueError("invalid_cpa_generated_receipt")
     else:
         raise ValueError("unsupported_manifest_provider")
     source_receipt = LicensedSourceReceipt(
@@ -1066,13 +1218,18 @@ def _validate_source_record(
     raw: Any,
     *,
     authoritative: dict[str, Garment],
+    image_model_allowlist: tuple[str, ...] = (),
 ) -> tuple[str, str]:
     if not isinstance(raw, dict) or set(raw) != {"garment_id", "receipt"}:
         raise ValueError("invalid_source_history")
     garment_id = raw.get("garment_id")
     if not isinstance(garment_id, str) or garment_id not in authoritative:
         raise ValueError("invalid_source_history")
-    _validated_receipt(raw.get("receipt"), garment_id=garment_id)
+    _validated_receipt(
+        raw.get("receipt"),
+        garment=authoritative[garment_id],
+        image_model_allowlist=image_model_allowlist,
+    )
     fingerprint = json.dumps(
         raw["receipt"], ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
@@ -1083,6 +1240,7 @@ def _load_source_history(
     path: Path,
     *,
     authoritative: dict[str, Garment],
+    image_model_allowlist: tuple[str, ...] = (),
 ) -> tuple[bytes, frozenset[tuple[str, str]]]:
     if not path.exists():
         return b"", frozenset()
@@ -1099,7 +1257,12 @@ def _load_source_history(
     except (UnicodeError, json.JSONDecodeError, RecursionError):
         raise ValueError("invalid_source_history") from None
     fingerprints = {
-        _validate_source_record(row, authoritative=authoritative) for row in rows
+        _validate_source_record(
+            row,
+            authoritative=authoritative,
+            image_model_allowlist=image_model_allowlist,
+        )
+        for row in rows
     }
     if len(fingerprints) != len(rows):
         raise ValueError("duplicate_source_receipt")
@@ -1113,6 +1276,7 @@ def _validate_manifest_item(
     asset_directory: Path,
     durable_receipts: frozenset[tuple[str, str]],
     staged_assets: dict[str, bytes] | None = None,
+    image_model_allowlist: tuple[str, ...] = (),
 ) -> None:
     if not isinstance(raw, dict):
         raise ValueError("invalid_asset_manifest")
@@ -1137,13 +1301,7 @@ def _validate_manifest_item(
         "ai_generated_reference",
     }:
         raise ValueError("invalid_manifest_source_kind")
-    if (
-        truth.data_version == "fixtures_v1.0"
-        and source_kind != "ai_generated_reference"
-    ) or (
-        truth.data_version == "fixtures_s16_womenswear_v1"
-        and source_kind == "ai_generated_reference"
-    ):
+    if truth.data_version == "fixtures_v1.0" and source_kind != "ai_generated_reference":
         raise ValueError("manifest_source_kind_mismatch")
     status = raw.get("status")
     if status not in {"ready", "missing", "failed", "quarantined", "takedown"}:
@@ -1161,7 +1319,12 @@ def _validate_manifest_item(
     if not isinstance(history, list) or len(history) > 100:
         raise ValueError("invalid_receipt_history")
     validated_history = [
-        _validated_receipt(receipt, garment_id=garment_id) for receipt in history
+        _validated_receipt(
+            receipt,
+            garment=truth,
+            image_model_allowlist=image_model_allowlist,
+        )
+        for receipt in history
     ]
     identities = [entry[0].identity() for entry in validated_history]
     if len({json.dumps(item, sort_keys=True) for item in identities}) != len(identities):
@@ -1209,7 +1372,7 @@ def _validate_manifest_item(
             or latest[2] != processed_sha256
         ):
             raise ValueError("invalid_ready_hash_binding")
-        if source_kind == "ai_generated_reference":
+        if source_kind == "ai_generated_reference" and truth.data_version == "fixtures_v1.0":
             reference = _verified_ai_reference(garment_id)
             if (
                 relative_path != reference.get("relative_path")
@@ -1254,6 +1417,7 @@ def _validate_manifest_payload(
     asset_directory: Path,
     durable_receipts: frozenset[tuple[str, str]],
     staged_assets: dict[str, bytes] | None = None,
+    image_model_allowlist: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     if (
         not isinstance(payload, dict)
@@ -1271,6 +1435,7 @@ def _validate_manifest_payload(
             asset_directory=asset_directory,
             durable_receipts=durable_receipts,
             staged_assets=staged_assets,
+            image_model_allowlist=image_model_allowlist,
         )
         garment_ids.append(item["garment_id"])
     if len(set(garment_ids)) != len(garment_ids):
@@ -1284,6 +1449,7 @@ def _load_existing_manifest(
     authoritative: dict[str, Garment],
     asset_directory: Path,
     durable_receipts: frozenset[tuple[str, str]],
+    image_model_allowlist: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     if not path.exists():
         return {"manifest_version": "wardrobe_assets_v2", "items": []}
@@ -1292,6 +1458,7 @@ def _load_existing_manifest(
         authoritative=authoritative,
         asset_directory=asset_directory,
         durable_receipts=durable_receipts,
+        image_model_allowlist=image_model_allowlist,
     )
 
 
@@ -1404,6 +1571,135 @@ def _record_vision_model_provenance(
         and all(char.isalnum() or char in "-._:/" for char in value)
     ):
         counters.vision_model_provenance = value
+
+
+def _reusable_cpa_generated_item(
+    *,
+    existing_item: dict[str, Any] | None,
+    garment: Garment,
+    prompt_sha256: str,
+    asset_directory: Path,
+) -> bool:
+    if not isinstance(existing_item, dict) or existing_item.get("status") != "ready":
+        return False
+    history = existing_item.get("receipt_history")
+    if not isinstance(history, list) or not history:
+        return False
+    latest = history[-1]
+    if (
+        not isinstance(latest, dict)
+        or latest.get("provider") != "cpa_generated"
+        or latest.get("bound_garment_id") != garment.garment_id
+        or latest.get("bound_user_id") != garment.user_id
+        or latest.get("prompt_sha256") != prompt_sha256
+        or latest.get("prompt_template_version") != CPA_GENERATED_PROMPT_VERSION
+    ):
+        return False
+    digest = existing_item.get("processed_sha256")
+    path = _safe_asset_path(asset_directory, existing_item.get("relative_path"))
+    if not _is_sha256(digest) or path is None or not path.is_file() or path.is_symlink():
+        return False
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest() == digest
+    except OSError:
+        return False
+
+
+async def _attempt_cpa_generated_garment(
+    *,
+    garment: Garment,
+    config: IngestionConfig,
+    safe_fetcher: Any,
+    vision: CatalogVisionInspector,
+    image_provider: Any,
+    image_model_allowlist: tuple[str, ...],
+    existing_item: dict[str, Any] | None,
+    counters: _Counters,
+) -> _AttemptOutcome:
+    prompt = _cpa_generated_prompt(garment)
+    prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    if config.resume and _reusable_cpa_generated_item(
+        existing_item=existing_item,
+        garment=garment,
+        prompt_sha256=prompt_sha256,
+        asset_directory=config.asset_directory,
+    ):
+        return _AttemptOutcome(
+            garment=garment,
+            status="reused",
+            existing_item=existing_item,
+            source_kind="ai_generated_reference",
+        )
+    counters.candidate_attempts += 1
+    try:
+        raw, mime_type, provider_trace = await image_provider.generate_static_2d(prompt)
+        model_receipt = _validated_cpa_model_receipt(
+            provider_trace,
+            allowlist=image_model_allowlist,
+        )
+        validator = getattr(safe_fetcher, "validate_local_bytes", None)
+        if validator is None:
+            validator = SafeImageFetcher(
+                ready_dir=config.asset_directory,
+                quarantine_dir=config.asset_directory.parent / "quarantine",
+                config=SafeImageConfig(),
+            ).validate_local_bytes
+        fetched = validator(raw, mime_type)
+        counters.vision_call_count += 1
+        _record_vision_model_provenance(counters, vision)
+        cropped, _, vision_trace = await assess_and_crop_catalog_asset(
+            vision=vision,
+            fetched_image=fetched,
+            allowed_slot=garment.slot,
+        )
+        _record_vision_model_provenance(counters, vision_trace)
+    except asyncio.CancelledError:
+        raise
+    except (ProviderUnavailable, ImageFetchError, VisionUnavailable, ValueError, TypeError):
+        return _AttemptOutcome(
+            garment=garment,
+            status="quarantined",
+            failure_reason="candidate_budget_exhausted",
+            existing_item=existing_item,
+            source_kind="ai_generated_reference",
+        )
+    imported_at = datetime.now(timezone.utc)
+    source_receipt = LicensedSourceReceipt(
+        provider="cpa_generated",
+        source_url=None,
+        creator=None,
+        license_code="ai-generated",
+        license_url=None,
+        attribution="AI 生成参考",
+        imported_at=imported_at,
+    )
+    source = _NormalizedSource(
+        provider_item_id=prompt_sha256,
+        source_receipt=source_receipt,
+        image_url=None,
+        provider_license="ai-generated",
+        provider_license_version=CPA_GENERATED_PROMPT_VERSION,
+        source_ref=None,
+        expected_sha256=fetched.original_sha256,
+    )
+    receipt_extensions = {
+        "bound_garment_id": garment.garment_id,
+        "bound_user_id": garment.user_id,
+        "prompt_template_version": CPA_GENERATED_PROMPT_VERSION,
+        "prompt_sha256": prompt_sha256,
+        **model_receipt,
+    }
+    return _AttemptOutcome(
+        garment=garment,
+        status="ready",
+        source=source,
+        fetched=fetched,
+        cropped=cropped,
+        public_license=public_license_from_source(source_receipt),
+        existing_item=existing_item,
+        receipt_extensions=receipt_extensions,
+        source_kind="ai_generated_reference",
+    )
 
 
 async def _attempt_openverse_garment(
@@ -1647,6 +1943,7 @@ def _receipt_record(
     source: _NormalizedSource,
     fetched: FetchedImage,
     cropped: CatalogCroppedImage,
+    extensions: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         **source.identity(),
@@ -1654,6 +1951,7 @@ def _receipt_record(
         "original_sha256": fetched.original_sha256,
         "processed_sha256": cropped.processed_sha256,
         "processing": "safe_decode_normalize_then_server_crop",
+        **(extensions or {}),
     }
 
 
@@ -1671,6 +1969,7 @@ def _ready_manifest_item(outcome: _AttemptOutcome) -> tuple[dict[str, Any], dict
         source=outcome.source,
         fetched=outcome.fetched,
         cropped=outcome.cropped,
+        extensions=outcome.receipt_extensions,
     )
     relative_path = (
         f"{outcome.garment.garment_id}/{outcome.cropped.processed_sha256}.png"
@@ -1681,9 +1980,12 @@ def _ready_manifest_item(outcome: _AttemptOutcome) -> tuple[dict[str, Any], dict
         "slot": outcome.garment.slot,
         "audience": outcome.garment.audience,
         "source_kind": (
-            "user_owned_photo"
-            if outcome.source.source_receipt.provider == "user_upload"
-            else "licensed_photo"
+            outcome.source_kind
+            or (
+                "user_owned_photo"
+                if outcome.source.source_receipt.provider == "user_upload"
+                else "licensed_photo"
+            )
         ),
         "status": "ready",
         "original_sha256": outcome.fetched.original_sha256,
@@ -1710,13 +2012,17 @@ def _quarantined_manifest_item(outcome: _AttemptOutcome) -> dict[str, Any]:
         "slot": outcome.garment.slot,
         "audience": outcome.garment.audience,
         "source_kind": (
-            outcome.existing_item["source_kind"]
-            if outcome.source is None and outcome.existing_item is not None
+            outcome.source_kind
+            if outcome.source_kind is not None
             else (
-                "user_owned_photo"
-                if outcome.source is not None
-                and outcome.source.source_receipt.provider == "user_upload"
-                else "licensed_photo"
+                outcome.existing_item["source_kind"]
+                if outcome.source is None and outcome.existing_item is not None
+                else (
+                    "user_owned_photo"
+                    if outcome.source is not None
+                    and outcome.source.source_receipt.provider == "user_upload"
+                    else "licensed_photo"
+                )
             )
         ),
         "status": "quarantined",
@@ -1752,11 +2058,16 @@ def _prepare_source_history(
     records: list[dict[str, Any]],
     *,
     authoritative: dict[str, Garment],
+    image_model_allowlist: tuple[str, ...] = (),
 ) -> tuple[bytes, frozenset[tuple[str, str]]]:
     fingerprints = set(existing_fingerprints)
     encoded: list[bytes] = []
     for record in records:
-        fingerprint = _validate_source_record(record, authoritative=authoritative)
+        fingerprint = _validate_source_record(
+            record,
+            authoritative=authoritative,
+            image_model_allowlist=image_model_allowlist,
+        )
         if fingerprint in fingerprints:
             raise ValueError("duplicate_source_receipt")
         fingerprints.add(fingerprint)
@@ -1845,6 +2156,7 @@ def _compose_verified_ai_references(
     durable_receipts: frozenset[tuple[str, str]],
     authoritative: dict[str, Garment],
     asset_directory: Path,
+    image_model_allowlist: tuple[str, ...] = (),
 ) -> tuple[dict[str, Any], bytes, frozenset[tuple[str, str]]]:
     base_garments = tuple(
         sorted(
@@ -1884,6 +2196,7 @@ def _compose_verified_ai_references(
         durable_receipts,
         source_records,
         authoritative=authoritative,
+        image_model_allowlist=image_model_allowlist,
     )
     composed_manifest = _upsert_items(manifest, replacements)
     _validate_manifest_payload(
@@ -1891,6 +2204,7 @@ def _compose_verified_ai_references(
         authoritative=authoritative,
         asset_directory=asset_directory,
         durable_receipts=composed_receipts,
+        image_model_allowlist=image_model_allowlist,
     )
     return composed_manifest, composed_history, composed_receipts
 
@@ -1900,6 +2214,8 @@ async def run_ingestion(
     api_client: httpx.AsyncClient | None,
     safe_fetcher: Any,
     vision: CatalogVisionInspector,
+    image_provider: Any | None = None,
+    image_model_allowlist: tuple[str, ...] = (),
 ) -> IngestionResult:
     """Run bounded ingestion with all network and Vision dependencies injected."""
     garments = _controlled_garments(config.garment_file)
@@ -1911,6 +2227,17 @@ async def run_ingestion(
         if api_client is None:
             raise ValueError("openverse_client_required")
         _validate_official_client(api_client)
+    elif config.provider == "cpa-generated":
+        requested = getattr(image_provider, "requested_model", None)
+        transport = getattr(image_provider, "transport_model", None)
+        if (
+            image_provider is None
+            or not image_model_allowlist
+            or len(set(image_model_allowlist)) != len(image_model_allowlist)
+            or requested not in image_model_allowlist
+            or transport not in image_model_allowlist
+        ):
+            raise ValueError("cpa_image_provider_required")
 
     authoritative = _authoritative_garments()
     if config.dry_run:
@@ -1924,12 +2251,14 @@ async def run_ingestion(
         persisted_source_history, durable_receipts = _load_source_history(
             config.sources_path,
             authoritative=authoritative,
+            image_model_allowlist=image_model_allowlist,
         )
         persisted_manifest = _load_existing_manifest(
             config.manifest_path,
             authoritative=authoritative,
             asset_directory=config.asset_directory,
             durable_receipts=durable_receipts,
+            image_model_allowlist=image_model_allowlist,
         )
         manifest, source_history, durable_receipts = _compose_verified_ai_references(
             manifest=persisted_manifest,
@@ -1937,6 +2266,7 @@ async def run_ingestion(
             durable_receipts=durable_receipts,
             authoritative=authoritative,
             asset_directory=config.asset_directory,
+            image_model_allowlist=image_model_allowlist,
         )
     existing_by_id = {
         item["garment_id"]: item
@@ -1957,6 +2287,18 @@ async def run_ingestion(
 
     async def bounded_attempt(garment: Garment) -> _AttemptOutcome:
         async with semaphore:
+            if config.provider == "cpa-generated":
+                assert image_provider is not None
+                return await _attempt_cpa_generated_garment(
+                    garment=garment,
+                    config=config,
+                    safe_fetcher=safe_fetcher,
+                    vision=vision,
+                    image_provider=image_provider,
+                    image_model_allowlist=image_model_allowlist,
+                    existing_item=existing_by_id.get(garment.garment_id),
+                    counters=counters,
+                )
             if config.provider == "user-owned":
                 return await _attempt_user_owned_garment(
                     garment=garment,
@@ -2048,6 +2390,7 @@ async def run_ingestion(
             durable_receipts,
             source_records,
             authoritative=authoritative,
+            image_model_allowlist=image_model_allowlist,
         )
         _validate_manifest_payload(
             new_manifest,
@@ -2055,6 +2398,7 @@ async def run_ingestion(
             asset_directory=config.asset_directory,
             durable_receipts=new_durable_receipts,
             staged_assets=staged_assets,
+            image_model_allowlist=image_model_allowlist,
         )
         for relative_path, payload in staged_assets.items():
             asset_path = _safe_asset_path(config.asset_directory, relative_path)
@@ -2102,7 +2446,11 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Bounded official licensed wardrobe asset ingestion"
     )
-    parser.add_argument("--provider", required=True, choices=("openverse", "user-owned"))
+    parser.add_argument(
+        "--provider",
+        required=True,
+        choices=("openverse", "user-owned", "cpa-generated"),
+    )
     parser.add_argument("--license", type=_parse_license_argument)
     parser.add_argument("--garment-file", required=True, type=Path)
     parser.add_argument("--source-map", type=Path)
@@ -2145,11 +2493,16 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit("openverse requires --license and forbids --source-map")
         license_allowlist = args.license
         source_map = None
-    else:
+    elif args.provider == "user-owned":
         if args.license is not None or args.source_map is None:
             raise SystemExit("user-owned requires --source-map and forbids --license")
         license_allowlist = ()
         source_map = args.source_map
+    else:
+        if args.license is not None or args.source_map is not None:
+            raise SystemExit("cpa-generated forbids --license and --source-map")
+        license_allowlist = ()
+        source_map = None
     if args.diagnostic_canary:
         if args.provider != "openverse" or args.resume:
             raise SystemExit(
