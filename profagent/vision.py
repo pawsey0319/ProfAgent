@@ -48,6 +48,21 @@ CATALOG_QUALITY_SIGNALS = (
 )
 CATALOG_MIME_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
 CATALOG_SLOTS = frozenset(get_args(Slot))
+CATALOG_SCHEMA_STAGES = frozenset({"envelope", "content", "payload"})
+
+_COMPLETION_ENVELOPE_KEYS = frozenset(
+    {
+        "id",
+        "object",
+        "created",
+        "model",
+        "choices",
+        "usage",
+        "system_fingerprint",
+    }
+)
+_COMPLETION_CHOICE_KEYS = frozenset({"index", "message", "finish_reason"})
+_COMPLETION_MESSAGE_KEYS = frozenset({"role", "content", "refusal"})
 
 CatalogQualityIssueCode = Literal[
     "logo_or_watermark",
@@ -267,6 +282,60 @@ def _load_json_without_duplicate_keys(value: bytes | str) -> Any:
         raise ValueError("json_nesting_invalid") from None
 
 
+def _completion_message(envelope: Any) -> dict[str, Any]:
+    """Validate only the deliberately supported CPA completion envelope."""
+    if (
+        not isinstance(envelope, dict)
+        or not {"model", "choices"}.issubset(envelope)
+        or not set(envelope).issubset(_COMPLETION_ENVELOPE_KEYS)
+    ):
+        raise ValueError("invalid_response_envelope")
+    choices = envelope["choices"]
+    if not isinstance(choices, list) or len(choices) != 1:
+        raise ValueError("invalid_response_choices")
+    choice = choices[0]
+    if (
+        not isinstance(choice, dict)
+        or "message" not in choice
+        or not set(choice).issubset(_COMPLETION_CHOICE_KEYS)
+    ):
+        raise ValueError("invalid_response_choice")
+    message = choice["message"]
+    if (
+        not isinstance(message, dict)
+        or "content" not in message
+        or not set(message).issubset(_COMPLETION_MESSAGE_KEYS)
+    ):
+        raise ValueError("invalid_response_message")
+    return message
+
+
+def _closed_content_object(message: dict[str, Any]) -> dict[str, Any]:
+    """Accept one bare JSON object or one exact, complete lowercase json fence."""
+    if message.get("refusal") is not None:
+        raise ValueError("provider_refusal")
+    content = message["content"]
+    if not isinstance(content, str):
+        raise ValueError("invalid_response_content")
+
+    encoded = content
+    if content.startswith("```") or content.endswith("```"):
+        prefix = "```json\n"
+        suffix = "\n```"
+        if not content.startswith(prefix) or not content.endswith(suffix):
+            raise ValueError("invalid_json_fence")
+        encoded = content[len(prefix) : -len(suffix)]
+        if "```" in encoded:
+            raise ValueError("multiple_json_fences")
+    elif "```" in content:
+        raise ValueError("invalid_json_fence")
+
+    raw = _load_json_without_duplicate_keys(encoded)
+    if not isinstance(raw, dict):
+        raise ValueError("response_content_must_be_an_object")
+    return raw
+
+
 class _VisionResponseInvalid(Exception):
     pass
 
@@ -334,6 +403,7 @@ class VisionAdapter:
         model_verified: bool = False,
         assessment_count: int = 0,
         quality_issue_count: int = 0,
+        schema_stage: Literal["envelope", "content", "payload"] | None = None,
     ) -> dict[str, Any]:
         return {
             "component": "vision",
@@ -352,6 +422,7 @@ class VisionAdapter:
             ),
             "assessment_count": assessment_count,
             "quality_issue_count": quality_issue_count,
+            "schema_stage": schema_stage,
         }
 
     def _catalog_failure(
@@ -362,6 +433,7 @@ class VisionAdapter:
         resolved_model: str | None = None,
         model_verified: bool = False,
         quality_issue_count: int = 0,
+        schema_stage: Literal["envelope", "content", "payload"] | None = None,
     ) -> VisionUnavailable:
         trace = self._catalog_trace(
             status="quarantined",
@@ -370,6 +442,7 @@ class VisionAdapter:
             resolved_model=resolved_model,
             model_verified=model_verified,
             quality_issue_count=quality_issue_count,
+            schema_stage=schema_stage,
         )
         self._last_health = {
             **self._last_health,
@@ -387,9 +460,14 @@ class VisionAdapter:
         reason_code: CatalogFailureReason,
         latency_ms: int | float,
         schema: str,
+        schema_stage: Literal["envelope", "content", "payload"] | None = None,
     ) -> VisionUnavailable:
         if operation == "catalog_asset_assessment":
-            return self._catalog_failure(reason_code, latency_ms=latency_ms)
+            return self._catalog_failure(
+                reason_code,
+                latency_ms=latency_ms,
+                schema_stage=schema_stage,
+            )
         legacy = {
             "timeout": ("vision interaction budget exceeded", "timeout"),
             "provider_unavailable": ("vision provider request failed", "unavailable"),
@@ -584,6 +662,11 @@ class VisionAdapter:
                 reason_code="response_schema_invalid",
                 latency_ms=latency_ms,
                 schema=schema,
+                schema_stage=(
+                    "envelope"
+                    if operation == "catalog_asset_assessment"
+                    else None
+                ),
             ) from None
         except httpx.TimeoutException:
             latency_ms = round((time.perf_counter() - started) * 1000)
@@ -620,29 +703,18 @@ class VisionAdapter:
             ) from None
         try:
             envelope = _load_json_without_duplicate_keys(response_body)
-            if not isinstance(envelope, dict) or set(envelope) != {
-                "model",
-                "choices",
-            }:
-                raise ValueError("invalid_response_envelope")
-            choices = envelope["choices"]
-            if not isinstance(choices, list) or len(choices) != 1:
-                raise ValueError("invalid_response_choices")
-            choice = choices[0]
-            if not isinstance(choice, dict) or set(choice) != {"message"}:
-                raise ValueError("invalid_response_choice")
-            message = choice["message"]
-            if not isinstance(message, dict) or set(message) != {"content"}:
-                raise ValueError("invalid_response_message")
-            message_content = message["content"]
-            if not isinstance(message_content, str):
-                raise ValueError("invalid_response_content")
+            message = _completion_message(envelope)
         except (TypeError, UnicodeDecodeError, ValueError):
             raise self._request_failure(
                 operation=operation,
                 reason_code="response_schema_invalid",
                 latency_ms=latency_ms,
                 schema=schema,
+                schema_stage=(
+                    "envelope"
+                    if operation == "catalog_asset_assessment"
+                    else None
+                ),
             ) from None
 
         resolved_model = envelope["model"]
@@ -655,17 +727,25 @@ class VisionAdapter:
                 reason_code="model_mismatch",
                 latency_ms=latency_ms,
                 schema=schema,
+                schema_stage=(
+                    "envelope"
+                    if operation == "catalog_asset_assessment"
+                    else None
+                ),
             ) from None
         try:
-            raw = _load_json_without_duplicate_keys(message_content)
-            if not isinstance(raw, dict):
-                raise ValueError("response_content_must_be_an_object")
+            raw = _closed_content_object(message)
         except (TypeError, ValueError):
             raise self._request_failure(
                 operation=operation,
                 reason_code="response_schema_invalid",
                 latency_ms=latency_ms,
                 schema=schema,
+                schema_stage=(
+                    "content"
+                    if operation == "catalog_asset_assessment"
+                    else None
+                ),
             ) from None
 
         trace = {
@@ -790,6 +870,7 @@ class VisionAdapter:
             raise self._catalog_failure(
                 "response_schema_invalid",
                 latency_ms=request_trace["latency_ms"],
+                schema_stage="payload",
             ) from None
         try:
             assessment = CatalogAssetAssessment.model_validate(raw)
@@ -816,6 +897,7 @@ class VisionAdapter:
                 latency_ms=request_trace["latency_ms"],
                 resolved_model=request_trace["resolved_model"],
                 model_verified=(reason not in {"response_schema_invalid"}),
+                schema_stage="payload",
             ) from None
 
         failure_reason: CatalogFailureReason | None = None
@@ -838,6 +920,7 @@ class VisionAdapter:
                 resolved_model=request_trace["resolved_model"],
                 model_verified=True,
                 quality_issue_count=len(assessment.quality_issues),
+                schema_stage="payload",
             ) from None
 
         trace = self._catalog_trace(
