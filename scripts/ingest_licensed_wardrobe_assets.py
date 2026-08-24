@@ -1778,8 +1778,11 @@ class _PrivateQuarantineDiagnostic(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+    transaction_id: str = Field(pattern=r"^[0-9a-f]{32}$")
     garment_id: str = Field(pattern=r"^g\d{3}$")
     user_id: str = Field(pattern=r"^u\d{2}$")
+    slot: str = Field(min_length=1, max_length=32)
+    product_type: str = Field(min_length=1, max_length=100)
     prompt_sha256: str = Field(min_length=64, max_length=64)
     original_sha256: str = Field(min_length=64, max_length=64)
     processed_sha256: str = Field(min_length=64, max_length=64)
@@ -1991,8 +1994,11 @@ async def _attempt_cpa_generated_garment(
         )
         private_bytes = fetched.processed_bytes
         private_record = _PrivateQuarantineDiagnostic(
+            transaction_id=uuid.uuid4().hex,
             garment_id=garment.garment_id,
             user_id=garment.user_id,
+            slot=garment.slot,
+            product_type=product_type_for_garment(garment.garment_id),
             prompt_sha256=prompt_sha256,
             original_sha256=fetched.original_sha256,
             processed_sha256=fetched.processed_sha256,
@@ -2494,6 +2500,73 @@ def _private_quarantine_paths(config: IngestionConfig) -> tuple[Path, Path]:
     return root, diagnostics
 
 
+def _validate_existing_private_quarantine(
+    config: IngestionConfig,
+    *,
+    authoritative: dict[str, Garment],
+) -> tuple[_PrivateQuarantineDiagnostic, ...]:
+    """Validate durable private evidence without granting it resume authority."""
+
+    root, diagnostics = _private_quarantine_paths(config)
+    try:
+        if not diagnostics.exists():
+            if root.exists() and any(path.is_file() for path in root.iterdir()):
+                raise ValueError("invalid_private_quarantine_diagnostics")
+            return ()
+        if (
+            diagnostics.is_symlink()
+            or not diagnostics.is_file()
+            or diagnostics.stat().st_size > MANIFEST_INPUT_LIMIT
+        ):
+            raise ValueError("invalid_private_quarantine_diagnostics")
+        raw_lines = diagnostics.read_bytes().decode("utf-8").splitlines()
+        if not raw_lines or len(raw_lines) > 1000 or any(not line for line in raw_lines):
+            raise ValueError("invalid_private_quarantine_diagnostics")
+        records = tuple(
+            _PrivateQuarantineDiagnostic.model_validate(json.loads(line))
+            for line in raw_lines
+        )
+        transaction_ids: set[str] = set()
+        relative_paths: set[str] = set()
+        for record in records:
+            garment = authoritative.get(record.garment_id)
+            if garment is None:
+                raise ValueError("invalid_private_quarantine_diagnostics")
+            expected_prompt_hash = hashlib.sha256(
+                _cpa_generated_prompt(garment).encode("utf-8")
+            ).hexdigest()
+            if (
+                record.transaction_id in transaction_ids
+                or record.user_id != garment.user_id
+                or record.slot != garment.slot
+                or record.product_type != product_type_for_garment(garment.garment_id)
+                or record.prompt_sha256 != expected_prompt_hash
+            ):
+                raise ValueError("invalid_private_quarantine_diagnostics")
+            transaction_ids.add(record.transaction_id)
+            relative_paths.add(record.quarantine_relative_path)
+            private_png = root / record.quarantine_relative_path
+            if (
+                private_png.parent != root
+                or private_png.is_symlink()
+                or not private_png.is_file()
+                or hashlib.sha256(private_png.read_bytes()).hexdigest()
+                != record.quarantine_sha256
+            ):
+                raise ValueError("invalid_private_quarantine_diagnostics")
+        if root.exists():
+            actual_pngs = {
+                path.name
+                for path in root.iterdir()
+                if path.is_file() and path.suffix == ".png"
+            }
+            if actual_pngs != relative_paths:
+                raise ValueError("invalid_private_quarantine_diagnostics")
+        return records
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        raise ValueError("invalid_private_quarantine_diagnostics") from None
+
+
 def _transaction_target(
     *, root: Path, diagnostics: Path, kind: Any, name: Any
 ) -> Path:
@@ -2614,6 +2687,7 @@ def _recover_private_quarantine_transaction(
     config: IngestionConfig,
     *,
     durable_recovery: bool = True,
+    trusted_payload: dict[str, Any] | None = None,
 ) -> bool:
     root, diagnostics, marker, backup_parent = _validated_private_quarantine_paths(config)
     if not marker.exists():
@@ -2621,7 +2695,11 @@ def _recover_private_quarantine_transaction(
     try:
         if marker.stat().st_size > MANIFEST_INPUT_LIMIT:
             raise ValueError("invalid_private_quarantine_transaction")
-        payload = json.loads(marker.read_text(encoding="utf-8"))
+        payload = (
+            json.loads(marker.read_text(encoding="utf-8"))
+            if durable_recovery
+            else trusted_payload
+        )
         transaction_id, phase, entries = _validate_private_transaction(
             payload,
             root=root,
@@ -2630,6 +2708,21 @@ def _recover_private_quarantine_transaction(
         )
     except (OSError, UnicodeError, json.JSONDecodeError):
         raise ValueError("invalid_private_quarantine_transaction") from None
+
+    # A durable marker is not an authorization token.  Restart recovery may
+    # clean only the transaction-scoped backup directory and marker; it never
+    # deletes, restores, or overwrites a named final.  If any final already
+    # exists, preserve it and fail closed for operator review.
+    if durable_recovery:
+        if any(target.exists() for target, _, _, _ in entries):
+            raise ValueError("invalid_private_quarantine_transaction")
+        _remove_private_transaction_state(
+            marker=marker,
+            backup_parent=backup_parent,
+            transaction_id=transaction_id,
+            entries=entries,
+        )
+        return True
 
     if phase == "committed":
         committed = True
@@ -2749,11 +2842,28 @@ def _begin_private_quarantine_transaction(
 def _commit_private_quarantine_transaction(
     config: IngestionConfig, payload: dict[str, Any]
 ) -> None:
-    _, _, marker, _ = _validated_private_quarantine_paths(config)
+    root, diagnostics, marker, backup_parent = _validated_private_quarantine_paths(config)
+    transaction_id, _, entries = _validate_private_transaction(
+        payload,
+        root=root,
+        diagnostics=diagnostics,
+        backup_parent=backup_parent,
+    )
+    for target, _, _, new_sha256 in entries:
+        if (
+            not target.is_file()
+            or target.is_symlink()
+            or hashlib.sha256(target.read_bytes()).hexdigest() != new_sha256
+        ):
+            raise OSError("private_quarantine_commit_incomplete")
     committed = {**payload, "phase": "committed"}
     _atomic_write_json(marker, committed)
-    if not _recover_private_quarantine_transaction(config):
-        raise OSError("private_quarantine_commit_incomplete")
+    _remove_private_transaction_state(
+        marker=marker,
+        backup_parent=backup_parent,
+        transaction_id=transaction_id,
+        entries=entries,
+    )
 
 
 def _prepare_private_quarantine(
@@ -3017,6 +3127,7 @@ async def run_ingestion(
         garment.garment_id for garment in garments
     ) != ("g051",):
         raise ValueError("invalid_diagnostic_canary_garment")
+    authoritative = _authoritative_garments()
     if config.provider == "openverse":
         if api_client is None:
             raise ValueError("openverse_client_required")
@@ -3030,10 +3141,13 @@ async def run_ingestion(
             or transport not in CPA_GENERATED_HISTORICAL_MODEL_ALLOWLIST
         ):
             raise ValueError("cpa_image_provider_required")
-        if not config.dry_run and not _recover_private_quarantine_transaction(config):
-            raise ValueError("private_quarantine_recovery_incomplete")
+        if not config.dry_run:
+            _validate_existing_private_quarantine(
+                config, authoritative=authoritative
+            )
+            if not _recover_private_quarantine_transaction(config):
+                raise ValueError("private_quarantine_recovery_incomplete")
 
-    authoritative = _authoritative_garments()
     if config.dry_run:
         persisted_source_history = source_history = b""
         durable_receipts: frozenset[tuple[str, str]] = frozenset()
@@ -3225,7 +3339,9 @@ async def run_ingestion(
         except BaseException:
             try:
                 _recover_private_quarantine_transaction(
-                    config, durable_recovery=False
+                    config,
+                    durable_recovery=False,
+                    trusted_payload=private_transaction,
                 )
             except (OSError, TypeError, ValueError):
                 pass
