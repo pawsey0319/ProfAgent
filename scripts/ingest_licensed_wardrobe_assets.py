@@ -103,7 +103,64 @@ IngestionFailureReason = Literal[
     "user_owned_loader_unavailable",
     "user_owned_source_missing",
     "user_owned_source_rejected",
+    "timeout",
+    "provider_unavailable",
+    "response_schema_invalid",
+    "model_mismatch",
+    "unsupported_mime",
+    "decode_failed",
+    "dimension_out_of_range",
+    "pixel_limit_exceeded",
+    "response_too_large",
+    "hash_mismatch",
+    "mime_mismatch",
+    "missing_mime",
+    "unsupported_content_encoding",
+    "input_rejected",
+    "http_error",
+    "slot_mismatch",
+    "product_type_mismatch",
+    "audience_rejected",
+    "identifiable_person",
+    "low_confidence",
+    "invalid_region",
+    "quality_rejected",
 ]
+
+FailureStage = Literal["image_provider", "local_validation", "vision"]
+VisionFailureReason = Literal[
+    "input_rejected",
+    "timeout",
+    "provider_unavailable",
+    "http_error",
+    "response_schema_invalid",
+    "model_mismatch",
+    "slot_mismatch",
+    "product_type_mismatch",
+    "audience_rejected",
+    "identifiable_person",
+    "low_confidence",
+    "invalid_region",
+    "quality_rejected",
+]
+
+_VISION_FAILURE_REASONS = frozenset(
+    {
+        "input_rejected",
+        "timeout",
+        "provider_unavailable",
+        "http_error",
+        "response_schema_invalid",
+        "model_mismatch",
+        "slot_mismatch",
+        "product_type_mismatch",
+        "audience_rejected",
+        "identifiable_person",
+        "low_confidence",
+        "invalid_region",
+        "quality_rejected",
+    }
+)
 
 _PUBLIC_LICENSE_CODES = frozenset(
     {"CC0", "PDM", "CC-BY-2.0", "CC-BY-3.0", "CC-BY-4.0"}
@@ -180,6 +237,28 @@ _CONTROLLED_FAILURE_REASONS = frozenset(
         "user_owned_loader_unavailable",
         "user_owned_source_missing",
         "user_owned_source_rejected",
+        "timeout",
+        "provider_unavailable",
+        "response_schema_invalid",
+        "model_mismatch",
+        "unsupported_mime",
+        "decode_failed",
+        "dimension_out_of_range",
+        "pixel_limit_exceeded",
+        "response_too_large",
+        "hash_mismatch",
+        "mime_mismatch",
+        "missing_mime",
+        "unsupported_content_encoding",
+        "input_rejected",
+        "http_error",
+        "slot_mismatch",
+        "product_type_mismatch",
+        "audience_rejected",
+        "identifiable_person",
+        "low_confidence",
+        "invalid_region",
+        "quality_rejected",
     }
 )
 
@@ -244,6 +323,31 @@ class IngestionConfig(BaseModel):
         return self
 
 
+class MinimalModelProvenance(BaseModel):
+    """Content-free model routing evidence suitable for public diagnostics."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    requested_model: str = Field(min_length=1, max_length=100)
+    resolved_model: str | None = Field(default=None, max_length=100)
+    model_verified: bool
+
+    @field_validator("requested_model", "resolved_model")
+    @classmethod
+    def _validate_model_token(cls, value: str | None) -> str | None:
+        if value is not None and not all(
+            char.isalnum() or char in "-._:/" for char in value
+        ):
+            raise ValueError("invalid_model_token")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_verification(self) -> "MinimalModelProvenance":
+        if self.model_verified != (self.resolved_model is not None):
+            raise ValueError("invalid_model_verification")
+        return self
+
+
 class ItemIngestionOutcome(BaseModel):
     """Closed public status for one server-controlled garment ID."""
 
@@ -252,6 +356,9 @@ class ItemIngestionOutcome(BaseModel):
     garment_id: str = Field(pattern=r"^g\d{3}$")
     status: Literal["ready", "reused", "quarantined", "unattempted"]
     reason_code: IngestionFailureReason | None = None
+    failure_stage: FailureStage | None = None
+    image_model_provenance: MinimalModelProvenance | None = None
+    vision_model_provenance: MinimalModelProvenance | None = None
 
     @model_validator(mode="after")
     def _validate_status_reason(self) -> "ItemIngestionOutcome":
@@ -264,6 +371,10 @@ class ItemIngestionOutcome(BaseModel):
             raise ValueError("unattempted_budget_reason_required")
         if self.status in {"ready", "reused"} and self.reason_code is not None:
             raise ValueError("successful_outcome_must_not_have_reason")
+        if self.failure_stage is not None and self.status != "quarantined":
+            raise ValueError("failure_stage_requires_quarantine")
+        if self.failure_stage != "vision" and self.vision_model_provenance is not None:
+            raise ValueError("vision_provenance_requires_vision_failure")
         return self
 
 
@@ -334,6 +445,11 @@ class _AttemptOutcome:
     source_kind: Literal[
         "licensed_photo", "user_owned_photo", "ai_generated_reference"
     ] | None = None
+    failure_stage: FailureStage | None = None
+    image_model_provenance: MinimalModelProvenance | None = None
+    vision_model_provenance: MinimalModelProvenance | None = None
+    private_quarantine_bytes: bytes | None = None
+    private_quarantine_record: dict[str, Any] | None = None
 
 
 _SearchReason = Literal[
@@ -1641,6 +1757,84 @@ def _reusable_cpa_generated_item(
         return False
 
 
+class _PrivateQuarantineDiagnostic(BaseModel):
+    """Internal-only binding for one locally valid, Vision-rejected image."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    garment_id: str = Field(pattern=r"^g\d{3}$")
+    user_id: str = Field(pattern=r"^u\d{2}$")
+    prompt_sha256: str = Field(min_length=64, max_length=64)
+    original_sha256: str = Field(min_length=64, max_length=64)
+    processed_sha256: str = Field(min_length=64, max_length=64)
+    quarantine_sha256: str = Field(min_length=64, max_length=64)
+    quarantine_relative_path: str = Field(min_length=68, max_length=68)
+    failure_stage: Literal["vision"]
+    reason_code: VisionFailureReason
+    image_model_provenance: MinimalModelProvenance
+    vision_model_provenance: MinimalModelProvenance
+
+    @model_validator(mode="after")
+    def _validate_binding(self) -> "_PrivateQuarantineDiagnostic":
+        digests = (
+            self.prompt_sha256,
+            self.original_sha256,
+            self.processed_sha256,
+            self.quarantine_sha256,
+        )
+        if any(not _is_sha256(value) for value in digests):
+            raise ValueError("invalid_private_quarantine_hash")
+        if (
+            self.processed_sha256 != self.quarantine_sha256
+            or self.quarantine_relative_path != f"{self.quarantine_sha256}.png"
+        ):
+            raise ValueError("invalid_private_quarantine_binding")
+        return self
+
+
+def _minimal_model_provenance(raw: Any) -> MinimalModelProvenance | None:
+    if not isinstance(raw, dict):
+        return None
+    requested = raw.get("requested_model")
+    resolved = raw.get("resolved_model")
+    verified = raw.get("model_verified")
+    if not isinstance(requested, str) or not isinstance(verified, bool):
+        return None
+    if not verified:
+        resolved = None
+    try:
+        return MinimalModelProvenance(
+            requested_model=requested,
+            resolved_model=resolved,
+            model_verified=verified,
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _image_failure_reason(error: ProviderUnavailable | ValueError | TypeError) -> IngestionFailureReason:
+    code = getattr(error, "reason_code", "")
+    if isinstance(code, str):
+        normalized = code.upper()
+        if "TIMEOUT" in normalized:
+            return "timeout"
+        if "MODEL" in normalized:
+            return "model_mismatch"
+        if any(token in normalized for token in ("INVALID", "SCHEMA", "BASE64", "RESPONSE")):
+            return "response_schema_invalid"
+    if isinstance(error, (ValueError, TypeError)):
+        return "response_schema_invalid"
+    return "provider_unavailable"
+
+
+def _vision_failure_reason(error: VisionUnavailable) -> VisionFailureReason:
+    trace = error.provider_trace
+    reason = trace.get("reason_code") if isinstance(trace, dict) else None
+    if isinstance(reason, str) and reason in _VISION_FAILURE_REASONS:
+        return reason  # type: ignore[return-value]
+    return "response_schema_invalid"
+
+
 async def _attempt_cpa_generated_garment(
     *,
     garment: Garment,
@@ -1698,6 +1892,39 @@ async def _attempt_cpa_generated_garment(
             expected_requested_model=requested_model,
             expected_transport_model=transport_model,
         )
+    except asyncio.CancelledError:
+        raise
+    except (ProviderUnavailable, ValueError, TypeError) as error:
+        return _AttemptOutcome(
+            garment=garment,
+            status="quarantined",
+            failure_reason=_image_failure_reason(error),
+            failure_stage="image_provider",
+            image_model_provenance=MinimalModelProvenance(
+                requested_model=requested_model,
+                resolved_model=None,
+                model_verified=False,
+            ),
+            existing_item=existing_item,
+            source_kind="ai_generated_reference",
+        )
+
+    image_model_provenance = _minimal_model_provenance(model_receipt)
+    if image_model_provenance is None:
+        return _AttemptOutcome(
+            garment=garment,
+            status="quarantined",
+            failure_reason="response_schema_invalid",
+            failure_stage="image_provider",
+            image_model_provenance=MinimalModelProvenance(
+                requested_model=requested_model,
+                resolved_model=None,
+                model_verified=False,
+            ),
+            existing_item=existing_item,
+            source_kind="ai_generated_reference",
+        )
+    try:
         validator = getattr(safe_fetcher, "validate_local_bytes", None)
         if validator is None:
             validator = SafeImageFetcher(
@@ -1706,8 +1933,32 @@ async def _attempt_cpa_generated_garment(
                 config=SafeImageConfig(),
             ).validate_local_bytes
         fetched = validator(raw, mime_type)
-        counters.vision_call_count += 1
-        _record_vision_model_provenance(counters, vision)
+    except asyncio.CancelledError:
+        raise
+    except ImageFetchError as error:
+        return _AttemptOutcome(
+            garment=garment,
+            status="quarantined",
+            failure_reason=error.reason_code,
+            failure_stage="local_validation",
+            image_model_provenance=image_model_provenance,
+            existing_item=existing_item,
+            source_kind="ai_generated_reference",
+        )
+    except (ValueError, TypeError):
+        return _AttemptOutcome(
+            garment=garment,
+            status="quarantined",
+            failure_reason="decode_failed",
+            failure_stage="local_validation",
+            image_model_provenance=image_model_provenance,
+            existing_item=existing_item,
+            source_kind="ai_generated_reference",
+        )
+
+    counters.vision_call_count += 1
+    _record_vision_model_provenance(counters, vision)
+    try:
         cropped, _, vision_trace = await assess_and_crop_catalog_asset(
             vision=vision,
             fetched_image=fetched,
@@ -1717,11 +1968,45 @@ async def _attempt_cpa_generated_garment(
         _record_vision_model_provenance(counters, vision_trace)
     except asyncio.CancelledError:
         raise
-    except (ProviderUnavailable, ImageFetchError, VisionUnavailable, ValueError, TypeError):
+    except VisionUnavailable as error:
+        reason = _vision_failure_reason(error)
+        vision_model_provenance = _minimal_model_provenance(error.provider_trace)
+        private_record: dict[str, Any] | None = None
+        private_bytes: bytes | None = None
+        if vision_model_provenance is not None:
+            private_bytes = fetched.processed_bytes
+            private_record = _PrivateQuarantineDiagnostic(
+                garment_id=garment.garment_id,
+                user_id=garment.user_id,
+                prompt_sha256=prompt_sha256,
+                original_sha256=fetched.original_sha256,
+                processed_sha256=fetched.processed_sha256,
+                quarantine_sha256=fetched.processed_sha256,
+                quarantine_relative_path=f"{fetched.processed_sha256}.png",
+                failure_stage="vision",
+                reason_code=reason,
+                image_model_provenance=image_model_provenance,
+                vision_model_provenance=vision_model_provenance,
+            ).model_dump(mode="json")
         return _AttemptOutcome(
             garment=garment,
             status="quarantined",
-            failure_reason="candidate_budget_exhausted",
+            failure_reason=reason,
+            failure_stage="vision",
+            image_model_provenance=image_model_provenance,
+            vision_model_provenance=vision_model_provenance,
+            private_quarantine_bytes=private_bytes,
+            private_quarantine_record=private_record,
+            existing_item=existing_item,
+            source_kind="ai_generated_reference",
+        )
+    except (ValueError, TypeError):
+        return _AttemptOutcome(
+            garment=garment,
+            status="quarantined",
+            failure_reason="response_schema_invalid",
+            failure_stage="vision",
+            image_model_provenance=image_model_provenance,
             existing_item=existing_item,
             source_kind="ai_generated_reference",
         )
@@ -1761,6 +2046,7 @@ async def _attempt_cpa_generated_garment(
         existing_item=existing_item,
         receipt_extensions=receipt_extensions,
         source_kind="ai_generated_reference",
+        image_model_provenance=image_model_provenance,
     )
 
 
@@ -2116,6 +2402,104 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     _atomic_write_bytes(path, encoded)
 
 
+def _private_quarantine_paths(config: IngestionConfig) -> tuple[Path, Path]:
+    state_root = config.asset_directory.parent
+    return (
+        state_root / "private_quarantine" / "cpa_generated",
+        state_root / "cpa_generated_quarantine_diagnostics.jsonl",
+    )
+
+
+def _prepare_private_quarantine(
+    config: IngestionConfig,
+    outcomes: list[_AttemptOutcome],
+) -> tuple[dict[Path, bytes], Path | None, bytes | None]:
+    root, diagnostics_path = _private_quarantine_paths(config)
+    staged: dict[Path, bytes] = {}
+    records: list[dict[str, Any]] = []
+    for outcome in outcomes:
+        record = outcome.private_quarantine_record
+        payload = outcome.private_quarantine_bytes
+        if record is None and payload is None:
+            continue
+        if record is None or payload is None:
+            raise ValueError("invalid_private_quarantine_state")
+        validated = _PrivateQuarantineDiagnostic.model_validate(record)
+        if hashlib.sha256(payload).hexdigest() != validated.quarantine_sha256:
+            raise ValueError("invalid_private_quarantine_bytes")
+        path = root / validated.quarantine_relative_path
+        if path.parent != root:
+            raise ValueError("invalid_private_quarantine_path")
+        if path.exists():
+            try:
+                if path.is_symlink() or path.read_bytes() != payload:
+                    raise ValueError("invalid_private_quarantine_collision")
+            except OSError:
+                raise ValueError("invalid_private_quarantine_collision") from None
+        else:
+            staged[path] = payload
+        records.append(validated.model_dump(mode="json"))
+    if not records:
+        return {}, None, None
+
+    prior_records: list[dict[str, Any]] = []
+    prior_bytes = b""
+    if diagnostics_path.exists():
+        try:
+            if diagnostics_path.is_symlink() or diagnostics_path.stat().st_size > MANIFEST_INPUT_LIMIT:
+                raise ValueError("invalid_private_quarantine_diagnostics")
+            prior_bytes = diagnostics_path.read_bytes()
+            decoded = prior_bytes.decode("utf-8").splitlines()
+            if len(decoded) > 1000:
+                raise ValueError("invalid_private_quarantine_diagnostics")
+            prior_records = [
+                _PrivateQuarantineDiagnostic.model_validate(json.loads(line)).model_dump(
+                    mode="json"
+                )
+                for line in decoded
+                if line
+            ]
+        except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+            raise ValueError("invalid_private_quarantine_diagnostics") from None
+    unique = {
+        json.dumps(record, ensure_ascii=False, sort_keys=True)
+        for record in prior_records
+    }
+    appended = list(prior_records)
+    for record in records:
+        fingerprint = json.dumps(record, ensure_ascii=False, sort_keys=True)
+        if fingerprint not in unique:
+            unique.add(fingerprint)
+            appended.append(record)
+    if len(appended) > 1000:
+        raise ValueError("private_quarantine_diagnostics_full")
+    encoded = b"".join(
+        (json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
+        for record in appended
+    )
+    return staged, diagnostics_path, (encoded if encoded != prior_bytes else None)
+
+
+def _restore_private_file(path: Path, previous: bytes | None) -> None:
+    """Best-effort rollback isolated from the injectable publication writer."""
+
+    try:
+        if previous is None:
+            path.unlink(missing_ok=True)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.rollback.tmp")
+        try:
+            temporary.write_bytes(previous)
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+    except OSError:
+        # A rollback failure does not convert an untrusted private record into
+        # published authority; callers still receive the original write error.
+        return
+
+
 def _prepare_source_history(
     existing: bytes,
     existing_fingerprints: frozenset[tuple[str, str]],
@@ -2411,6 +2795,9 @@ async def run_ingestion(
             garment_id=outcome.garment.garment_id,
             status=outcome.status,
             reason_code=outcome.failure_reason,
+            failure_stage=outcome.failure_stage,
+            image_model_provenance=outcome.image_model_provenance,
+            vision_model_provenance=outcome.vision_model_provenance,
         )
         for outcome in outcomes
     ) + tuple(
@@ -2462,15 +2849,33 @@ async def run_ingestion(
             staged_assets=staged_assets,
             image_model_allowlist=image_model_allowlist,
         )
-        for relative_path, payload in staged_assets.items():
-            asset_path = _safe_asset_path(config.asset_directory, relative_path)
-            if asset_path is None:
-                raise ValueError("unsafe_asset_path")
-            _atomic_write_bytes(asset_path, payload)
-        if new_source_history != persisted_source_history:
-            _atomic_write_bytes(config.sources_path, new_source_history)
-        if new_manifest != persisted_manifest:
-            _atomic_write_json(config.manifest_path, new_manifest)
+        private_assets, private_diagnostics_path, private_diagnostics = (
+            _prepare_private_quarantine(config, outcomes)
+        )
+        private_targets = list(private_assets)
+        if private_diagnostics_path is not None and private_diagnostics is not None:
+            private_targets.append(private_diagnostics_path)
+        private_backups: dict[Path, bytes | None] = {}
+        try:
+            for path in private_targets:
+                private_backups[path] = path.read_bytes() if path.exists() else None
+            for path, payload in private_assets.items():
+                _atomic_write_bytes(path, payload)
+            if private_diagnostics_path is not None and private_diagnostics is not None:
+                _atomic_write_bytes(private_diagnostics_path, private_diagnostics)
+            for relative_path, payload in staged_assets.items():
+                asset_path = _safe_asset_path(config.asset_directory, relative_path)
+                if asset_path is None:
+                    raise ValueError("unsafe_asset_path")
+                _atomic_write_bytes(asset_path, payload)
+            if new_source_history != persisted_source_history:
+                _atomic_write_bytes(config.sources_path, new_source_history)
+            if new_manifest != persisted_manifest:
+                _atomic_write_json(config.manifest_path, new_manifest)
+        except BaseException:
+            for path in reversed(private_targets):
+                _restore_private_file(path, private_backups.get(path))
+            raise
 
     return IngestionResult(
         dry_run=config.dry_run,
