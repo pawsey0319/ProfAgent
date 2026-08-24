@@ -6694,11 +6694,6 @@ def _rj_standard_completion(
         "created": 1_784_838_400,
         "model": model,
         "choices": [choice],
-        "usage": {
-            "prompt_tokens": 1,
-            "completion_tokens": 1,
-            "total_tokens": 2,
-        },
         "system_fingerprint": "fp_mock_only",
     }
     envelope.update(envelope_updates or {})
@@ -6728,16 +6723,26 @@ def test_catalog_vision_accepts_minimal_standard_cpa_envelope_allowlist(
     vision_module: ModuleType,
     offline_settings: Any,
 ) -> None:
-    transport = CatalogVisionTransportSpy(
-        _rj_standard_completion(json.dumps(_catalog_payload()))
+    content = json.dumps(_catalog_payload())
+    minimal = json.dumps(
+        {"model": "grok-4.6-high", "choices": [{"message": {"content": content}}]}
+    ).encode("utf-8")
+    nullable_fingerprint = _rj_standard_completion(
+        content, envelope_updates={"system_fingerprint": None}
     )
-    assessment, trace = _inspect_catalog(
-        _vision_adapter(vision_module, offline_settings, transport)
-    )
-    assert assessment.model_dump(mode="json") == _catalog_payload()
-    assert trace["requested_model"] == "grok4.6"
-    assert trace["resolved_model"] == "grok-4.6-high"
-    assert trace["model_verified"] is True
+    for response_body in (
+        _rj_standard_completion(content),
+        minimal,
+        nullable_fingerprint,
+    ):
+        transport = CatalogVisionTransportSpy(response_body)
+        assessment, trace = _inspect_catalog(
+            _vision_adapter(vision_module, offline_settings, transport)
+        )
+        assert assessment.model_dump(mode="json") == _catalog_payload()
+        assert trace["requested_model"] == "grok4.6"
+        assert trace["resolved_model"] == "grok-4.6-high"
+        assert trace["model_verified"] is True
 
 
 def test_catalog_vision_rejects_every_nonstandard_envelope_key_at_exact_layer(
@@ -6870,3 +6875,161 @@ def test_cpa_schema_failure_isolated_private_and_never_becomes_ready_or_source(
     }
     assert "provider secret prose" not in json.dumps(diagnostic)
     assert config.sources_path.read_bytes() == source_before_retry
+
+
+# S16B reviewer follow-up: optional OpenAI-compatible metadata is still a
+# closed security boundary.  Presence never implies that arbitrary values or
+# future provider extensions are trusted.
+_RK_PROVIDER_PROSE = "provider-secret-prose-must-not-leak"
+
+
+def _rk_assert_envelope_rejected(
+    vision_module: ModuleType,
+    offline_settings: Any,
+    response_body: bytes,
+) -> None:
+    trace = _rj_schema_failure(
+        vision_module,
+        offline_settings,
+        response_body,
+        expected_stage="envelope",
+    )
+    assert trace["reason_code"] == "response_schema_invalid"
+    assert trace["schema_stage"] == "envelope"
+    assert trace["requested_model"] == "grok4.6"
+    assert trace["resolved_model"] is None
+    assert trace["model_verified"] is False
+    assert _RK_PROVIDER_PROSE not in json.dumps(trace, ensure_ascii=False)
+
+
+def _rk_completion(
+    *,
+    envelope_updates: dict[str, Any] | None = None,
+    choice_updates: dict[str, Any] | None = None,
+    message_updates: dict[str, Any] | None = None,
+) -> bytes:
+    return _rj_standard_completion(
+        _RK_PROVIDER_PROSE,
+        envelope_updates=envelope_updates,
+        choice_updates=choice_updates,
+        message_updates=message_updates,
+    )
+
+
+def test_ambiguous_cpa_completion_metadata_rejects_nonzero_or_nonstrict_choice_index(
+    vision_module: ModuleType,
+    offline_settings: Any,
+) -> None:
+    for value in (True, 1, {}, "0"):
+        _rk_assert_envelope_rejected(
+            vision_module,
+            offline_settings,
+            _rk_completion(choice_updates={"index": value}),
+        )
+
+
+def test_ambiguous_cpa_completion_metadata_rejects_nonstop_finish_reason(
+    vision_module: ModuleType,
+    offline_settings: Any,
+) -> None:
+    for value in ("length", "content_filter", "tool_calls", None):
+        _rk_assert_envelope_rejected(
+            vision_module,
+            offline_settings,
+            _rk_completion(choice_updates={"finish_reason": value}),
+        )
+
+
+def test_ambiguous_cpa_completion_metadata_rejects_nonassistant_message_role(
+    vision_module: ModuleType,
+    offline_settings: Any,
+) -> None:
+    for value in ("tool", "system", "user", None, {"role": "assistant"}):
+        _rk_assert_envelope_rejected(
+            vision_module,
+            offline_settings,
+            _rk_completion(message_updates={"role": value}),
+        )
+
+
+def test_ambiguous_cpa_completion_metadata_rejects_wrong_object_and_any_usage(
+    vision_module: ModuleType,
+    offline_settings: Any,
+) -> None:
+    cases = (
+        _rk_completion(envelope_updates={"object": "chat.completion.chunk"}),
+        _rk_completion(envelope_updates={"object": None}),
+        _rk_completion(envelope_updates={"object": {"type": "chat.completion"}}),
+        _rk_completion(envelope_updates={"usage": {}}),
+        _rk_completion(envelope_updates={"usage": None}),
+        _rk_completion(envelope_updates={"usage": {"total_tokens": 2}}),
+    )
+    for response_body in cases:
+        _rk_assert_envelope_rejected(
+            vision_module, offline_settings, response_body
+        )
+
+
+def test_ambiguous_cpa_completion_metadata_rejects_malformed_id_created_and_fingerprint(
+    vision_module: ModuleType,
+    offline_settings: Any,
+) -> None:
+    cases = (
+        *( _rk_completion(envelope_updates={"id": value})
+           for value in (None, "", "x" * 257, 1, {"id": "chatcmpl"}) ),
+        *( _rk_completion(envelope_updates={"created": value})
+           for value in (True, -1, 1.0, "1", {}) ),
+        *( _rk_completion(envelope_updates={"system_fingerprint": value})
+           for value in (True, 1, "f" * 257, {}) ),
+    )
+    for response_body in cases:
+        _rk_assert_envelope_rejected(
+            vision_module, offline_settings, response_body
+        )
+
+
+def test_ambiguous_cpa_completion_metadata_never_becomes_ready_or_source(
+    licensed_ingestion_cli: ModuleType,
+    vision_module: ModuleType,
+    offline_settings: Any,
+    tmp_path: Path,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    cases = (
+        _rk_completion(choice_updates={"index": True}),
+        _rk_completion(choice_updates={"finish_reason": "length"}),
+        _rk_completion(message_updates={"role": "tool"}),
+        _rk_completion(envelope_updates={"object": "chat.completion.chunk"}),
+        _rk_completion(envelope_updates={"usage": {}}),
+        _rk_completion(envelope_updates={"id": ""}),
+    )
+    for index, response_body in enumerate(cases):
+        case_root = tmp_path / f"case-{index}"
+        case_root.mkdir()
+        config = _rg_config(cli, case_root)
+        vision = _vision_adapter(
+            vision_module,
+            offline_settings,
+            CatalogVisionTransportSpy(response_body),
+        )
+        result = _rg_run(
+            cli,
+            config,
+            RulingGImageProvider(_make_image("PNG")),
+            vision,
+        )
+        outcome = result.item_outcomes[0]
+        assert result.ready_ids == () and result.quarantined_ids == ("g051",)
+        assert (outcome.failure_stage, outcome.reason_code) == (
+            "vision",
+            "response_schema_invalid",
+        )
+        assert outcome.vision_model_provenance.model_dump() == {
+            "requested_model": "grok4.6",
+            "resolved_model": None,
+            "model_verified": False,
+        }
+        _ri_assert_public_quarantined(config)
+        assert not any(
+            row.get("garment_id") == "g051" for row in _ri_rows(config.sources_path)
+        )
