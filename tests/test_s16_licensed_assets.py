@@ -7033,3 +7033,293 @@ def test_ambiguous_cpa_completion_metadata_never_becomes_ready_or_source(
         assert not any(
             row.get("garment_id") == "g051" for row in _ri_rows(config.sources_path)
         )
+
+
+# Ruling L post-canary repair: the adapter's closed schema failure stage must
+# survive every ingestion boundary without admitting provider-defined values.
+_RL_SCHEMA_STAGES = frozenset({"envelope", "content", "payload"})
+_RL_PROVIDER_PROSE = "provider-secret-schema-stage-must-not-leak"
+_RL_MISSING = object()
+
+
+def _rl_vision_error(
+    vision_module: ModuleType,
+    *,
+    reason: str,
+    schema_stage: Any = _RL_MISSING,
+) -> Exception:
+    trace: dict[str, Any] = {
+        "reason_code": reason,
+        **_RI_VISION_MODEL,
+        "transport_model": "grok-4.6-high",
+        "provider_body": _RL_PROVIDER_PROSE,
+    }
+    if schema_stage is not _RL_MISSING:
+        trace["schema_stage"] = schema_stage
+    return vision_module.VisionUnavailable(_RL_PROVIDER_PROSE, trace)
+
+
+def _rl_attempt(
+    cli: ModuleType,
+    vision_module: ModuleType,
+    config: Any,
+    *,
+    reason: str,
+    schema_stage: Any = _RL_MISSING,
+) -> Any:
+    garment = tuple(cli._controlled_garments(config.garment_file))[0]
+    return asyncio.run(
+        cli._attempt_cpa_generated_garment(
+            garment=garment,
+            config=config,
+            safe_fetcher=RulingGNoFetch(),
+            vision=Task4Vision(
+                _rl_vision_error(
+                    vision_module,
+                    reason=reason,
+                    schema_stage=schema_stage,
+                )
+            ),
+            image_provider=RulingGImageProvider(_make_image("PNG")),
+            image_model_allowlist=(_RG_MODEL,),
+            existing_item=None,
+            counters=cli._Counters(),
+        )
+    )
+
+
+def test_vision_schema_stage_contract_is_closed_on_public_outcomes(
+    licensed_ingestion_cli: ModuleType,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    assert frozenset(get_args(cli.SchemaStage)) == _RL_SCHEMA_STAGES
+    for stage in _RL_SCHEMA_STAGES:
+        outcome = cli.ItemIngestionOutcome(
+            garment_id="g051",
+            status="quarantined",
+            reason_code="response_schema_invalid",
+            failure_stage="vision",
+            schema_stage=stage,
+        )
+        assert outcome.schema_stage == stage
+        assert outcome.model_dump(mode="json")["schema_stage"] == stage
+    for stage in ("future", _RL_PROVIDER_PROSE, None, True, {"stage": "envelope"}):
+        with pytest.raises(ValidationError):
+            cli.ItemIngestionOutcome(
+                garment_id="g051",
+                status="quarantined",
+                reason_code="response_schema_invalid",
+                failure_stage="vision",
+                schema_stage=stage,
+            )
+
+
+def test_vision_schema_stage_survives_attempt_public_json_and_private_v2_diagnostic(
+    licensed_ingestion_cli: ModuleType,
+    vision_module: ModuleType,
+    offline_settings: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    captured: list[Any] = []
+    original_prepare = cli._prepare_private_quarantine
+
+    def capture_prepare(config: Any, outcomes: list[Any]) -> Any:
+        captured.extend(outcomes)
+        return original_prepare(config, outcomes)
+
+    monkeypatch.setattr(cli, "_prepare_private_quarantine", capture_prepare)
+    response_bodies = {
+        "envelope": _rk_completion(
+            envelope_updates={"usage": {"provider": _RL_PROVIDER_PROSE}}
+        ),
+        "content": _rj_standard_completion(_RL_PROVIDER_PROSE),
+        "payload": _catalog_completion_bytes(
+            _catalog_payload(provider_note=_RL_PROVIDER_PROSE)
+        ),
+    }
+    for stage, response_body in response_bodies.items():
+        case_root = tmp_path / stage
+        case_root.mkdir()
+        config = _rg_config(cli, case_root)
+        result = _rg_run(
+            cli,
+            config,
+            RulingGImageProvider(_make_image("PNG")),
+            _vision_adapter(
+                vision_module,
+                offline_settings,
+                CatalogVisionTransportSpy(response_body),
+            ),
+        )
+        internal = captured[-1]
+        public = result.item_outcomes[0]
+        public_json = json.loads(result.model_dump_json())["item_outcomes"][0]
+        private = _ri_rows(_ri_paths(config)[1])[0]
+        assert internal.schema_stage == stage
+        assert public.schema_stage == stage
+        assert public_json["schema_stage"] == stage
+        assert private["schema_version"] == 2
+        assert private["schema_stage"] == stage
+        assert (private["failure_stage"], private["reason_code"]) == (
+            "vision",
+            "response_schema_invalid",
+        )
+        assert result.ready_ids == () and result.quarantined_ids == ("g051",)
+        assert not any(
+            row.get("garment_id") == "g051" for row in _ri_rows(config.sources_path)
+        )
+        rendered = json.dumps(
+            {"public": public_json, "private": private}, ensure_ascii=False
+        )
+        assert _RL_PROVIDER_PROSE not in rendered
+
+
+def test_non_schema_vision_failure_has_explicit_null_stage_at_every_boundary(
+    licensed_ingestion_cli: ModuleType,
+    vision_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    captured: list[Any] = []
+    original_prepare = cli._prepare_private_quarantine
+
+    def capture_prepare(config: Any, outcomes: list[Any]) -> Any:
+        captured.extend(outcomes)
+        return original_prepare(config, outcomes)
+
+    monkeypatch.setattr(cli, "_prepare_private_quarantine", capture_prepare)
+    config = _rg_config(cli, tmp_path)
+    result = _rg_run(
+        cli,
+        config,
+        RulingGImageProvider(_make_image("PNG")),
+        Task4Vision(
+            _rl_vision_error(
+                vision_module,
+                reason="timeout",
+            )
+        ),
+    )
+    public = result.item_outcomes[0]
+    private = _ri_rows(_ri_paths(config)[1])[0]
+    assert captured[0].schema_stage is None
+    assert public.schema_stage is None
+    assert json.loads(result.model_dump_json())["item_outcomes"][0]["schema_stage"] is None
+    assert private["schema_version"] == 2 and private["schema_stage"] is None
+    assert (private["failure_stage"], private["reason_code"]) == ("vision", "timeout")
+    assert _RL_PROVIDER_PROSE not in result.model_dump_json()
+    assert _RL_PROVIDER_PROSE not in json.dumps(private)
+
+    with pytest.raises(ValidationError):
+        cli.ItemIngestionOutcome(
+            garment_id="g051",
+            status="quarantined",
+            reason_code="timeout",
+            failure_stage="vision",
+            schema_stage="envelope",
+        )
+    image_schema_failure = cli.ItemIngestionOutcome(
+        garment_id="g051",
+        status="quarantined",
+        reason_code="response_schema_invalid",
+        failure_stage="image_provider",
+        schema_stage=None,
+    )
+    assert image_schema_failure.schema_stage is None
+
+
+def test_invalid_or_missing_vision_schema_stage_fails_before_persistence(
+    licensed_ingestion_cli: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    cases = (
+        ("response_schema_invalid", _RL_MISSING),
+        ("response_schema_invalid", None),
+        ("response_schema_invalid", "future"),
+        ("response_schema_invalid", _RL_PROVIDER_PROSE),
+        ("timeout", "envelope"),
+    )
+    for index, (reason, stage) in enumerate(cases):
+        case_root = tmp_path / f"case-{index}"
+        case_root.mkdir()
+        config = _rg_config(cli, case_root)
+        provider = RulingGImageProvider(_make_image("PNG"))
+        vision = Task4Vision(
+            _rl_vision_error(
+                vision_module,
+                reason=reason,
+                schema_stage=stage,
+            )
+        )
+        with pytest.raises(ValueError, match="invalid_vision_schema_stage") as caught:
+            _rg_run(cli, config, provider, vision)
+        assert _RL_PROVIDER_PROSE not in str(caught.value)
+        root, diagnostics = _ri_paths(config)
+        assert not root.exists() and not diagnostics.exists()
+        assert not config.manifest_path.exists() and not config.sources_path.exists()
+        assert not config.asset_directory.exists()
+
+
+def test_legacy_v1_private_diagnostic_without_stage_is_read_only_compatible(
+    licensed_ingestion_cli: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    config, private_png, diagnostics, _, png_before, _ = _rii_seed_private_truth(
+        cli, vision_module, tmp_path, inject_transaction=False
+    )
+    legacy = _ri_rows(diagnostics)[0]
+    legacy.pop("schema_version", None)
+    legacy.pop("schema_stage", None)
+    legacy_bytes = (json.dumps(legacy, sort_keys=True) + "\n").encode("utf-8")
+    diagnostics.write_bytes(legacy_bytes)
+    authoritative = {
+        garment.garment_id: garment
+        for garment in cli._controlled_garments(config.garment_file)
+    }
+    records = cli._validate_existing_private_quarantine(
+        config,
+        authoritative=authoritative,
+        requested_image_model=_RG_MODEL,
+        image_resolved_allowlist=(_RG_MODEL,),
+    )
+    assert len(records) == 1
+    assert getattr(records[0], "schema_stage", None) is None
+    assert "schema_stage" not in records[0].model_dump(mode="json", exclude_unset=True)
+    assert diagnostics.read_bytes() == legacy_bytes
+    assert private_png.read_bytes() == png_before
+
+
+def test_new_private_v2_diagnostic_cannot_use_legacy_missing_stage_path(
+    licensed_ingestion_cli: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    config = _rg_config(cli, tmp_path)
+    outcome = _rl_attempt(
+        cli,
+        vision_module,
+        config,
+        reason="response_schema_invalid",
+        schema_stage="envelope",
+    )
+    record = dict(outcome.private_quarantine_record)
+    assert record["schema_version"] == 2 and record["schema_stage"] == "envelope"
+    for missing in ("schema_stage", "schema_version"):
+        forged = dict(record)
+        forged.pop(missing)
+        with pytest.raises((ValidationError, ValueError)):
+            cli._prepare_private_quarantine(
+                config,
+                [replace(outcome, private_quarantine_record=forged)],
+            )
+    root, diagnostics = _ri_paths(config)
+    assert not root.exists() and not diagnostics.exists()
+    assert not config.manifest_path.exists() and not config.sources_path.exists()
