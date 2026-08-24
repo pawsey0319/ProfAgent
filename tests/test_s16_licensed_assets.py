@@ -6288,3 +6288,139 @@ def test_vision_quarantine_publication_is_atomic_without_dangling_trust(
         assert not any(row.get("garment_id") == "g051" and row.get("status") == "ready"
                        for row in _task4_manifest(config.manifest_path)["items"])
     assert not any(row.get("garment_id") == "g051" for row in _ri_rows(config.sources_path))
+
+
+@pytest.mark.parametrize(
+    ("provider_code", "closed_reason"),
+    [
+        ("CPA_IMAGE_OUTPUT_REJECTED", "response_schema_invalid"),
+        ("CPA_IMAGE_INPUT_REJECTED", "input_rejected"),
+        ("CPA_IMAGE_PROVIDER_UNAVAILABLE", "provider_unavailable"),
+        ("CPA_IMAGE_PROVIDER_TIMEOUT", "timeout"),
+    ],
+)
+def test_cpa_failure_codes_have_exact_closed_reason_mapping(
+    licensed_ingestion_cli: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+    provider_code: str,
+    closed_reason: str,
+) -> None:
+    from profagent.providers import ProviderUnavailable
+
+    cli = licensed_ingestion_cli._load()
+    config = _rg_config(cli, tmp_path)
+    provider = RulingGImageProvider(
+        b"", error=ProviderUnavailable("untrusted prose", reason_code=provider_code)
+    )
+    outcome = _rg_run(
+        cli, config, provider, Task4Vision(AssertionError("Vision must not run"))
+    ).item_outcomes[0]
+    assert (outcome.failure_stage, outcome.reason_code) == (
+        "image_provider", closed_reason,
+    )
+
+
+def test_vision_provenance_is_server_requested_and_allowlisted_not_trace_claimed(
+    licensed_ingestion_cli: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    config = _rg_config(cli, tmp_path)
+    poisoned = vision_module.VisionUnavailable(
+        "untrusted prose",
+        {
+            "reason_code": "product_type_mismatch",
+            "requested_model": "attacker-request-token",
+            "resolved_model": "unknown-attacker-model",
+            "model_verified": True,
+            "provider_body": "secret-body",
+        },
+    )
+    result = _rg_run(
+        cli, config, RulingGImageProvider(_make_image("PNG")), Task4Vision(poisoned)
+    )
+    provenance = result.item_outcomes[0].vision_model_provenance.model_dump()
+    assert provenance == {
+        "requested_model": "grok4.6",
+        "resolved_model": None,
+        "model_verified": False,
+    }
+    _, diagnostics = _ri_paths(config)
+    encoded = diagnostics.read_text(encoding="utf-8")
+    assert all(value not in encoded for value in (
+        "attacker-request-token", "unknown-attacker-model", "secret-body"
+    ))
+    assert _ri_rows(diagnostics)[0]["vision_model_provenance"] == provenance
+
+
+def test_failed_private_rollback_has_marker_and_next_run_recovers_pair(
+    licensed_ingestion_cli: ModuleType,
+    vision_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from profagent.providers import ProviderUnavailable
+
+    cli = licensed_ingestion_cli._load()
+    config = _rg_config(cli, tmp_path)
+    root, diagnostics = _ri_paths(config)
+    marker = config.asset_directory.parent / "cpa_generated_quarantine_transaction.json"
+    original_json = cli._atomic_write_json
+
+    def fail_manifest(path: Path, payload: dict[str, Any]) -> None:
+        if Path(path) == config.manifest_path:
+            raise OSError("manifest")
+        original_json(path, payload)
+
+    monkeypatch.setattr(cli, "_atomic_write_json", fail_manifest)
+    monkeypatch.setattr(cli, "_restore_private_file", lambda *_args: None)
+    with pytest.raises(OSError, match="manifest"):
+        _rg_run(
+            cli, config, RulingGImageProvider(_make_image("PNG")),
+            Task4Vision(_ri_vision_error(vision_module, "product_type_mismatch")),
+        )
+    assert marker.is_file()
+    assert diagnostics.is_file() and any(path.is_file() for path in root.rglob("*"))
+
+    monkeypatch.setattr(cli, "_atomic_write_json", original_json)
+    provider = RulingGImageProvider(
+        b"", error=ProviderUnavailable("closed", reason_code="CPA_IMAGE_PROVIDER_UNAVAILABLE")
+    )
+    _rg_run(cli, config, provider, Task4Vision(AssertionError("Vision must not run")))
+    assert not marker.exists() and not diagnostics.exists()
+    assert not [path for path in root.rglob("*") if path.is_file()]
+
+
+def test_private_quarantine_rejects_symlink_root_before_any_write(
+    licensed_ingestion_cli: ModuleType,
+    vision_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    config = _rg_config(cli, tmp_path)
+    root, diagnostics = _ri_paths(config)
+    original = Path.is_symlink
+    monkeypatch.setattr(
+        Path, "is_symlink", lambda path: True if path == root else original(path)
+    )
+    with pytest.raises(ValueError, match="unsafe_private_quarantine_root"):
+        _rg_run(
+            cli, config, RulingGImageProvider(_make_image("PNG")),
+            Task4Vision(_ri_vision_error(vision_module, "quality_rejected")),
+        )
+    assert not diagnostics.exists() and not config.manifest_path.exists()
+
+
+def test_private_quarantine_root_is_outside_all_serveable_roots_and_ignored() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    private_root = (repository / "data" / "assets" / "private_quarantine").resolve()
+    for relative in ("data/assets/wardrobe_catalog_reference_v1", "static", "web"):
+        serveable = (repository / relative).resolve()
+        assert private_root != serveable and serveable not in private_root.parents
+        assert private_root not in serveable.parents
+    ignored = (repository / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert "data/assets/private_quarantine/" in ignored
+    assert "data/assets/cpa_generated_quarantine_diagnostics.jsonl" in ignored
