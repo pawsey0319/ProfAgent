@@ -6095,6 +6095,11 @@ def _ri_vision_error(vision_module: ModuleType, reason: str) -> Exception:
             "provider_body": "secret-body",
             "prompt": "secret-prompt",
             "owner_id": "secret-owner",
+            **(
+                {"schema_stage": "payload"}
+                if reason == "response_schema_invalid"
+                else {}
+            ),
         },
     )
 
