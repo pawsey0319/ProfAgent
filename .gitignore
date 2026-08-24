@@ -13,3 +13,6 @@ config.local.json
 reports/runtime/
 .profagent/
 .worktrees/
+data/assets/private_quarantine/
+data/assets/cpa_generated_quarantine_diagnostics.jsonl
+data/assets/cpa_generated_quarantine_transaction.json

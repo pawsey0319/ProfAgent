@@ -42,7 +42,11 @@ from profagent.licensed_assets import (
     public_license_from_source,
 )
 from profagent.models import Garment
-from profagent.providers import ProviderUnavailable
+from profagent.providers import (
+    CPA_REPORTED_MODELS,
+    LOGICAL_GROK_MODEL,
+    ProviderUnavailable,
+)
 from profagent.vision import VisionAdapter, VisionUnavailable
 from profagent.wardrobe_assets import (
     WARDROBE_GENERATED_ASSET_SET,
@@ -126,6 +130,18 @@ IngestionFailureReason = Literal[
     "invalid_region",
     "quality_rejected",
 ]
+
+_IMAGE_FAILURE_REASON_BY_CODE: dict[str, IngestionFailureReason] = {
+    "CPA_IMAGE_OUTPUT_REJECTED": "response_schema_invalid",
+    "CPA_IMAGE_INPUT_REJECTED": "input_rejected",
+    "CPA_IMAGE_PROVIDER_UNAVAILABLE": "provider_unavailable",
+    "CPA_IMAGE_PROVIDER_TIMEOUT": "timeout",
+    "CPA_IMAGE_BUDGET_EXCEEDED": "timeout",
+    "CPA_IMAGE_PROVIDER_DISABLED": "provider_unavailable",
+    "CPA_IMAGE_CIRCUIT_OPEN": "provider_unavailable",
+    "CPA_IMAGE_TRACE_VERIFICATION_FAILED": "model_mismatch",
+    "CPA_IMAGE_MODEL_VERIFICATION_FAILED": "model_mismatch",
+}
 
 FailureStage = Literal["image_provider", "local_validation", "vision"]
 VisionFailureReason = Literal[
@@ -1792,36 +1808,44 @@ class _PrivateQuarantineDiagnostic(BaseModel):
         return self
 
 
-def _minimal_model_provenance(raw: Any) -> MinimalModelProvenance | None:
-    if not isinstance(raw, dict):
-        return None
-    requested = raw.get("requested_model")
-    resolved = raw.get("resolved_model")
-    verified = raw.get("model_verified")
-    if not isinstance(requested, str) or not isinstance(verified, bool):
-        return None
-    if not verified:
-        resolved = None
-    try:
-        return MinimalModelProvenance(
-            requested_model=requested,
-            resolved_model=resolved,
-            model_verified=verified,
-        )
-    except (TypeError, ValueError):
-        return None
+def _minimal_model_provenance(
+    raw: Any,
+    *,
+    requested_model: str,
+    resolved_allowlist: tuple[str, ...] | frozenset[str],
+) -> MinimalModelProvenance:
+    """Project a provider trace onto server-owned model policy.
+
+    The provider may report routing evidence, but it cannot choose either the
+    logical requested model or the set of accepted resolved models.  Any
+    disagreement is represented as an unverified, content-free observation.
+    """
+
+    resolved: str | None = None
+    verified = False
+    if isinstance(raw, dict):
+        claimed_requested = raw.get("requested_model")
+        claimed_resolved = raw.get("resolved_model")
+        claimed_verified = raw.get("model_verified")
+        if (
+            claimed_requested == requested_model
+            and claimed_verified is True
+            and isinstance(claimed_resolved, str)
+            and claimed_resolved in resolved_allowlist
+        ):
+            resolved = claimed_resolved
+            verified = True
+    return MinimalModelProvenance(
+        requested_model=requested_model,
+        resolved_model=resolved,
+        model_verified=verified,
+    )
 
 
 def _image_failure_reason(error: ProviderUnavailable | ValueError | TypeError) -> IngestionFailureReason:
     code = getattr(error, "reason_code", "")
-    if isinstance(code, str):
-        normalized = code.upper()
-        if "TIMEOUT" in normalized:
-            return "timeout"
-        if "MODEL" in normalized:
-            return "model_mismatch"
-        if any(token in normalized for token in ("INVALID", "SCHEMA", "BASE64", "RESPONSE")):
-            return "response_schema_invalid"
+    if isinstance(code, str) and code in _IMAGE_FAILURE_REASON_BY_CODE:
+        return _IMAGE_FAILURE_REASON_BY_CODE[code]
     if isinstance(error, (ValueError, TypeError)):
         return "response_schema_invalid"
     return "provider_unavailable"
@@ -1909,21 +1933,11 @@ async def _attempt_cpa_generated_garment(
             source_kind="ai_generated_reference",
         )
 
-    image_model_provenance = _minimal_model_provenance(model_receipt)
-    if image_model_provenance is None:
-        return _AttemptOutcome(
-            garment=garment,
-            status="quarantined",
-            failure_reason="response_schema_invalid",
-            failure_stage="image_provider",
-            image_model_provenance=MinimalModelProvenance(
-                requested_model=requested_model,
-                resolved_model=None,
-                model_verified=False,
-            ),
-            existing_item=existing_item,
-            source_kind="ai_generated_reference",
-        )
+    image_model_provenance = _minimal_model_provenance(
+        model_receipt,
+        requested_model=requested_model,
+        resolved_allowlist=CPA_GENERATED_HISTORICAL_MODEL_ALLOWLIST,
+    )
     try:
         validator = getattr(safe_fetcher, "validate_local_bytes", None)
         if validator is None:
@@ -1970,24 +1984,25 @@ async def _attempt_cpa_generated_garment(
         raise
     except VisionUnavailable as error:
         reason = _vision_failure_reason(error)
-        vision_model_provenance = _minimal_model_provenance(error.provider_trace)
-        private_record: dict[str, Any] | None = None
-        private_bytes: bytes | None = None
-        if vision_model_provenance is not None:
-            private_bytes = fetched.processed_bytes
-            private_record = _PrivateQuarantineDiagnostic(
-                garment_id=garment.garment_id,
-                user_id=garment.user_id,
-                prompt_sha256=prompt_sha256,
-                original_sha256=fetched.original_sha256,
-                processed_sha256=fetched.processed_sha256,
-                quarantine_sha256=fetched.processed_sha256,
-                quarantine_relative_path=f"{fetched.processed_sha256}.png",
-                failure_stage="vision",
-                reason_code=reason,
-                image_model_provenance=image_model_provenance,
-                vision_model_provenance=vision_model_provenance,
-            ).model_dump(mode="json")
+        vision_model_provenance = _minimal_model_provenance(
+            error.provider_trace,
+            requested_model=LOGICAL_GROK_MODEL,
+            resolved_allowlist=CPA_REPORTED_MODELS,
+        )
+        private_bytes = fetched.processed_bytes
+        private_record = _PrivateQuarantineDiagnostic(
+            garment_id=garment.garment_id,
+            user_id=garment.user_id,
+            prompt_sha256=prompt_sha256,
+            original_sha256=fetched.original_sha256,
+            processed_sha256=fetched.processed_sha256,
+            quarantine_sha256=fetched.processed_sha256,
+            quarantine_relative_path=f"{fetched.processed_sha256}.png",
+            failure_stage="vision",
+            reason_code=reason,
+            image_model_provenance=image_model_provenance,
+            vision_model_provenance=vision_model_provenance,
+        ).model_dump(mode="json")
         return _AttemptOutcome(
             garment=garment,
             status="quarantined",
@@ -2402,12 +2417,343 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     _atomic_write_bytes(path, encoded)
 
 
-def _private_quarantine_paths(config: IngestionConfig) -> tuple[Path, Path]:
-    state_root = config.asset_directory.parent
+def _is_reparse_or_symlink(path: Path) -> bool:
+    try:
+        if path.is_symlink():
+            return True
+        is_junction = getattr(path, "is_junction", None)
+        if callable(is_junction) and is_junction():
+            return True
+        if path.exists():
+            attributes = getattr(path.lstat(), "st_file_attributes", 0)
+            if attributes & 0x400:  # Windows FILE_ATTRIBUTE_REPARSE_POINT
+                return True
+    except OSError:
+        raise ValueError("unsafe_private_quarantine_root") from None
+    return False
+
+
+def _paths_overlap(left: Path, right: Path) -> bool:
     return (
-        state_root / "private_quarantine" / "cpa_generated",
-        state_root / "cpa_generated_quarantine_diagnostics.jsonl",
+        left == right
+        or left in right.parents
+        or right in left.parents
     )
+
+
+def _validated_private_quarantine_paths(
+    config: IngestionConfig,
+) -> tuple[Path, Path, Path, Path]:
+    """Return private paths only after structural non-serving validation."""
+
+    state_root = config.asset_directory.parent
+    private_parent = state_root / "private_quarantine"
+    root = private_parent / "cpa_generated"
+    diagnostics = state_root / "cpa_generated_quarantine_diagnostics.jsonl"
+    marker = state_root / "cpa_generated_quarantine_transaction.json"
+    backup_parent = private_parent / ".transactions"
+
+    # Reject a symlink/junction/reparse point at every lexical parent.  Merely
+    # checking the final child is insufficient because an ancestor can redirect
+    # the private tree into a static or ready-asset root.
+    lexical_chain = (root, private_parent, state_root, *state_root.parents)
+    if any(_is_reparse_or_symlink(path) for path in lexical_chain):
+        raise ValueError("unsafe_private_quarantine_root")
+    for state_file in (diagnostics, marker, backup_parent):
+        if _is_reparse_or_symlink(state_file):
+            raise ValueError("unsafe_private_quarantine_root")
+
+    resolved_state = state_root.resolve()
+    resolved_root = root.resolve()
+    resolved_diagnostics = diagnostics.resolve()
+    resolved_marker = marker.resolve()
+    resolved_backup_parent = backup_parent.resolve()
+    try:
+        resolved_root.relative_to(resolved_state)
+        resolved_diagnostics.relative_to(resolved_state)
+        resolved_marker.relative_to(resolved_state)
+        resolved_backup_parent.relative_to(resolved_state)
+    except ValueError:
+        raise ValueError("unsafe_private_quarantine_root") from None
+
+    serving_roots = {
+        config.asset_directory.resolve(),
+        DEFAULT_ASSET_DIRECTORY.resolve(),
+        AI_REFERENCE_ASSET_ROOT.resolve(),
+        (ROOT / "data" / "assets" / "wardrobe_catalog_reference_v1").resolve(),
+        (ROOT / "static").resolve(),
+        (ROOT / "web").resolve(),
+    }
+    if any(_paths_overlap(resolved_root, serving) for serving in serving_roots):
+        raise ValueError("unsafe_private_quarantine_root")
+    return resolved_root, resolved_diagnostics, resolved_marker, resolved_backup_parent
+
+
+def _private_quarantine_paths(config: IngestionConfig) -> tuple[Path, Path]:
+    root, diagnostics, _, _ = _validated_private_quarantine_paths(config)
+    return root, diagnostics
+
+
+def _transaction_target(
+    *, root: Path, diagnostics: Path, kind: Any, name: Any
+) -> Path:
+    if kind == "diagnostics" and name == diagnostics.name:
+        return diagnostics
+    if (
+        kind == "quarantine"
+        and isinstance(name, str)
+        and len(name) == 68
+        and name.endswith(".png")
+        and _is_sha256(name[:-4])
+    ):
+        candidate = root / name
+        if candidate.parent == root:
+            return candidate
+    raise ValueError("invalid_private_quarantine_transaction")
+
+
+def _validate_private_transaction(
+    payload: Any,
+    *,
+    root: Path,
+    diagnostics: Path,
+    backup_parent: Path,
+) -> tuple[str, str, list[tuple[Path, Path | None, str | None, str]]]:
+    if not isinstance(payload, dict) or set(payload) != {
+        "version", "transaction_id", "phase", "entries"
+    }:
+        raise ValueError("invalid_private_quarantine_transaction")
+    transaction_id = payload.get("transaction_id")
+    phase = payload.get("phase")
+    entries = payload.get("entries")
+    if (
+        payload.get("version") != "cpa_private_quarantine_tx_v1"
+        or not isinstance(transaction_id, str)
+        or len(transaction_id) != 32
+        or any(char not in "0123456789abcdef" for char in transaction_id)
+        or phase not in {"prepared", "committed"}
+        or not isinstance(entries, list)
+        or not entries
+        or len(entries) > 1001
+    ):
+        raise ValueError("invalid_private_quarantine_transaction")
+    backup_root = backup_parent / transaction_id
+    if _is_reparse_or_symlink(backup_root):
+        raise ValueError("invalid_private_quarantine_transaction")
+    validated: list[tuple[Path, Path | None, str | None, str]] = []
+    targets: set[Path] = set()
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict) or set(entry) != {
+            "kind", "name", "previous_sha256", "backup_name", "new_sha256"
+        }:
+            raise ValueError("invalid_private_quarantine_transaction")
+        target = _transaction_target(
+            root=root,
+            diagnostics=diagnostics,
+            kind=entry.get("kind"),
+            name=entry.get("name"),
+        )
+        previous_sha256 = entry.get("previous_sha256")
+        backup_name = entry.get("backup_name")
+        new_sha256 = entry.get("new_sha256")
+        if target in targets or not _is_sha256(new_sha256):
+            raise ValueError("invalid_private_quarantine_transaction")
+        targets.add(target)
+        backup: Path | None = None
+        if previous_sha256 is None and backup_name is None:
+            pass
+        elif (
+            _is_sha256(previous_sha256)
+            and backup_name == f"{index:04d}.bak"
+        ):
+            backup = backup_root / backup_name
+            if backup.parent != backup_root or _is_reparse_or_symlink(backup):
+                raise ValueError("invalid_private_quarantine_transaction")
+        else:
+            raise ValueError("invalid_private_quarantine_transaction")
+        if _is_reparse_or_symlink(target):
+            raise ValueError("invalid_private_quarantine_transaction")
+        validated.append((target, backup, previous_sha256, new_sha256))
+    return transaction_id, phase, validated
+
+
+def _remove_private_transaction_state(
+    *, marker: Path, backup_parent: Path, transaction_id: str, entries: list[tuple[Path, Path | None, str | None, str]]
+) -> None:
+    marker.unlink(missing_ok=True)
+    backup_root = backup_parent / transaction_id
+    for _, backup, _, _ in entries:
+        if backup is not None:
+            backup.unlink(missing_ok=True)
+    try:
+        backup_root.rmdir()
+    except OSError:
+        pass
+    try:
+        backup_parent.rmdir()
+    except OSError:
+        pass
+
+
+def _recover_private_file(path: Path, previous: bytes | None) -> None:
+    """Durable restart recovery independent from the in-process rollback hook."""
+
+    if previous is None:
+        path.unlink(missing_ok=True)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.recovery.tmp")
+    try:
+        temporary.write_bytes(previous)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _recover_private_quarantine_transaction(
+    config: IngestionConfig,
+    *,
+    durable_recovery: bool = True,
+) -> bool:
+    root, diagnostics, marker, backup_parent = _validated_private_quarantine_paths(config)
+    if not marker.exists():
+        return True
+    try:
+        if marker.stat().st_size > MANIFEST_INPUT_LIMIT:
+            raise ValueError("invalid_private_quarantine_transaction")
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+        transaction_id, phase, entries = _validate_private_transaction(
+            payload,
+            root=root,
+            diagnostics=diagnostics,
+            backup_parent=backup_parent,
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise ValueError("invalid_private_quarantine_transaction") from None
+
+    if phase == "committed":
+        committed = True
+        for target, _, _, new_sha256 in entries:
+            try:
+                committed = committed and target.is_file() and (
+                    hashlib.sha256(target.read_bytes()).hexdigest() == new_sha256
+                )
+            except OSError:
+                committed = False
+        if committed:
+            _remove_private_transaction_state(
+                marker=marker,
+                backup_parent=backup_parent,
+                transaction_id=transaction_id,
+                entries=entries,
+            )
+            return True
+
+    for target, backup, previous_sha256, _ in reversed(entries):
+        previous: bytes | None = None
+        if backup is not None:
+            try:
+                previous = backup.read_bytes()
+            except OSError:
+                return False
+            if hashlib.sha256(previous).hexdigest() != previous_sha256:
+                return False
+        restore = _recover_private_file if durable_recovery else _restore_private_file
+        try:
+            restore(target, previous)
+        except OSError:
+            return False
+
+    restored = True
+    for target, _, previous_sha256, _ in entries:
+        try:
+            if previous_sha256 is None:
+                restored = restored and not target.exists()
+            else:
+                restored = restored and target.is_file() and (
+                    hashlib.sha256(target.read_bytes()).hexdigest() == previous_sha256
+                )
+        except OSError:
+            restored = False
+    if restored:
+        _remove_private_transaction_state(
+            marker=marker,
+            backup_parent=backup_parent,
+            transaction_id=transaction_id,
+            entries=entries,
+        )
+    return restored
+
+
+def _begin_private_quarantine_transaction(
+    config: IngestionConfig,
+    targets: dict[Path, bytes],
+) -> dict[str, Any] | None:
+    if not targets:
+        return None
+    root, diagnostics, marker, backup_parent = _validated_private_quarantine_paths(config)
+    if marker.exists():
+        raise ValueError("private_quarantine_recovery_required")
+    transaction_id = uuid.uuid4().hex
+    backup_root = backup_parent / transaction_id
+    if _is_reparse_or_symlink(backup_root):
+        raise ValueError("invalid_private_quarantine_transaction")
+    entries: list[dict[str, Any]] = []
+    try:
+        for index, (target, new_bytes) in enumerate(targets.items()):
+            if target == diagnostics:
+                kind, name = "diagnostics", diagnostics.name
+            elif target.parent == root and target.name.endswith(".png"):
+                kind, name = "quarantine", target.name
+            else:
+                raise ValueError("invalid_private_quarantine_transaction")
+            if _is_reparse_or_symlink(target):
+                raise ValueError("invalid_private_quarantine_transaction")
+            previous = target.read_bytes() if target.exists() else None
+            backup_name: str | None = None
+            previous_sha256: str | None = None
+            if previous is not None:
+                backup_name = f"{index:04d}.bak"
+                previous_sha256 = hashlib.sha256(previous).hexdigest()
+                _atomic_write_bytes(backup_root / backup_name, previous)
+            entries.append(
+                {
+                    "kind": kind,
+                    "name": name,
+                    "previous_sha256": previous_sha256,
+                    "backup_name": backup_name,
+                    "new_sha256": hashlib.sha256(new_bytes).hexdigest(),
+                }
+            )
+        payload = {
+            "version": "cpa_private_quarantine_tx_v1",
+            "transaction_id": transaction_id,
+            "phase": "prepared",
+            "entries": entries,
+        }
+        _atomic_write_json(marker, payload)
+        return payload
+    except BaseException:
+        for entry in entries:
+            backup_name = entry["backup_name"]
+            if backup_name is not None:
+                (backup_root / backup_name).unlink(missing_ok=True)
+        try:
+            backup_root.rmdir()
+            backup_parent.rmdir()
+        except OSError:
+            pass
+        raise
+
+
+def _commit_private_quarantine_transaction(
+    config: IngestionConfig, payload: dict[str, Any]
+) -> None:
+    _, _, marker, _ = _validated_private_quarantine_paths(config)
+    committed = {**payload, "phase": "committed"}
+    _atomic_write_json(marker, committed)
+    if not _recover_private_quarantine_transaction(config):
+        raise OSError("private_quarantine_commit_incomplete")
 
 
 def _prepare_private_quarantine(
@@ -2684,6 +3030,8 @@ async def run_ingestion(
             or transport not in CPA_GENERATED_HISTORICAL_MODEL_ALLOWLIST
         ):
             raise ValueError("cpa_image_provider_required")
+        if not config.dry_run and not _recover_private_quarantine_transaction(config):
+            raise ValueError("private_quarantine_recovery_incomplete")
 
     authoritative = _authoritative_garments()
     if config.dry_run:
@@ -2852,13 +3200,13 @@ async def run_ingestion(
         private_assets, private_diagnostics_path, private_diagnostics = (
             _prepare_private_quarantine(config, outcomes)
         )
-        private_targets = list(private_assets)
+        private_payloads = dict(private_assets)
         if private_diagnostics_path is not None and private_diagnostics is not None:
-            private_targets.append(private_diagnostics_path)
-        private_backups: dict[Path, bytes | None] = {}
+            private_payloads[private_diagnostics_path] = private_diagnostics
+        private_transaction = _begin_private_quarantine_transaction(
+            config, private_payloads
+        )
         try:
-            for path in private_targets:
-                private_backups[path] = path.read_bytes() if path.exists() else None
             for path, payload in private_assets.items():
                 _atomic_write_bytes(path, payload)
             if private_diagnostics_path is not None and private_diagnostics is not None:
@@ -2872,9 +3220,15 @@ async def run_ingestion(
                 _atomic_write_bytes(config.sources_path, new_source_history)
             if new_manifest != persisted_manifest:
                 _atomic_write_json(config.manifest_path, new_manifest)
+            if private_transaction is not None:
+                _commit_private_quarantine_transaction(config, private_transaction)
         except BaseException:
-            for path in reversed(private_targets):
-                _restore_private_file(path, private_backups.get(path))
+            try:
+                _recover_private_quarantine_transaction(
+                    config, durable_recovery=False
+                )
+            except (OSError, TypeError, ValueError):
+                pass
             raise
 
     return IngestionResult(
