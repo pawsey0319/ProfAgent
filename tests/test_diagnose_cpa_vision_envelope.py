@@ -1,0 +1,449 @@
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import json
+import subprocess
+import sys
+from dataclasses import replace
+from pathlib import Path
+from types import ModuleType
+from typing import Any
+
+import pytest
+
+from profagent.config import Settings
+from profagent.vision import VisionUnavailable
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "scripts" / "diagnose_cpa_vision_envelope.py"
+FIXED_RELATIVE_PATH = Path(
+    "data/assets/private_quarantine/cpa_generated/"
+    "33c9439e4516e571925689f0ef501a9771f3d25888ff24ecbe044c6b16d19749.png"
+)
+FIXED_SHA256 = "33c9439e4516e571925689f0ef501a9771f3d25888ff24ecbe044c6b16d19749"
+PROFILE = "cpa_chat_completion_metadata_v1"
+OUTPUT_KEYS = {
+    "reason_code",
+    "schema_stage",
+    "envelope_failure_code",
+    "envelope_metadata_profile",
+    "model_provenance",
+    "vision_call_count",
+}
+PROVENANCE_KEYS = {"requested_model", "resolved_model", "model_verified"}
+EVIDENCE_PATHS = (
+    ROOT / "data/manifests/wardrobe_assets_v2.json",
+    ROOT / "data/sources/wardrobe_s16_sources.jsonl",
+    ROOT / "data/assets/cpa_generated_quarantine_diagnostics.jsonl",
+    ROOT / FIXED_RELATIVE_PATH,
+    ROOT
+    / "data/assets/private_quarantine/cpa_generated/"
+    "46c5d710493b59daa823f72d9c68ab18d059e313ead69531c4cb70c2058a4e98.png",
+    ROOT
+    / "data/assets/private_quarantine/cpa_generated/"
+    "afc00f9705193d7d0ea2072989b07bdb6b74ceae757b1f20ba5f8575db662abf.png",
+)
+TRANSACTION_MARKER = ROOT / "data/assets/cpa_generated_quarantine_transaction.json"
+PROVIDER_SECRET = "provider-secret-body-user-g051-must-not-leak"
+
+
+@pytest.fixture
+def diagnostic_module() -> ModuleType:
+    if not SCRIPT.is_file():
+        pytest.fail(
+            "Ruling P RED: scripts/diagnose_cpa_vision_envelope.py is missing",
+            pytrace=False,
+        )
+    name = "_ruling_p_diagnose_cpa_vision_envelope"
+    spec = importlib.util.spec_from_file_location(name, SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _head() -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def _snapshot() -> tuple[tuple[tuple[str, bool, int | None, str | None], ...], bool, str]:
+    evidence = tuple(
+        (
+            str(path.relative_to(ROOT)),
+            path.is_file(),
+            path.stat().st_size if path.is_file() else None,
+            hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None,
+        )
+        for path in EVIDENCE_PATHS
+    )
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    return evidence, TRANSACTION_MARKER.exists(), status
+
+
+def _settings(**updates: Any) -> Settings:
+    settings = Settings(
+        root_dir=ROOT,
+        cpa_base_url="http://127.0.0.1:8317/v1",
+        cpa_api_key="mock-only-key",
+        grok_model="grok4.6",
+        cpa_text_enabled=True,
+        cpa_image_enabled=True,
+        vision_force_failure=False,
+    )
+    return replace(settings, **updates)
+
+
+class _VisionSpy:
+    def __init__(self, outcome: dict[str, Any] | BaseException) -> None:
+        self.outcome = outcome
+        self.calls: list[dict[str, Any]] = []
+
+    async def inspect_catalog_asset(self, **kwargs: Any) -> tuple[object, dict[str, Any]]:
+        self.calls.append(kwargs)
+        if isinstance(self.outcome, BaseException):
+            raise self.outcome
+        return object(), self.outcome
+
+
+def _install_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    module: ModuleType,
+    *,
+    settings: Settings,
+    vision: _VisionSpy,
+) -> None:
+    class _SettingsFactory:
+        @staticmethod
+        def from_env() -> Settings:
+            return settings
+
+    monkeypatch.setattr(module, "Settings", _SettingsFactory)
+    monkeypatch.setattr(module, "VisionAdapter", lambda actual: vision)
+
+    async def image_must_never_run(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("Ruling P is Vision-only; Image calls are forbidden")
+
+    from profagent.image_provider import GrokImageProvider
+
+    monkeypatch.setattr(GrokImageProvider, "generate_static_2d", image_must_never_run)
+
+
+def _invoke(module: ModuleType, capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, dict[str, Any]]:
+    code = module.main(list(argv))
+    captured = capsys.readouterr()
+    assert captured.stderr == ""
+    lines = captured.out.splitlines()
+    assert len(lines) == 1
+    payload = json.loads(lines[0])
+    _assert_minimized(payload)
+    return code, payload
+
+
+def _assert_minimized(payload: dict[str, Any]) -> None:
+    assert set(payload) == OUTPUT_KEYS
+    assert set(payload["model_provenance"]) == PROVENANCE_KEYS
+    rendered = json.dumps(payload, ensure_ascii=False)
+    forbidden = (
+        PROVIDER_SECRET,
+        "provider_body",
+        "unknown_provider_key",
+        "transport_model",
+        "latency",
+        "trace",
+        "token",
+        "secret",
+        "g051",
+        "u01",
+        str(FIXED_RELATIVE_PATH),
+    )
+    assert all(value not in rendered for value in forbidden)
+
+
+def _success_trace() -> dict[str, Any]:
+    return {
+        "reason_code": None,
+        "schema_stage": None,
+        "envelope_failure_code": None,
+        "envelope_metadata_profile": PROFILE,
+        "requested_model": "grok4.6",
+        "resolved_model": "grok-4.6-high",
+        "model_verified": True,
+        "latency_ms": 999,
+        "provider_body": PROVIDER_SECRET,
+    }
+
+
+def _vision_failure(**updates: Any) -> VisionUnavailable:
+    trace: dict[str, Any] = {
+        "reason_code": "response_schema_invalid",
+        "schema_stage": "envelope",
+        "envelope_failure_code": "invalid_envelope_metadata",
+        "envelope_metadata_profile": PROFILE,
+        "requested_model": "grok4.6",
+        "resolved_model": None,
+        "model_verified": False,
+        "provider_body": PROVIDER_SECRET,
+        "unknown_provider_key": PROVIDER_SECRET,
+    }
+    trace.update(updates)
+    return VisionUnavailable(PROVIDER_SECRET, trace)
+
+
+def test_cli_surface_and_fixed_private_input_are_closed(
+    diagnostic_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = diagnostic_module
+    assert module.FIXED_IMAGE_RELATIVE_PATH == FIXED_RELATIVE_PATH
+    assert module.FIXED_IMAGE_SHA256 == FIXED_SHA256
+    assert module.FIXED_MIME_TYPE == "image/png"
+    assert module.FIXED_SLOT == "top"
+    assert module.FIXED_PRODUCT_TYPE == "tie-neck blouse"
+    assert tuple(module.FIXED_AUDIENCES) == (
+        "womenswear",
+        "unisex_womenswear_compatible",
+    )
+    before = _snapshot()
+    for argv in (
+        (),
+        ("--expected-head", "short"),
+        ("--path", PROVIDER_SECRET),
+        ("--garment-id", "g051"),
+        ("--product-type", "dress"),
+        ("--user", "u01"),
+    ):
+        with pytest.raises(SystemExit) as caught:
+            module.main(list(argv))
+        assert caught.value.code != 0
+        assert capsys.readouterr().out == ""
+    assert _snapshot() == before
+
+
+def test_success_stdout_is_exact_and_calls_fixed_vision_once_without_image_or_write(
+    diagnostic_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = diagnostic_module
+    vision = _VisionSpy(_success_trace())
+    _install_runtime(monkeypatch, module, settings=_settings(), vision=vision)
+    before = _snapshot()
+    code, payload = _invoke(module, capsys, "--expected-head", _head())
+    assert code == 0
+    assert payload == {
+        "reason_code": None,
+        "schema_stage": None,
+        "envelope_failure_code": None,
+        "envelope_metadata_profile": PROFILE,
+        "model_provenance": {
+            "requested_model": "grok4.6",
+            "resolved_model": "grok-4.6-high",
+            "model_verified": True,
+        },
+        "vision_call_count": 1,
+    }
+    assert len(vision.calls) == 1
+    call = vision.calls[0]
+    assert set(call) == {
+        "image_bytes",
+        "mime_type",
+        "allowed_slot",
+        "expected_product_type",
+    }
+    assert hashlib.sha256(call["image_bytes"]).hexdigest() == FIXED_SHA256
+    assert call["image_bytes"] == (ROOT / FIXED_RELATIVE_PATH).read_bytes()
+    assert call["mime_type"] == "image/png"
+    assert call["allowed_slot"] == "top"
+    assert call["expected_product_type"] == "tie-neck blouse"
+    assert _snapshot() == before
+
+
+def test_known_vision_failures_map_to_closed_fields_with_one_attempt_no_retry(
+    diagnostic_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = diagnostic_module
+    cases = (
+        (
+            _vision_failure(),
+            ("response_schema_invalid", "envelope", "invalid_envelope_metadata", None, False),
+        ),
+        (
+            _vision_failure(
+                schema_stage="content",
+                envelope_failure_code=None,
+                resolved_model="grok-4.6-high",
+                model_verified=True,
+            ),
+            ("response_schema_invalid", "content", None, "grok-4.6-high", True),
+        ),
+        (
+            _vision_failure(
+                schema_stage="payload",
+                envelope_failure_code=None,
+                resolved_model="grok-4.6-build",
+                model_verified=True,
+            ),
+            ("response_schema_invalid", "payload", None, "grok-4.6-build", True),
+        ),
+        (
+            _vision_failure(
+                reason_code="slot_mismatch",
+                schema_stage="payload",
+                envelope_failure_code=None,
+                resolved_model="grok-4.6-high",
+                model_verified=True,
+            ),
+            ("slot_mismatch", "payload", None, "grok-4.6-high", True),
+        ),
+    )
+    before = _snapshot()
+    for error, expected in cases:
+        vision = _VisionSpy(error)
+        _install_runtime(monkeypatch, module, settings=_settings(), vision=vision)
+        code, payload = _invoke(module, capsys, "--expected-head", _head())
+        reason, stage, envelope_code, resolved, verified = expected
+        assert code != 0
+        assert payload == {
+            "reason_code": reason,
+            "schema_stage": stage,
+            "envelope_failure_code": envelope_code,
+            "envelope_metadata_profile": PROFILE,
+            "model_provenance": {
+                "requested_model": "grok4.6",
+                "resolved_model": resolved,
+                "model_verified": verified,
+            },
+            "vision_call_count": 1,
+        }
+        assert len(vision.calls) == 1
+    assert _snapshot() == before
+
+
+def test_head_hash_config_and_model_startup_mismatch_fail_before_vision(
+    diagnostic_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = diagnostic_module
+    cases = (
+        ("head", _settings()),
+        ("hash", _settings()),
+        ("base", _settings(cpa_base_url="")),
+        ("key", _settings(cpa_api_key=None)),
+        ("disabled", _settings(cpa_text_enabled=False)),
+        ("forced", _settings(vision_force_failure=True)),
+        ("logical", _settings(grok_model="future-model")),
+        ("transport", _settings()),
+        ("reported", _settings()),
+    )
+    before = _snapshot()
+    for kind, settings in cases:
+        with monkeypatch.context() as local:
+            vision = _VisionSpy(AssertionError("Vision must not run"))
+            _install_runtime(local, module, settings=settings, vision=vision)
+            expected_head = _head()
+            if kind == "head":
+                expected_head = "0" * 40
+            elif kind == "hash":
+                local.setattr(module, "FIXED_IMAGE_SHA256", "0" * 64)
+            elif kind == "transport":
+                local.setattr(module, "VISION_TRANSPORT_MODEL", "future-transport")
+            elif kind == "reported":
+                local.setattr(module, "VISION_REPORTED_MODELS", frozenset({"future-build"}))
+            code, payload = _invoke(
+                module, capsys, "--expected-head", expected_head
+            )
+            assert code != 0
+            assert payload == {
+                "reason_code": "input_rejected",
+                "schema_stage": None,
+                "envelope_failure_code": None,
+                "envelope_metadata_profile": None,
+                "model_provenance": {
+                    "requested_model": "grok4.6",
+                    "resolved_model": None,
+                    "model_verified": False,
+                },
+                "vision_call_count": 0,
+            }
+            assert vision.calls == []
+    assert _snapshot() == before
+
+
+def test_unknown_or_poisoned_provider_trace_fails_closed_without_leak_or_retry(
+    diagnostic_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = diagnostic_module
+    poison = _vision_failure(
+        reason_code="future_reason_" + PROVIDER_SECRET,
+        schema_stage="future_stage_" + PROVIDER_SECRET,
+        envelope_failure_code="future_code_" + PROVIDER_SECRET,
+        envelope_metadata_profile="future_profile_" + PROVIDER_SECRET,
+        requested_model=PROVIDER_SECRET,
+        resolved_model=PROVIDER_SECRET,
+        model_verified=True,
+    )
+    vision = _VisionSpy(poison)
+    _install_runtime(monkeypatch, module, settings=_settings(), vision=vision)
+    before = _snapshot()
+    code, payload = _invoke(module, capsys, "--expected-head", _head())
+    assert code != 0
+    assert payload == {
+        "reason_code": "provider_unavailable",
+        "schema_stage": None,
+        "envelope_failure_code": None,
+        "envelope_metadata_profile": None,
+        "model_provenance": {
+            "requested_model": "grok4.6",
+            "resolved_model": None,
+            "model_verified": False,
+        },
+        "vision_call_count": 1,
+    }
+    assert len(vision.calls) == 1
+    assert _snapshot() == before
+
+
+def test_unexpected_provider_exception_is_one_closed_attempt_and_zero_write(
+    diagnostic_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = diagnostic_module
+    vision = _VisionSpy(RuntimeError(PROVIDER_SECRET))
+    _install_runtime(monkeypatch, module, settings=_settings(), vision=vision)
+    before = _snapshot()
+    code, payload = _invoke(module, capsys, "--expected-head", _head())
+    assert code != 0
+    assert payload["reason_code"] == "provider_unavailable"
+    assert payload["schema_stage"] is None
+    assert payload["envelope_failure_code"] is None
+    assert payload["envelope_metadata_profile"] is None
+    assert payload["model_provenance"] == {
+        "requested_model": "grok4.6",
+        "resolved_model": None,
+        "model_verified": False,
+    }
+    assert payload["vision_call_count"] == 1
+    assert len(vision.calls) == 1
+    assert _snapshot() == before
