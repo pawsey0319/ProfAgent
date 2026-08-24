@@ -47,7 +47,12 @@ from profagent.providers import (
     LOGICAL_GROK_MODEL,
     ProviderUnavailable,
 )
-from profagent.vision import VisionAdapter, VisionUnavailable
+from profagent.vision import (
+    CPA_CHAT_COMPLETION_METADATA_PROFILE,
+    EnvelopeFailureCode,
+    VisionAdapter,
+    VisionUnavailable,
+)
 from profagent.wardrobe_assets import (
     WARDROBE_GENERATED_ASSET_SET,
     WARDROBE_GENERATED_ASSET_VERSION,
@@ -145,6 +150,7 @@ _IMAGE_FAILURE_REASON_BY_CODE: dict[str, IngestionFailureReason] = {
 
 FailureStage = Literal["image_provider", "local_validation", "vision"]
 SchemaStage = Literal["envelope", "content", "payload"]
+EnvelopeMetadataProfile = Literal["cpa_chat_completion_metadata_v1"]
 VisionFailureReason = Literal[
     "input_rejected",
     "timeout",
@@ -179,6 +185,17 @@ _VISION_FAILURE_REASONS = frozenset(
     }
 )
 _SCHEMA_STAGES = frozenset({"envelope", "content", "payload"})
+_ENVELOPE_FAILURE_CODES = frozenset(
+    {
+        "envelope_json_invalid",
+        "unsupported_envelope_fields",
+        "invalid_envelope_metadata",
+        "invalid_choices",
+        "invalid_choice_metadata",
+        "invalid_message",
+        "invalid_message_metadata",
+    }
+)
 _LEGACY_PRIVATE_QUARANTINE_DIAGNOSTIC_SHA256_ALLOWLIST = frozenset(
     {
         "8dfb54df971e3d5bc48fb04e9c31a86d57898ba7393915f99dff2404ecc9bf5f",
@@ -382,6 +399,8 @@ class ItemIngestionOutcome(BaseModel):
     reason_code: IngestionFailureReason | None = None
     failure_stage: FailureStage | None = None
     schema_stage: SchemaStage | None = None
+    envelope_failure_code: EnvelopeFailureCode | None = None
+    envelope_metadata_profile: EnvelopeMetadataProfile | None = None
     image_model_provenance: MinimalModelProvenance | None = None
     vision_model_provenance: MinimalModelProvenance | None = None
 
@@ -406,8 +425,23 @@ class ItemIngestionOutcome(BaseModel):
         ):
             if self.schema_stage is None:
                 raise ValueError("vision_schema_failure_requires_stage")
+            if self.envelope_metadata_profile != CPA_CHAT_COMPLETION_METADATA_PROFILE:
+                raise ValueError("invalid_vision_envelope_diagnostic")
+            if self.schema_stage == "envelope":
+                if self.envelope_failure_code is None:
+                    raise ValueError("invalid_vision_envelope_diagnostic")
+            elif self.envelope_failure_code is not None:
+                raise ValueError("invalid_vision_envelope_diagnostic")
         elif self.failure_stage != "vision" and self.schema_stage is not None:
             raise ValueError("schema_stage_requires_vision_schema_failure")
+        if not (
+            self.failure_stage == "vision"
+            and self.reason_code == "response_schema_invalid"
+        ) and (
+            self.envelope_failure_code is not None
+            or self.envelope_metadata_profile is not None
+        ):
+            raise ValueError("invalid_vision_envelope_diagnostic")
         return self
 
 
@@ -480,6 +514,8 @@ class _AttemptOutcome:
     ] | None = None
     failure_stage: FailureStage | None = None
     schema_stage: SchemaStage | None = None
+    envelope_failure_code: EnvelopeFailureCode | None = None
+    envelope_metadata_profile: EnvelopeMetadataProfile | None = None
     image_model_provenance: MinimalModelProvenance | None = None
     vision_model_provenance: MinimalModelProvenance | None = None
     private_quarantine_bytes: bytes | None = None
@@ -1796,7 +1832,7 @@ class _PrivateQuarantineDiagnostic(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    schema_version: Literal[2] | None = None
+    schema_version: Literal[2, 3] | None = None
     transaction_id: str = Field(pattern=r"^[0-9a-f]{32}$")
     garment_id: str = Field(pattern=r"^g\d{3}$")
     user_id: str = Field(pattern=r"^u\d{2}$")
@@ -1810,6 +1846,8 @@ class _PrivateQuarantineDiagnostic(BaseModel):
     failure_stage: Literal["vision"]
     reason_code: VisionFailureReason
     schema_stage: SchemaStage | None = None
+    envelope_failure_code: EnvelopeFailureCode | None = None
+    envelope_metadata_profile: EnvelopeMetadataProfile | None = None
     image_model_provenance: MinimalModelProvenance
     vision_model_provenance: MinimalModelProvenance
 
@@ -1817,14 +1855,53 @@ class _PrivateQuarantineDiagnostic(BaseModel):
     def _validate_binding(self) -> "_PrivateQuarantineDiagnostic":
         version_is_set = "schema_version" in self.model_fields_set
         stage_is_set = "schema_stage" in self.model_fields_set
+        failure_code_is_set = "envelope_failure_code" in self.model_fields_set
+        profile_is_set = "envelope_metadata_profile" in self.model_fields_set
         if self.schema_version is None:
-            if version_is_set or stage_is_set:
+            if (
+                version_is_set
+                or stage_is_set
+                or failure_code_is_set
+                or profile_is_set
+            ):
                 raise ValueError("invalid_private_quarantine_schema_version")
-        elif not version_is_set or not stage_is_set:
+        elif self.schema_version == 2:
+            if (
+                not version_is_set
+                or not stage_is_set
+                or failure_code_is_set
+                or profile_is_set
+            ):
+                raise ValueError("invalid_private_quarantine_schema_version")
+        elif (
+            not version_is_set
+            or not stage_is_set
+            or not failure_code_is_set
+            or not profile_is_set
+        ):
             raise ValueError("invalid_private_quarantine_schema_version")
-        elif self.reason_code == "response_schema_invalid":
+        if (
+            self.schema_version is not None
+            and self.reason_code == "response_schema_invalid"
+        ):
             if self.schema_stage is None:
                 raise ValueError("vision_schema_failure_requires_stage")
+            if self.schema_version == 3:
+                if (
+                    self.envelope_metadata_profile
+                    != CPA_CHAT_COMPLETION_METADATA_PROFILE
+                ):
+                    raise ValueError("invalid_vision_envelope_diagnostic")
+                if self.schema_stage == "envelope":
+                    if self.envelope_failure_code is None:
+                        raise ValueError("invalid_vision_envelope_diagnostic")
+                elif self.envelope_failure_code is not None:
+                    raise ValueError("invalid_vision_envelope_diagnostic")
+        elif self.schema_version == 3 and (
+            self.envelope_failure_code is not None
+            or self.envelope_metadata_profile is not None
+        ):
+            raise ValueError("invalid_vision_envelope_diagnostic")
         digests = (
             self.prompt_sha256,
             self.original_sha256,
@@ -1901,7 +1978,12 @@ def _image_failure_reason(error: ProviderUnavailable | ValueError | TypeError) -
 
 def _vision_failure_details(
     error: VisionUnavailable,
-) -> tuple[VisionFailureReason, SchemaStage | None]:
+) -> tuple[
+    VisionFailureReason,
+    SchemaStage | None,
+    EnvelopeFailureCode | None,
+    EnvelopeMetadataProfile | None,
+]:
     trace = error.provider_trace
     reason = trace.get("reason_code") if isinstance(trace, dict) else None
     if not isinstance(reason, str) or reason not in _VISION_FAILURE_REASONS:
@@ -1913,7 +1995,30 @@ def _vision_failure_details(
         raise ValueError("invalid_vision_schema_stage") from None
     if reason == "response_schema_invalid" and stage is None:
         raise ValueError("invalid_vision_schema_stage") from None
-    return reason, stage  # type: ignore[return-value]
+    failure_code = (
+        trace.get("envelope_failure_code") if isinstance(trace, dict) else None
+    )
+    profile = (
+        trace.get("envelope_metadata_profile") if isinstance(trace, dict) else None
+    )
+    if failure_code is not None and (
+        not isinstance(failure_code, str)
+        or failure_code not in _ENVELOPE_FAILURE_CODES
+    ):
+        raise ValueError("invalid_vision_envelope_diagnostic") from None
+    if profile is not None and profile != CPA_CHAT_COMPLETION_METADATA_PROFILE:
+        raise ValueError("invalid_vision_envelope_diagnostic") from None
+    if reason == "response_schema_invalid":
+        if profile != CPA_CHAT_COMPLETION_METADATA_PROFILE:
+            raise ValueError("invalid_vision_envelope_diagnostic") from None
+        if stage == "envelope":
+            if failure_code is None:
+                raise ValueError("invalid_vision_envelope_diagnostic") from None
+        elif failure_code is not None:
+            raise ValueError("invalid_vision_envelope_diagnostic") from None
+    elif failure_code is not None or profile is not None:
+        raise ValueError("invalid_vision_envelope_diagnostic") from None
+    return reason, stage, failure_code, profile  # type: ignore[return-value]
 
 
 async def _attempt_cpa_generated_garment(
@@ -2040,7 +2145,12 @@ async def _attempt_cpa_generated_garment(
     except asyncio.CancelledError:
         raise
     except VisionUnavailable as error:
-        reason, schema_stage = _vision_failure_details(error)
+        (
+            reason,
+            schema_stage,
+            envelope_failure_code,
+            envelope_metadata_profile,
+        ) = _vision_failure_details(error)
         vision_model_provenance = _minimal_model_provenance(
             error.provider_trace,
             requested_model=LOGICAL_GROK_MODEL,
@@ -2048,7 +2158,7 @@ async def _attempt_cpa_generated_garment(
         )
         private_bytes = fetched.processed_bytes
         private_record = _PrivateQuarantineDiagnostic(
-            schema_version=2,
+            schema_version=3,
             transaction_id=uuid.uuid4().hex,
             garment_id=garment.garment_id,
             user_id=garment.user_id,
@@ -2062,6 +2172,8 @@ async def _attempt_cpa_generated_garment(
             failure_stage="vision",
             reason_code=reason,
             schema_stage=schema_stage,
+            envelope_failure_code=envelope_failure_code,
+            envelope_metadata_profile=envelope_metadata_profile,
             image_model_provenance=image_model_provenance,
             vision_model_provenance=vision_model_provenance,
         ).model_dump(mode="json")
@@ -2071,6 +2183,8 @@ async def _attempt_cpa_generated_garment(
             failure_reason=reason,
             failure_stage="vision",
             schema_stage=schema_stage,
+            envelope_failure_code=envelope_failure_code,
+            envelope_metadata_profile=envelope_metadata_profile,
             image_model_provenance=image_model_provenance,
             vision_model_provenance=vision_model_provenance,
             private_quarantine_bytes=private_bytes,
@@ -2975,8 +3089,13 @@ def _prepare_private_quarantine(
             raise ValueError("invalid_private_quarantine_state")
         if (
             not isinstance(record, dict)
-            or record.get("schema_version") != 2
-            or not {"schema_version", "schema_stage"}.issubset(record)
+            or record.get("schema_version") != 3
+            or not {
+                "schema_version",
+                "schema_stage",
+                "envelope_failure_code",
+                "envelope_metadata_profile",
+            }.issubset(record)
         ):
             raise ValueError("invalid_private_quarantine_schema_version")
         validated = _PrivateQuarantineDiagnostic.model_validate(record)
@@ -3368,6 +3487,8 @@ async def run_ingestion(
             reason_code=outcome.failure_reason,
             failure_stage=outcome.failure_stage,
             schema_stage=outcome.schema_stage,
+            envelope_failure_code=outcome.envelope_failure_code,
+            envelope_metadata_profile=outcome.envelope_metadata_profile,
             image_model_provenance=outcome.image_model_provenance,
             vision_model_provenance=outcome.vision_model_provenance,
         )

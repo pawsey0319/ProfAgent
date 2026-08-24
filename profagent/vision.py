@@ -49,6 +49,8 @@ CATALOG_QUALITY_SIGNALS = (
 CATALOG_MIME_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
 CATALOG_SLOTS = frozenset(get_args(Slot))
 CATALOG_SCHEMA_STAGES = frozenset({"envelope", "content", "payload"})
+CPA_CHAT_COMPLETION_METADATA_PROFILE = "cpa_chat_completion_metadata_v1"
+ENVELOPE_METADATA_PROFILE = CPA_CHAT_COMPLETION_METADATA_PROFILE
 
 _COMPLETION_ENVELOPE_KEYS = frozenset(
     {
@@ -72,6 +74,15 @@ CatalogQualityIssueCode = Literal[
     "low_resolution",
 ]
 CatalogConfidenceBand = Literal["high", "medium", "low"]
+EnvelopeFailureCode = Literal[
+    "envelope_json_invalid",
+    "unsupported_envelope_fields",
+    "invalid_envelope_metadata",
+    "invalid_choices",
+    "invalid_choice_metadata",
+    "invalid_message",
+    "invalid_message_metadata",
+]
 CatalogFailureReason = Literal[
     "input_rejected",
     "timeout",
@@ -282,6 +293,14 @@ def _load_json_without_duplicate_keys(value: bytes | str) -> Any:
         raise ValueError("json_nesting_invalid") from None
 
 
+class _CompletionEnvelopeInvalid(ValueError):
+    """Content-free classification for the deliberately small CPA envelope."""
+
+    def __init__(self, code: EnvelopeFailureCode):
+        super().__init__("invalid_completion_envelope")
+        self.code = code
+
+
 def _completion_message(envelope: Any) -> dict[str, Any]:
     """Validate only the deliberately supported CPA completion envelope."""
     if (
@@ -289,50 +308,51 @@ def _completion_message(envelope: Any) -> dict[str, Any]:
         or not {"model", "choices"}.issubset(envelope)
         or not set(envelope).issubset(_COMPLETION_ENVELOPE_KEYS)
     ):
-        raise ValueError("invalid_response_envelope")
+        raise _CompletionEnvelopeInvalid("unsupported_envelope_fields")
     if "id" in envelope and (
         type(envelope["id"]) is not str
         or not 1 <= len(envelope["id"]) <= _COMPLETION_METADATA_MAX_TEXT_LENGTH
     ):
-        raise ValueError("invalid_response_id")
+        raise _CompletionEnvelopeInvalid("invalid_envelope_metadata")
     if "object" in envelope and envelope["object"] != "chat.completion":
-        raise ValueError("invalid_response_object")
+        raise _CompletionEnvelopeInvalid("invalid_envelope_metadata")
     if "created" in envelope and (
         type(envelope["created"]) is not int or envelope["created"] < 0
     ):
-        raise ValueError("invalid_response_created")
+        raise _CompletionEnvelopeInvalid("invalid_envelope_metadata")
     if "system_fingerprint" in envelope:
         fingerprint = envelope["system_fingerprint"]
         if fingerprint is not None and (
             type(fingerprint) is not str
             or len(fingerprint) > _COMPLETION_METADATA_MAX_TEXT_LENGTH
         ):
-            raise ValueError("invalid_response_system_fingerprint")
+            raise _CompletionEnvelopeInvalid("invalid_envelope_metadata")
     choices = envelope["choices"]
     if not isinstance(choices, list) or len(choices) != 1:
-        raise ValueError("invalid_response_choices")
+        raise _CompletionEnvelopeInvalid("invalid_choices")
     choice = choices[0]
     if (
         not isinstance(choice, dict)
         or "message" not in choice
         or not set(choice).issubset(_COMPLETION_CHOICE_KEYS)
     ):
-        raise ValueError("invalid_response_choice")
+        raise _CompletionEnvelopeInvalid("invalid_choices")
     if "index" in choice and (
         type(choice["index"]) is not int or choice["index"] != 0
     ):
-        raise ValueError("invalid_response_choice_index")
+        raise _CompletionEnvelopeInvalid("invalid_choice_metadata")
     if "finish_reason" in choice and choice["finish_reason"] != "stop":
-        raise ValueError("invalid_response_finish_reason")
+        raise _CompletionEnvelopeInvalid("invalid_choice_metadata")
     message = choice["message"]
     if (
         not isinstance(message, dict)
         or "content" not in message
         or not set(message).issubset(_COMPLETION_MESSAGE_KEYS)
+        or message.get("content") is None
     ):
-        raise ValueError("invalid_response_message")
+        raise _CompletionEnvelopeInvalid("invalid_message")
     if "role" in message and message["role"] != "assistant":
-        raise ValueError("invalid_response_message_role")
+        raise _CompletionEnvelopeInvalid("invalid_message_metadata")
     return message
 
 
@@ -430,6 +450,8 @@ class VisionAdapter:
         assessment_count: int = 0,
         quality_issue_count: int = 0,
         schema_stage: Literal["envelope", "content", "payload"] | None = None,
+        envelope_failure_code: EnvelopeFailureCode | None = None,
+        envelope_metadata_profile: str | None = None,
     ) -> dict[str, Any]:
         return {
             "component": "vision",
@@ -449,6 +471,8 @@ class VisionAdapter:
             "assessment_count": assessment_count,
             "quality_issue_count": quality_issue_count,
             "schema_stage": schema_stage,
+            "envelope_failure_code": envelope_failure_code,
+            "envelope_metadata_profile": envelope_metadata_profile,
         }
 
     def _catalog_failure(
@@ -460,7 +484,14 @@ class VisionAdapter:
         model_verified: bool = False,
         quality_issue_count: int = 0,
         schema_stage: Literal["envelope", "content", "payload"] | None = None,
+        envelope_failure_code: EnvelopeFailureCode | None = None,
+        envelope_metadata_profile: str | None = None,
     ) -> VisionUnavailable:
+        if (
+            reason_code == "response_schema_invalid"
+            and envelope_metadata_profile is None
+        ):
+            envelope_metadata_profile = CPA_CHAT_COMPLETION_METADATA_PROFILE
         trace = self._catalog_trace(
             status="quarantined",
             reason_code=reason_code,
@@ -469,6 +500,8 @@ class VisionAdapter:
             model_verified=model_verified,
             quality_issue_count=quality_issue_count,
             schema_stage=schema_stage,
+            envelope_failure_code=envelope_failure_code,
+            envelope_metadata_profile=envelope_metadata_profile,
         )
         self._last_health = {
             **self._last_health,
@@ -487,12 +520,16 @@ class VisionAdapter:
         latency_ms: int | float,
         schema: str,
         schema_stage: Literal["envelope", "content", "payload"] | None = None,
+        envelope_failure_code: EnvelopeFailureCode | None = None,
+        envelope_metadata_profile: str | None = None,
     ) -> VisionUnavailable:
         if operation == "catalog_asset_assessment":
             return self._catalog_failure(
                 reason_code,
                 latency_ms=latency_ms,
                 schema_stage=schema_stage,
+                envelope_failure_code=envelope_failure_code,
+                envelope_metadata_profile=envelope_metadata_profile,
             )
         legacy = {
             "timeout": ("vision interaction budget exceeded", "timeout"),
@@ -693,6 +730,16 @@ class VisionAdapter:
                     if operation == "catalog_asset_assessment"
                     else None
                 ),
+                envelope_failure_code=(
+                    "envelope_json_invalid"
+                    if operation == "catalog_asset_assessment"
+                    else None
+                ),
+                envelope_metadata_profile=(
+                    CPA_CHAT_COMPLETION_METADATA_PROFILE
+                    if operation == "catalog_asset_assessment"
+                    else None
+                ),
             ) from None
         except httpx.TimeoutException:
             latency_ms = round((time.perf_counter() - started) * 1000)
@@ -729,7 +776,6 @@ class VisionAdapter:
             ) from None
         try:
             envelope = _load_json_without_duplicate_keys(response_body)
-            message = _completion_message(envelope)
         except (TypeError, UnicodeDecodeError, ValueError):
             raise self._request_failure(
                 operation=operation,
@@ -738,6 +784,40 @@ class VisionAdapter:
                 schema=schema,
                 schema_stage=(
                     "envelope"
+                    if operation == "catalog_asset_assessment"
+                    else None
+                ),
+                envelope_failure_code=(
+                    "envelope_json_invalid"
+                    if operation == "catalog_asset_assessment"
+                    else None
+                ),
+                envelope_metadata_profile=(
+                    CPA_CHAT_COMPLETION_METADATA_PROFILE
+                    if operation == "catalog_asset_assessment"
+                    else None
+                ),
+            ) from None
+        try:
+            message = _completion_message(envelope)
+        except _CompletionEnvelopeInvalid as error:
+            raise self._request_failure(
+                operation=operation,
+                reason_code="response_schema_invalid",
+                latency_ms=latency_ms,
+                schema=schema,
+                schema_stage=(
+                    "envelope"
+                    if operation == "catalog_asset_assessment"
+                    else None
+                ),
+                envelope_failure_code=(
+                    error.code
+                    if operation == "catalog_asset_assessment"
+                    else None
+                ),
+                envelope_metadata_profile=(
+                    CPA_CHAT_COMPLETION_METADATA_PROFILE
                     if operation == "catalog_asset_assessment"
                     else None
                 ),
@@ -769,6 +849,11 @@ class VisionAdapter:
                 schema=schema,
                 schema_stage=(
                     "content"
+                    if operation == "catalog_asset_assessment"
+                    else None
+                ),
+                envelope_metadata_profile=(
+                    CPA_CHAT_COMPLETION_METADATA_PROFILE
                     if operation == "catalog_asset_assessment"
                     else None
                 ),
