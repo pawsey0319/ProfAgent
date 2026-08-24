@@ -3248,7 +3248,13 @@ class Task4Vision:
         )
         if isinstance(self.assessment, Exception):
             raise self.assessment
-        return self.assessment, {"operation": "catalog_asset_assessment"}
+        assessment = self.assessment
+        if callable(assessment):
+            assessment = assessment(
+                allowed_slot=allowed_slot,
+                expected_product_type=expected_product_type,
+            )
+        return assessment, {"operation": "catalog_asset_assessment"}
 
 
 def _task4_fetched_image(licensed_assets: ModuleType) -> Any:
@@ -3784,7 +3790,13 @@ def test_ingestion_enforces_candidate_retry_concurrency_and_total_budgets(
     state_dir = tmp_path / "state"
     fetched = _task4_fetched_image(licensed_assets)
     fetcher = Task4SafeFetcher(fetched, wait=True)
-    vision = Task4Vision(_task4_assessment(vision_module))
+    vision = Task4Vision(
+        lambda *, allowed_slot, expected_product_type: _task4_assessment(
+            vision_module,
+            slot=allowed_slot,
+            product_type=expected_product_type,
+        )
+    )
     search_responses = [
         httpx.Response(503, json={"detail": "bounded retry"}),
         httpx.Response(
@@ -5290,9 +5302,15 @@ def test_trusted_openverse_thumbnail_uses_only_same_canonical_uuid_path_and_task
     assert len(vision.calls) == 1
     # JPEG input is normalized locally by the already accepted Task 2 proof
     # before the authority-free Vision bridge sees it.
-    assert set(vision.calls[0]) == {"image_bytes", "mime_type", "allowed_slot"}
+    assert set(vision.calls[0]) == {
+        "image_bytes",
+        "mime_type",
+        "allowed_slot",
+        "expected_product_type",
+    }
     assert vision.calls[0]["mime_type"] == "image/png"
     assert vision.calls[0]["allowed_slot"] == "top"
+    assert vision.calls[0]["expected_product_type"] == "tie-neck blouse"
     assert vision.calls[0]["image_bytes"].startswith(b"\x89PNG\r\n\x1a\n")
 
 
