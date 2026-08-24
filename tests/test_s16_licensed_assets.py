@@ -2133,6 +2133,8 @@ CATALOG_TRACE_KEYS = {
     "assessment_count",
     "quality_issue_count",
     "schema_stage",
+    "envelope_failure_code",
+    "envelope_metadata_profile",
 }
 CATALOG_IMAGE = _make_image("PNG", size=(24, 32))
 
@@ -6096,7 +6098,13 @@ def _ri_vision_error(vision_module: ModuleType, reason: str) -> Exception:
             "prompt": "secret-prompt",
             "owner_id": "secret-owner",
             **(
-                {"schema_stage": "payload"}
+                {
+                    "schema_stage": "payload",
+                    "envelope_failure_code": None,
+                    "envelope_metadata_profile": (
+                        "cpa_chat_completion_metadata_v1"
+                    ),
+                }
                 if reason == "response_schema_invalid"
                 else {}
             ),
@@ -7075,6 +7083,13 @@ def _rl_vision_error(
     }
     if schema_stage is not _RL_MISSING:
         trace["schema_stage"] = schema_stage
+    if reason == "response_schema_invalid":
+        trace["envelope_failure_code"] = (
+            "invalid_envelope_metadata" if schema_stage == "envelope" else None
+        )
+        trace["envelope_metadata_profile"] = (
+            "cpa_chat_completion_metadata_v1"
+        )
     return vision_module.VisionUnavailable(_RL_PROVIDER_PROSE, trace)
 
 
@@ -7113,14 +7128,24 @@ def test_vision_schema_stage_contract_is_closed_on_public_outcomes(
     cli = licensed_ingestion_cli._load()
     assert frozenset(get_args(cli.SchemaStage)) == _RL_SCHEMA_STAGES
     for stage in _RL_SCHEMA_STAGES:
+        failure_code = (
+            "invalid_envelope_metadata" if stage == "envelope" else None
+        )
         outcome = cli.ItemIngestionOutcome(
             garment_id="g051",
             status="quarantined",
             reason_code="response_schema_invalid",
             failure_stage="vision",
             schema_stage=stage,
+            envelope_failure_code=failure_code,
+            envelope_metadata_profile="cpa_chat_completion_metadata_v1",
         )
         assert outcome.schema_stage == stage
+        assert outcome.envelope_failure_code == failure_code
+        assert (
+            outcome.envelope_metadata_profile
+            == "cpa_chat_completion_metadata_v1"
+        )
         assert outcome.model_dump(mode="json")["schema_stage"] == stage
     for stage in ("future", _RL_PROVIDER_PROSE, None, True, {"stage": "envelope"}):
         with pytest.raises(ValidationError):
@@ -7156,7 +7181,7 @@ def test_vision_schema_stage_contract_is_closed_on_public_outcomes(
         )
 
 
-def test_vision_schema_stage_survives_attempt_public_json_and_private_v2_diagnostic(
+def test_vision_schema_stage_survives_attempt_public_json_and_private_v3_diagnostic(
     licensed_ingestion_cli: ModuleType,
     vision_module: ModuleType,
     offline_settings: Any,
@@ -7181,6 +7206,11 @@ def test_vision_schema_stage_survives_attempt_public_json_and_private_v2_diagnos
             _catalog_payload(provider_note=_RL_PROVIDER_PROSE)
         ),
     }
+    expected_codes = {
+        "envelope": "unsupported_envelope_fields",
+        "content": None,
+        "payload": None,
+    }
     for stage, response_body in response_bodies.items():
         case_root = tmp_path / stage
         case_root.mkdir()
@@ -7202,8 +7232,14 @@ def test_vision_schema_stage_survives_attempt_public_json_and_private_v2_diagnos
         assert internal.schema_stage == stage
         assert public.schema_stage == stage
         assert public_json["schema_stage"] == stage
-        assert private["schema_version"] == 2
+        assert private["schema_version"] == 3
         assert private["schema_stage"] == stage
+        for record in (public_json, private):
+            assert record["envelope_failure_code"] == expected_codes[stage]
+            assert (
+                record["envelope_metadata_profile"]
+                == "cpa_chat_completion_metadata_v1"
+            )
         assert (private["failure_stage"], private["reason_code"]) == (
             "vision",
             "response_schema_invalid",
@@ -7270,7 +7306,10 @@ def test_non_schema_vision_failure_preserves_honest_closed_stage_at_every_bounda
         private = _ri_rows(_ri_paths(config)[1])[0]
         assert internal.schema_stage == public.schema_stage == stage
         assert public_json["schema_stage"] == private["schema_stage"] == stage
-        assert private["schema_version"] == 2
+        assert private["schema_version"] == 3
+        for record in (public_json, private):
+            assert record["envelope_failure_code"] is None
+            assert record["envelope_metadata_profile"] is None
         assert (private["failure_stage"], private["reason_code"]) == (
             "vision",
             reason,
@@ -7347,6 +7386,8 @@ def test_legacy_v1_private_diagnostic_without_stage_is_read_only_compatible(
     legacy = _ri_rows(diagnostics)[0]
     legacy.pop("schema_version", None)
     legacy.pop("schema_stage", None)
+    legacy.pop("envelope_failure_code", None)
+    legacy.pop("envelope_metadata_profile", None)
     legacy_bytes = _rl_raw_line(legacy) + b"\n"
     diagnostics.write_bytes(legacy_bytes)
     monkeypatch.setattr(
@@ -7388,7 +7429,9 @@ def test_legacy_v1_private_diagnostic_without_stage_is_read_only_compatible(
     rows = _ri_rows(diagnostics)
     assert len(rows) == 2
     assert "schema_version" not in rows[0] and "schema_stage" not in rows[0]
-    assert rows[1]["schema_version"] == 2 and rows[1]["schema_stage"] == "payload"
+    assert rows[1]["schema_version"] == 3 and rows[1]["schema_stage"] == "payload"
+    assert rows[1]["envelope_failure_code"] is None
+    assert rows[1]["envelope_metadata_profile"] is None
     assert private_png.read_bytes() == png_before
     assert result.ready_ids == () and result.quarantined_ids == ("g051",)
     assert not any(
@@ -7409,6 +7452,8 @@ def test_unallowlisted_third_legacy_v1_diagnostic_fails_before_provider_or_write
     base = _ri_rows(diagnostics)[0]
     base.pop("schema_version", None)
     base.pop("schema_stage", None)
+    base.pop("envelope_failure_code", None)
+    base.pop("envelope_metadata_profile", None)
     rows: list[dict[str, Any]] = []
     for digit in ("1", "2", "3"):
         row = dict(base)
@@ -7450,7 +7495,7 @@ def test_unallowlisted_third_legacy_v1_diagnostic_fails_before_provider_or_write
     _ri_assert_public_quarantined(config)
 
 
-def test_new_private_v2_diagnostic_cannot_use_legacy_missing_stage_path(
+def test_new_private_v3_diagnostic_cannot_use_legacy_missing_stage_path(
     licensed_ingestion_cli: ModuleType,
     vision_module: ModuleType,
     tmp_path: Path,
@@ -7465,11 +7510,19 @@ def test_new_private_v2_diagnostic_cannot_use_legacy_missing_stage_path(
         schema_stage="envelope",
     )
     record = dict(outcome.private_quarantine_record)
-    assert record["schema_version"] == 2 and record["schema_stage"] == "envelope"
+    assert record["schema_version"] == 3 and record["schema_stage"] == "envelope"
+    assert record["envelope_failure_code"] == "invalid_envelope_metadata"
+    assert (
+        record["envelope_metadata_profile"]
+        == "cpa_chat_completion_metadata_v1"
+    )
     for missing in (
         ("schema_stage",),
         ("schema_version",),
+        ("envelope_failure_code",),
+        ("envelope_metadata_profile",),
         ("schema_stage", "schema_version"),
+        ("envelope_failure_code", "envelope_metadata_profile"),
     ):
         forged = dict(record)
         for key in missing:
