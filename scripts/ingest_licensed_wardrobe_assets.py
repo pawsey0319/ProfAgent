@@ -2504,6 +2504,8 @@ def _validate_existing_private_quarantine(
     config: IngestionConfig,
     *,
     authoritative: dict[str, Garment],
+    requested_image_model: str,
+    image_resolved_allowlist: tuple[str, ...] | frozenset[str],
 ) -> tuple[_PrivateQuarantineDiagnostic, ...]:
     """Validate durable private evidence without granting it resume authority."""
 
@@ -2532,6 +2534,16 @@ def _validate_existing_private_quarantine(
             garment = authoritative.get(record.garment_id)
             if garment is None:
                 raise ValueError("invalid_private_quarantine_diagnostics")
+            expected_image_provenance = _minimal_model_provenance(
+                record.image_model_provenance.model_dump(mode="python"),
+                requested_model=requested_image_model,
+                resolved_allowlist=image_resolved_allowlist,
+            )
+            expected_vision_provenance = _minimal_model_provenance(
+                record.vision_model_provenance.model_dump(mode="python"),
+                requested_model=LOGICAL_GROK_MODEL,
+                resolved_allowlist=CPA_REPORTED_MODELS,
+            )
             expected_prompt_hash = hashlib.sha256(
                 _cpa_generated_prompt(garment).encode("utf-8")
             ).hexdigest()
@@ -2541,6 +2553,8 @@ def _validate_existing_private_quarantine(
                 or record.slot != garment.slot
                 or record.product_type != product_type_for_garment(garment.garment_id)
                 or record.prompt_sha256 != expected_prompt_hash
+                or record.image_model_provenance != expected_image_provenance
+                or record.vision_model_provenance != expected_vision_provenance
             ):
                 raise ValueError("invalid_private_quarantine_diagnostics")
             transaction_ids.add(record.transaction_id)
@@ -2776,6 +2790,28 @@ def _recover_private_quarantine_transaction(
             entries=entries,
         )
     return restored
+
+
+def _validate_private_quarantine_transaction_marker(config: IngestionConfig) -> None:
+    """Validate durable recovery state without mutating it or granting authority."""
+
+    root, diagnostics, marker, backup_parent = _validated_private_quarantine_paths(config)
+    if not marker.exists():
+        return
+    try:
+        if marker.stat().st_size > MANIFEST_INPUT_LIMIT:
+            raise ValueError("invalid_private_quarantine_transaction")
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+        _, _, entries = _validate_private_transaction(
+            payload,
+            root=root,
+            diagnostics=diagnostics,
+            backup_parent=backup_parent,
+        )
+        if any(target.exists() for target, _, _, _ in entries):
+            raise ValueError("invalid_private_quarantine_transaction")
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise ValueError("invalid_private_quarantine_transaction") from None
 
 
 def _begin_private_quarantine_transaction(
@@ -3141,10 +3177,14 @@ async def run_ingestion(
             or transport not in CPA_GENERATED_HISTORICAL_MODEL_ALLOWLIST
         ):
             raise ValueError("cpa_image_provider_required")
+        _validate_existing_private_quarantine(
+            config,
+            authoritative=authoritative,
+            requested_image_model=requested,
+            image_resolved_allowlist=CPA_GENERATED_HISTORICAL_MODEL_ALLOWLIST,
+        )
+        _validate_private_quarantine_transaction_marker(config)
         if not config.dry_run:
-            _validate_existing_private_quarantine(
-                config, authoritative=authoritative
-            )
             if not _recover_private_quarantine_transaction(config):
                 raise ValueError("private_quarantine_recovery_incomplete")
 
