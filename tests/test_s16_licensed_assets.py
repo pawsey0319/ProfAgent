@@ -6514,6 +6514,8 @@ def test_existing_private_diagnostic_corruption_fails_before_provider(
     config, private_png, diagnostics, _, png_before, _ = _rii_seed_private_truth(
         cli, vision_module, tmp_path
     )
+    manifest_before = config.manifest_path.read_bytes()
+    sources_before = config.sources_path.read_bytes()
     rows = _ri_rows(diagnostics)
     if corruption == "missing_png":
         private_png.unlink()
@@ -6535,7 +6537,11 @@ def test_existing_private_diagnostic_corruption_fails_before_provider(
         )
     if corruption != "missing_png":
         assert private_png.read_bytes() == png_before
-    assert not config.sources_path.exists()
+    assert config.manifest_path.read_bytes() == manifest_before
+    assert config.sources_path.read_bytes() == sources_before
+    item = _task4_manifest_item(_task4_manifest(config.manifest_path), "g051")
+    assert item["status"] == "quarantined" and item["relative_path"] is None
+    assert not any(row.get("garment_id") == "g051" for row in _ri_rows(config.sources_path))
 
 
 def test_valid_existing_diagnostic_is_read_only_and_never_resumes_ready(
