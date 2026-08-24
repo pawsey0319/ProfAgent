@@ -28,6 +28,7 @@ from pydantic import (
     model_validator,
 )
 
+from .catalog_product_types import CATALOG_PRODUCT_TYPES
 from .config import (
     LICENSED_ASSET_MAX_DIMENSION,
     LICENSED_ASSET_MAX_PIXELS,
@@ -528,6 +529,7 @@ class CatalogVisionInspector(Protocol):
         image_bytes: bytes,
         mime_type: str,
         allowed_slot: Slot,
+        expected_product_type: str,
     ) -> tuple[CatalogAssetAssessment, dict[str, Any]]: ...
 
 
@@ -645,7 +647,7 @@ def _local_catalog_quarantine_trace(
         "transport_model": "grok-4.6-high",
         "resolved_model": resolved_model if model_verified else None,
         "model_verified": model_verified,
-        "schema": "catalog_asset_assessment_v1",
+        "schema": "catalog_asset_assessment_v2",
         "image_logged": False,
         "latency_ms": latency_ms,
         "interaction_budget_seconds": budget,
@@ -659,12 +661,14 @@ async def assess_and_crop_catalog_asset(
     vision: CatalogVisionInspector,
     fetched_image: FetchedImage,
     allowed_slot: Slot,
+    expected_product_type: str,
 ) -> tuple[CatalogCroppedImage, CatalogAssetAssessment, dict[str, Any]]:
     """Apply Provider advice locally without writing identity or manifest truth."""
     assessment, provider_trace = await vision.inspect_catalog_asset(
         image_bytes=fetched_image.processed_bytes,
         mime_type=fetched_image.processed_mime_type,
         allowed_slot=allowed_slot,
+        expected_product_type=expected_product_type,
     )
     from .vision import CatalogAssetAssessment, VisionUnavailable
 
@@ -675,6 +679,11 @@ async def assess_and_crop_catalog_asset(
         reason_code = "response_schema_invalid"
     elif assessment.slot != allowed_slot:
         reason_code = "slot_mismatch"
+    elif (
+        expected_product_type not in CATALOG_PRODUCT_TYPES
+        or assessment.product_type != expected_product_type
+    ):
+        reason_code = "product_type_mismatch"
     elif assessment.audience not in {
         "womenswear",
         "unisex_womenswear_compatible",

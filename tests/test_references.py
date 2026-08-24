@@ -57,6 +57,7 @@ def test_vision_legacy_and_catalog_operations_share_one_verified_request_path(
                 return (
                     {
                         "slot": "top",
+                        "product_type": "tie-neck blouse",
                         "audience": "womenswear",
                         "contains_identifiable_person": False,
                         "object_region": [0.1, 0.1, 0.9, 0.9],
@@ -112,6 +113,7 @@ def test_vision_legacy_and_catalog_operations_share_one_verified_request_path(
             image_bytes=b"catalog-image",
             mime_type="image/png",
             allowed_slot="top",
+            expected_product_type="tie-neck blouse",
         )
         return legacy, catalog
 

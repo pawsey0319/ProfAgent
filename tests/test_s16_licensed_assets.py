@@ -2110,6 +2110,7 @@ CATALOG_FAILURE_REASONS = {
     "response_schema_invalid",
     "model_mismatch",
     "slot_mismatch",
+    "product_type_mismatch",
     "audience_rejected",
     "identifiable_person",
     "low_confidence",
@@ -2143,6 +2144,7 @@ def vision_module() -> ModuleType:
 def _catalog_payload(**overrides: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "slot": "top",
+        "product_type": "tie-neck blouse",
         "audience": "womenswear",
         "contains_identifiable_person": False,
         "object_region": [0.1, 0.05, 0.9, 0.95],
@@ -2228,12 +2230,14 @@ def _inspect_catalog(
     image_bytes: bytes = CATALOG_IMAGE,
     mime_type: str = "image/png",
     allowed_slot: str = "top",
+    expected_product_type: str = "tie-neck blouse",
 ) -> tuple[Any, dict[str, Any]]:
     return asyncio.run(
         adapter.inspect_catalog_asset(
             image_bytes=image_bytes,
             mime_type=mime_type,
             allowed_slot=allowed_slot,
+            expected_product_type=expected_product_type,
         )
     )
 
@@ -2247,7 +2251,7 @@ def _assert_catalog_trace_is_minimized(
     assert set(trace) <= CATALOG_TRACE_KEYS
     assert trace["component"] == "vision"
     assert trace["operation"] == "catalog_asset_assessment"
-    assert trace["schema"] == "catalog_asset_assessment_v1"
+    assert trace["schema"] == "catalog_asset_assessment_v2"
     assert trace["requested_model"] == "grok4.6"
     assert trace["transport_model"] == "grok-4.6-high"
     assert trace["image_logged"] is False
@@ -2316,6 +2320,7 @@ def test_vision_catalog_assessment_model_is_exact_frozen_and_closed(
     model = vision_module.CatalogAssetAssessment
     assert set(model.model_fields) == {
         "slot",
+        "product_type",
         "audience",
         "contains_identifiable_person",
         "object_region",
@@ -2411,6 +2416,7 @@ def test_vision_catalog_quality_issue_codes_are_closed_and_unique(
         ("slot", "unknown"),
         ("audience", "menswear"),
         ("audience", "unknown"),
+        ("product_type", "unknown garment"),
         ("confidence_band", "very_high"),
         ("confidence_band", 1),
     ],
@@ -2485,6 +2491,7 @@ def test_vision_catalog_request_is_minimized_and_contains_no_authority(
     for required in (
         "image/png",
         "top",
+        "tie-neck blouse",
         "womenswear",
         "unisex_womenswear_compatible",
         *sorted(CATALOG_QUALITY_ISSUES),
@@ -2500,6 +2507,8 @@ def test_vision_catalog_request_is_minimized_and_contains_no_authority(
         "authorization",
         "receipt",
         "owner_id",
+        "raw_name",
+        "search_text",
     ):
         assert forbidden not in serialized
 
@@ -2881,6 +2890,7 @@ def test_vision_catalog_external_cancellation_propagates_and_cancels_mock_transp
                 image_bytes=CATALOG_IMAGE,
                 mime_type="image/png",
                 allowed_slot="top",
+                expected_product_type="tie-neck blouse",
             )
         )
         for _ in range(100):
@@ -2919,6 +2929,7 @@ def test_vision_catalog_signature_and_result_exclude_provider_authority_fields(
         "image_bytes",
         "mime_type",
         "allowed_slot",
+        "expected_product_type",
     }
     assert all(
         parameter.kind is inspect.Parameter.KEYWORD_ONLY
@@ -2967,6 +2978,7 @@ def test_catalog_asset_server_bridge_crops_fetched_image_without_authority_or_me
             vision=adapter,
             fetched_image=fetched,
             allowed_slot="top",
+            expected_product_type="tie-neck blouse",
         )
     )
 
@@ -3036,6 +3048,7 @@ def test_catalog_asset_server_bridge_quarantines_local_processing_failure(
                 vision=adapter,
                 fetched_image=fetched,
                 allowed_slot="top",
+                expected_product_type="tie-neck blouse",
             )
         )
 
@@ -3223,12 +3236,14 @@ class Task4Vision:
         image_bytes: bytes,
         mime_type: str,
         allowed_slot: str,
+        expected_product_type: str,
     ) -> tuple[Any, dict[str, object]]:
         self.calls.append(
             {
                 "image_bytes": image_bytes,
                 "mime_type": mime_type,
                 "allowed_slot": allowed_slot,
+                "expected_product_type": expected_product_type,
             }
         )
         if isinstance(self.assessment, Exception):
@@ -3251,9 +3266,15 @@ def _task4_fetched_image(licensed_assets: ModuleType) -> Any:
     )
 
 
-def _task4_assessment(vision_module: ModuleType, *, slot: str = "top") -> Any:
+def _task4_assessment(
+    vision_module: ModuleType,
+    *,
+    slot: str = "top",
+    product_type: str = "tie-neck blouse",
+) -> Any:
     return vision_module.CatalogAssetAssessment(
         slot=slot,
+        product_type=product_type,
         audience="womenswear",
         contains_identifiable_person=False,
         object_region=(0.0, 0.0, 1.0, 1.0),
@@ -4994,14 +5015,17 @@ def test_ingestion_vision_boundary_reports_only_call_count_and_model_provenance(
             image_bytes: bytes,
             mime_type: str,
             allowed_slot: str,
+            expected_product_type: str,
         ) -> tuple[Any, dict[str, object]]:
             assert image_bytes
             assert mime_type == "image/png"
             assert allowed_slot == "top"
+            assert expected_product_type == "tie-neck blouse"
             return await super().inspect_catalog_asset(
                 image_bytes=image_bytes,
                 mime_type=mime_type,
                 allowed_slot=allowed_slot,
+                expected_product_type=expected_product_type,
             )
 
     vision = AuthorityFreeVision(_task4_assessment(vision_module))
@@ -5822,3 +5846,229 @@ def test_historical_cpa_receipt_policy_is_stable_across_provider_invocations(
         image_model_allowlist=(),
     )
     assert _task4_manifest_item(manifest, "g051")["status"] == "ready"
+
+
+# Fresh fix2: production construction and exact generated-product verification.
+def test_cpa_generated_cli_constructs_the_frozen_provider_from_settings(
+    licensed_ingestion_cli: ModuleType,
+    offline_settings: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    settings = replace(
+        offline_settings,
+        cpa_image_enabled=True,
+        cpa_base_url="https://cpa.example/v1",
+        cpa_api_key="test-only-key",
+        cpa_image_model=_RG_MODEL,
+        cpa_image_timeout_seconds=7.5,
+    )
+    captured: dict[str, Any] = {}
+
+    class TestSettings:
+        @classmethod
+        def from_env(cls) -> Any:
+            return settings
+
+    class ProviderSpy:
+        requested_model = _RG_MODEL
+        transport_model = _RG_MODEL
+
+        def __init__(self, received: Any) -> None:
+            captured["settings"] = received
+
+    async def capture_run(*args: Any, **kwargs: Any) -> Any:
+        captured["image_provider"] = kwargs.get("image_provider")
+        captured["allowlist"] = kwargs.get("image_model_allowlist")
+        config = kwargs.get("config", args[0] if args else None)
+        return cli.IngestionResult(
+            dry_run=True,
+            ready_ids=(),
+            reused_ids=(),
+            quarantined_ids=(),
+            remaining_ids=(),
+            api_attempts=0,
+            candidate_attempts=0,
+            manifest_path=config.manifest_path,
+        )
+
+    monkeypatch.setattr(cli, "Settings", TestSettings)
+    monkeypatch.setattr(cli, "GrokImageProvider", ProviderSpy, raising=False)
+    monkeypatch.setattr(cli, "SafeImageFetcher", lambda **_kwargs: object())
+    monkeypatch.setattr(cli, "VisionAdapter", lambda _settings: object())
+    monkeypatch.setattr(cli, "run_ingestion", capture_run)
+    config = _rg_config(cli, tmp_path)
+
+    asyncio.run(cli._run_cli(config))
+
+    assert captured["settings"] is settings
+    assert isinstance(captured["image_provider"], ProviderSpy)
+    assert captured["allowlist"] == (_RG_MODEL,)
+
+
+def test_catalog_vision_quarantines_same_slot_wrong_product_type(
+    vision_module: ModuleType,
+    offline_settings: Any,
+) -> None:
+    transport = CatalogVisionTransportSpy(
+        _catalog_completion_bytes(
+            _catalog_payload(product_type="puff-sleeve blouse")
+        )
+    )
+    adapter = _vision_adapter(vision_module, offline_settings, transport)
+
+    with pytest.raises(vision_module.VisionUnavailable) as caught:
+        _inspect_catalog(
+            adapter,
+            allowed_slot="top",
+            expected_product_type="tie-neck blouse",
+        )
+
+    _assert_catalog_failure(vision_module, caught, "product_type_mismatch")
+
+
+def test_cpa_generated_same_slot_wrong_product_never_becomes_ready(
+    licensed_ingestion_cli: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    config = _rg_config(cli, tmp_path)
+    vision = Task4Vision(
+        _task4_assessment(
+            vision_module,
+            slot="top",
+            product_type="puff-sleeve blouse",
+        )
+    )
+
+    result = _rg_run(
+        cli,
+        config,
+        RulingGImageProvider(_make_image("PNG")),
+        vision,
+    )
+
+    assert result.ready_ids == ()
+    assert result.quarantined_ids == ("g051",)
+    assert vision.calls[0]["allowed_slot"] == "top"
+    assert vision.calls[0]["expected_product_type"] == "tie-neck blouse"
+    item = _task4_manifest_item(_task4_manifest(config.manifest_path), "g051")
+    assert item["status"] == "quarantined"
+    assert item["receipt_history"] == []
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"cpa_image_enabled": False},
+        {"cpa_image_enabled": True, "cpa_base_url": ""},
+        {
+            "cpa_image_enabled": True,
+            "cpa_base_url": "https://cpa.example/v1",
+            "cpa_image_model": "unreviewed-image-model",
+        },
+    ],
+)
+def test_cpa_generated_cli_configuration_failures_are_controlled_before_run(
+    licensed_ingestion_cli: ModuleType,
+    offline_settings: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    updates: dict[str, Any],
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    secret = "must-not-escape"
+    setting_updates = {
+        "cpa_api_key": secret,
+        "cpa_image_model": _RG_MODEL,
+        **updates,
+    }
+    settings = replace(offline_settings, **setting_updates)
+
+    class TestSettings:
+        @classmethod
+        def from_env(cls) -> Any:
+            return settings
+
+    async def must_not_run(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("configuration failure must precede ingestion")
+
+    monkeypatch.setattr(cli, "Settings", TestSettings)
+    monkeypatch.setattr(cli, "SafeImageFetcher", lambda **_kwargs: object())
+    monkeypatch.setattr(cli, "VisionAdapter", lambda _settings: object())
+    monkeypatch.setattr(cli, "run_ingestion", must_not_run)
+
+    with pytest.raises(ValueError) as caught:
+        asyncio.run(cli._run_cli(_rg_config(cli, tmp_path)))
+
+    assert str(caught.value) == "cpa_generated_configuration_unavailable"
+    assert secret not in str(caught.value)
+
+
+def test_frozen_grok_provider_uses_exact_cpa_transport_boundary(
+    offline_settings: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = importlib.import_module("profagent.image_provider")
+    payload = _make_image("PNG")
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "model": _RG_MODEL,
+                "data": [{"b64_json": base64.b64encode(payload).decode("ascii")}],
+            },
+            headers={"content-type": "application/json", "x-cpa-trace-id": "test-1"},
+            request=request,
+        )
+
+    settings = replace(
+        offline_settings,
+        cpa_image_enabled=True,
+        cpa_base_url="https://cpa.example/v1",
+        cpa_api_key="test-only-key",
+        cpa_image_model=_RG_MODEL,
+        cpa_image_timeout_seconds=7.5,
+    )
+    original_client = module.httpx.AsyncClient
+    client_kwargs: dict[str, Any] = {}
+
+    class AsyncClientSpy:
+        def __init__(self, **kwargs: Any) -> None:
+            client_kwargs.update(kwargs)
+            self.inner = original_client(**kwargs)
+
+        async def __aenter__(self) -> Any:
+            return await self.inner.__aenter__()
+
+        async def __aexit__(self, *args: Any) -> Any:
+            return await self.inner.__aexit__(*args)
+
+    monkeypatch.setattr(module.httpx, "AsyncClient", AsyncClientSpy)
+    provider = module.GrokImageProvider(
+        settings,
+        transport=httpx.MockTransport(handler),
+    )
+
+    result, mime_type, receipt = asyncio.run(provider.generate_static_2d("safe prompt"))
+
+    assert result == payload and mime_type == "image/png"
+    assert receipt["transport_model"] == _RG_MODEL
+    assert client_kwargs["trust_env"] is False
+    assert client_kwargs["follow_redirects"] is False
+    assert client_kwargs["timeout"] == 7.5
+    assert len(requests) == 1
+    assert str(requests[0].url) == "https://cpa.example/v1/images/generations"
+    body = json.loads(requests[0].content)
+    assert body == {
+        "model": _RG_MODEL,
+        "prompt": "safe prompt",
+        "n": 1,
+        "size": "1024x1024",
+        "response_format": "b64_json",
+    }

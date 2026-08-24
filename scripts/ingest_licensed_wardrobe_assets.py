@@ -23,6 +23,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from profagent.config import CPA_IMAGE_MODEL, Settings
+from profagent.catalog_product_types import (
+    CATALOG_PRODUCT_TYPE_BY_GARMENT_ID,
+    product_type_for_garment,
+)
+from profagent.image_provider import GrokImageProvider
 from profagent.licensed_assets import (
     CatalogCroppedImage,
     CatalogVisionInspector,
@@ -968,43 +973,7 @@ def _parse_imported_at(value: Any) -> datetime:
     return imported_at
 
 
-_CPA_PRODUCT_NOUN_BY_GARMENT_ID = {
-    "g051": "tie-neck blouse", "g052": "square-neck knit top",
-    "g053": "draped button-up shirt", "g054": "fitted base-layer top",
-    "g055": "puff-sleeve blouse", "g056": "sleeveless knit vest",
-    "g057": "collared dress shirt", "g058": "linen shirt",
-    "g059": "tailored straight-leg trousers", "g060": "wide-leg trousers",
-    "g061": "pleated midi skirt", "g062": "pencil skirt",
-    "g063": "straight-leg jeans", "g064": "knit midi skirt",
-    "g065": "jogger trousers", "g066": "athletic trousers",
-    "g067": "a-line midi skirt", "g068": "waist-fitted work dress",
-    "g069": "shirt dress", "g070": "tea dress", "g071": "sheath work dress",
-    "g072": "linen travel dress", "g073": "knit dress",
-    "g074": "satin evening gown", "g075": "double-breasted blazer",
-    "g076": "windbreaker jacket", "g077": "cropped boucle jacket",
-    "g078": "trench coat", "g079": "oversized wool overcoat",
-    "g080": "hooded sports jacket", "g081": "evening shawl",
-    "g082": "low-heel loafers", "g083": "pointed-toe pumps",
-    "g084": "ballet flats", "g085": "travel sneakers",
-    "g086": "strappy sandals", "g087": "mary jane shoes",
-    "g088": "ankle boots", "g089": "structured tote bag",
-    "g090": "travel crossbody bag", "g091": "chain clutch bag",
-    "g092": "square neck scarf", "g093": "resin earrings",
-    "g094": "slim leather belt", "g095": "zip-up crop top",
-    "g096": "crew-neck cardigan", "g097": "satin evening blouse",
-    "g098": "cigarette trousers", "g099": "linen wide-leg trousers",
-    "g100": "satin midi skirt", "g101": "square-neck dress",
-    "g102": "polo sports dress", "g103": "linen blazer",
-    "g104": "denim jacket", "g105": "running shoes",
-    "g106": "low-heel mule shoes", "g107": "sun-protection shirt",
-    "g108": "knit sweater", "g109": "mock-neck knit top",
-    "g110": "cargo trousers", "g111": "slit midi skirt",
-    "g112": "tapered casual trousers", "g113": "a-line day dress",
-    "g114": "tailored blazer dress", "g115": "long knit cardigan",
-    "g116": "formal blazer", "g117": "leather derby shoes",
-    "g118": "soft leather shoulder bag", "g119": "sun hat",
-    "g120": "faux pearl necklace",
-}
+_CPA_PRODUCT_NOUN_BY_GARMENT_ID = CATALOG_PRODUCT_TYPE_BY_GARMENT_ID
 _CPA_COLORS = frozenset(
     {"beige", "black", "blue", "brown", "gray", "green", "khaki", "navy",
      "orange", "pink", "purple", "red", "white", "yellow"}
@@ -1025,9 +994,10 @@ _CPA_OCCASIONS = frozenset(
 def _cpa_generated_prompt(garment: Garment) -> str:
     """Build a deterministic prompt from server-owned closed vocabulary only."""
 
-    noun = _CPA_PRODUCT_NOUN_BY_GARMENT_ID.get(garment.garment_id)
-    if noun is None:
-        raise ValueError("invalid_cpa_generated_product_noun")
+    try:
+        noun = product_type_for_garment(garment.garment_id)
+    except ValueError:
+        raise ValueError("invalid_cpa_generated_product_noun") from None
     styles = tuple(garment.styles)
     occasions = tuple(garment.occasions)
     if (
@@ -1742,6 +1712,7 @@ async def _attempt_cpa_generated_garment(
             vision=vision,
             fetched_image=fetched,
             allowed_slot=garment.slot,
+            expected_product_type=product_type_for_garment(garment.garment_id),
         )
         _record_vision_model_provenance(counters, vision_trace)
     except asyncio.CancelledError:
@@ -1857,6 +1828,7 @@ async def _attempt_openverse_garment(
                 vision=vision,
                 fetched_image=fetched,
                 allowed_slot=garment.slot,
+                expected_product_type=product_type_for_garment(garment.garment_id),
             )
             _record_vision_model_provenance(counters, vision_trace)
         except asyncio.CancelledError:
@@ -2005,6 +1977,7 @@ async def _attempt_user_owned_garment(
             vision=vision,
             fetched_image=fetched,
             allowed_slot=garment.slot,
+            expected_product_type=product_type_for_garment(garment.garment_id),
         )
         _record_vision_model_provenance(counters, vision_trace)
     except asyncio.CancelledError:
@@ -2557,6 +2530,44 @@ async def _run_cli(config: IngestionConfig) -> IngestionResult:
         config=SafeImageConfig.from_settings(settings),
     )
     vision = VisionAdapter(settings)
+    if config.provider == "cpa-generated":
+        if (
+            settings.cpa_image_enabled is not True
+            or settings.cpa_image_model != CPA_IMAGE_MODEL
+            or not isinstance(settings.cpa_base_url, str)
+            or not settings.cpa_base_url.strip()
+        ):
+            raise ValueError("cpa_generated_configuration_unavailable")
+        try:
+            endpoint = httpx.URL(settings.cpa_base_url)
+        except (TypeError, ValueError):
+            raise ValueError("cpa_generated_configuration_unavailable") from None
+        if (
+            endpoint.scheme not in {"http", "https"}
+            or not endpoint.host
+            or endpoint.userinfo
+            or endpoint.query
+            or endpoint.fragment
+        ):
+            raise ValueError("cpa_generated_configuration_unavailable")
+        try:
+            image_provider = GrokImageProvider(settings)
+        except (TypeError, ValueError):
+            raise ValueError("cpa_generated_configuration_unavailable") from None
+        if (
+            image_provider.requested_model not in CPA_GENERATED_HISTORICAL_MODEL_ALLOWLIST
+            or image_provider.transport_model
+            not in CPA_GENERATED_HISTORICAL_MODEL_ALLOWLIST
+        ):
+            raise ValueError("cpa_generated_configuration_unavailable")
+        return await run_ingestion(
+            config,
+            None,
+            fetcher,
+            vision,
+            image_provider=image_provider,
+            image_model_allowlist=CPA_GENERATED_HISTORICAL_MODEL_ALLOWLIST,
+        )
     if config.provider != "openverse":
         return await run_ingestion(config, None, fetcher, vision)
     timeout = httpx.Timeout(connect=5.0, read=15.0, write=5.0, pool=5.0)

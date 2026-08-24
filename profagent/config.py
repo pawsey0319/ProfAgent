@@ -302,7 +302,9 @@ class Settings:
             "PROFAGENT_CPA_IMAGE_MODEL", CPA_IMAGE_MODEL
         ).strip()
         if requested_image_model != CPA_IMAGE_MODEL:
-            requested_image_model = CPA_IMAGE_MODEL
+            raise ValueError(
+                "PROFAGENT_CPA_IMAGE_MODEL must match the frozen image model"
+            )
         database_url = os.getenv("PROFAGENT_DATABASE_URL")
         if not database_url:
             database_url = f"sqlite:///{(root / '.profagent' / 'memory.sqlite3').as_posix()}"

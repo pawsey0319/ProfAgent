@@ -15,12 +15,17 @@ from pydantic import (
     ConfigDict,
     Field,
     StrictBool,
+    StrictStr,
     ValidationError,
     field_validator,
     model_validator,
 )
 
 from .asset_service import AssetRecord
+from .catalog_product_types import (
+    CATALOG_PRODUCT_TYPES,
+    validate_catalog_product_type,
+)
 from .config import Settings
 from .models import Audience, Slot
 from .providers import CPA_REPORTED_MODELS, CPA_TRANSPORT_MODEL
@@ -32,7 +37,7 @@ VISIBLE_SLOTS = {"top", "bottom", "shoes", "overall"}
 MIN_REGION_CONFIDENCE = 0.70
 CATALOG_VISION_MAX_IMAGE_BYTES = 25 * 1024 * 1024
 VISION_MAX_RESPONSE_BYTES = 256 * 1024
-CATALOG_ASSESSMENT_SCHEMA = "catalog_asset_assessment_v1"
+CATALOG_ASSESSMENT_SCHEMA = "catalog_asset_assessment_v2"
 CATALOG_AUDIENCES = ("womenswear", "unisex_womenswear_compatible")
 CATALOG_QUALITY_SIGNALS = (
     "logo_or_watermark",
@@ -60,6 +65,7 @@ CatalogFailureReason = Literal[
     "response_schema_invalid",
     "model_mismatch",
     "slot_mismatch",
+    "product_type_mismatch",
     "audience_rejected",
     "identifiable_person",
     "low_confidence",
@@ -184,11 +190,17 @@ class CatalogAssetAssessment(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     slot: Slot
+    product_type: StrictStr
     audience: Audience
     contains_identifiable_person: StrictBool
     object_region: tuple[float, float, float, float]
     confidence_band: CatalogConfidenceBand
     quality_issues: tuple[CatalogQualityIssueCode, ...] = ()
+
+    @field_validator("product_type")
+    @classmethod
+    def closed_product_type(cls, value: str) -> str:
+        return validate_catalog_product_type(value)
 
     @field_validator("object_region", mode="before")
     @classmethod
@@ -409,15 +421,17 @@ class VisionAdapter:
     ) -> tuple[str, str]:
         if operation == "catalog_asset_assessment":
             expected_slots = ",".join(allowed_values["slot"])
+            expected_products = ",".join(allowed_values["product_type"])
             audiences = ",".join(allowed_values["audience"])
             quality_signals = ",".join(allowed_values["quality_issues"])
             return (
                 "You are a restricted catalog image assessor. Follow the exact "
                 "closed JSON contract.",
                 "Return one JSON object only with exactly these fields: slot, "
-                "audience, contains_identifiable_person, object_region, "
+                "product_type, audience, contains_identifiable_person, object_region, "
                 "confidence_band, quality_issues. "
                 f"slot must be one of [{expected_slots}]. "
+                f"product_type must be exactly one of [{expected_products}]. "
                 f"audience must be one of [{audiences}]. "
                 "contains_identifiable_person must be true or false. "
                 "object_region must be [left,top,right,bottom] using finite "
@@ -678,7 +692,10 @@ class VisionAdapter:
 
     @staticmethod
     def _valid_catalog_image_input(
-        image_bytes: Any, mime_type: Any, allowed_slot: Any
+        image_bytes: Any,
+        mime_type: Any,
+        allowed_slot: Any,
+        expected_product_type: Any,
     ) -> bool:
         if (
             not isinstance(image_bytes, bytes)
@@ -688,6 +705,8 @@ class VisionAdapter:
             or mime_type not in CATALOG_MIME_TYPES
             or not isinstance(allowed_slot, str)
             or allowed_slot not in CATALOG_SLOTS
+            or not isinstance(expected_product_type, str)
+            or expected_product_type not in CATALOG_PRODUCT_TYPES
         ):
             return False
         return True
@@ -744,10 +763,11 @@ class VisionAdapter:
         image_bytes: bytes,
         mime_type: str,
         allowed_slot: Slot,
+        expected_product_type: str,
     ) -> tuple[CatalogAssetAssessment, dict[str, Any]]:
         """Assess one image while keeping identity and provenance server-owned."""
         if not self._valid_catalog_image_input(
-            image_bytes, mime_type, allowed_slot
+            image_bytes, mime_type, allowed_slot, expected_product_type
         ):
             raise self._catalog_failure("input_rejected") from None
         if self.settings.vision_force_failure or not self.settings.cpa_text_enabled:
@@ -759,6 +779,7 @@ class VisionAdapter:
             mime_type=mime_type,
             allowed_values={
                 "slot": (allowed_slot,),
+                "product_type": (expected_product_type,),
                 "audience": CATALOG_AUDIENCES,
                 "quality_issues": CATALOG_QUALITY_SIGNALS,
             },
@@ -800,6 +821,8 @@ class VisionAdapter:
         failure_reason: CatalogFailureReason | None = None
         if assessment.slot != allowed_slot:
             failure_reason = "slot_mismatch"
+        elif assessment.product_type != expected_product_type:
+            failure_reason = "product_type_mismatch"
         elif assessment.audience not in CATALOG_AUDIENCES:
             failure_reason = "audience_rejected"
         elif assessment.contains_identifiable_person:
