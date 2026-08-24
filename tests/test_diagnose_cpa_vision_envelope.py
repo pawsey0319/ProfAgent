@@ -147,7 +147,7 @@ def _install_runtime(
 def _invoke(module: ModuleType, capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, dict[str, Any]]:
     code = module.main(list(argv))
     captured = capsys.readouterr()
-    assert captured.stderr == ""
+    assert captured.err == ""
     lines = captured.out.splitlines()
     assert len(lines) == 1
     payload = json.loads(lines[0])
