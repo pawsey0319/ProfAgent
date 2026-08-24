@@ -6424,3 +6424,147 @@ def test_private_quarantine_root_is_outside_all_serveable_roots_and_ignored() ->
     ignored = (repository / ".gitignore").read_text(encoding="utf-8").splitlines()
     assert "data/assets/private_quarantine/" in ignored
     assert "data/assets/cpa_generated_quarantine_diagnostics.jsonl" in ignored
+
+
+# Task 4 / Ruling I replay repair: journals are staging-only and committed
+# diagnostics are independently revalidated before any provider call.
+def _rii_seed_private_truth(
+    cli: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+    *,
+    inject_transaction: bool = True,
+) -> tuple[Any, Path, Path, Path, bytes, bytes]:
+    config = _rg_config(cli, tmp_path)
+    _rg_run(
+        cli,
+        config,
+        RulingGImageProvider(_make_image("PNG")),
+        Task4Vision(_ri_vision_error(vision_module, "product_type_mismatch")),
+    )
+    root, diagnostics = _ri_paths(config)
+    private_png = next(path for path in root.iterdir() if path.suffix == ".png")
+    rows = _ri_rows(diagnostics)
+    if inject_transaction:
+        rows[0].setdefault("transaction_id", "1" * 32)
+    diagnostics.write_text(
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+    marker = config.asset_directory.parent / "cpa_generated_quarantine_transaction.json"
+    return (
+        config,
+        private_png,
+        diagnostics,
+        marker,
+        private_png.read_bytes(),
+        diagnostics.read_bytes(),
+    )
+
+
+@pytest.mark.parametrize("phase", ["prepared", "committed"])
+def test_replayed_journal_cannot_target_or_delete_committed_private_truth(
+    licensed_ingestion_cli: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+    phase: str,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    config, private_png, diagnostics, marker, png_before, diagnostic_before = (
+        _rii_seed_private_truth(cli, vision_module, tmp_path)
+    )
+    entries = []
+    for kind, path, payload in (
+        ("quarantine", private_png, png_before),
+        ("diagnostics", diagnostics, diagnostic_before),
+    ):
+        entries.append({
+            "kind": kind,
+            "name": path.name,
+            "previous_sha256": None,
+            "backup_name": None,
+            "new_sha256": hashlib.sha256(payload).hexdigest(),
+        })
+    marker.write_text(json.dumps({
+        "version": "cpa_private_quarantine_tx_v1",
+        "transaction_id": "2" * 32,
+        "phase": phase,
+        "entries": entries,
+    }), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="invalid_private_quarantine_transaction"):
+        _rg_run(
+            cli,
+            config,
+            RulingGImageProvider(b"", error=AssertionError("provider must not run")),
+            Task4Vision(AssertionError("Vision must not run")),
+        )
+    assert private_png.read_bytes() == png_before
+    assert diagnostics.read_bytes() == diagnostic_before
+
+
+@pytest.mark.parametrize("corruption", ["missing_png", "prompt_binding", "duplicate_tx"])
+def test_existing_private_diagnostic_corruption_fails_before_provider(
+    licensed_ingestion_cli: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+    corruption: str,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    config, private_png, diagnostics, _, png_before, _ = _rii_seed_private_truth(
+        cli, vision_module, tmp_path
+    )
+    rows = _ri_rows(diagnostics)
+    if corruption == "missing_png":
+        private_png.unlink()
+    elif corruption == "prompt_binding":
+        rows[0]["prompt_sha256"] = "f" * 64
+    else:
+        rows.append(dict(rows[0]))
+    diagnostics.write_text(
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="invalid_private_quarantine_diagnostics"):
+        _rg_run(
+            cli,
+            config,
+            RulingGImageProvider(b"", error=AssertionError("provider must not run")),
+            Task4Vision(AssertionError("Vision must not run")),
+        )
+    if corruption != "missing_png":
+        assert private_png.read_bytes() == png_before
+    assert not config.sources_path.exists()
+
+
+def test_valid_existing_diagnostic_is_read_only_and_never_resumes_ready(
+    licensed_ingestion_cli: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    from profagent.providers import ProviderUnavailable
+
+    cli = licensed_ingestion_cli._load()
+    config, private_png, diagnostics, _, png_before, diagnostic_before = (
+        _rii_seed_private_truth(
+            cli, vision_module, tmp_path, inject_transaction=False
+        )
+    )
+    row = _ri_rows(diagnostics)[0]
+    assert len(row["transaction_id"]) == 32
+    vision = Task4Vision(AssertionError("existing diagnostic must not invoke Vision"))
+    result = _rg_run(
+        cli,
+        config,
+        RulingGImageProvider(
+            b"", error=ProviderUnavailable(
+                "closed", reason_code="CPA_IMAGE_PROVIDER_UNAVAILABLE"
+            ),
+        ),
+        vision,
+    )
+    assert result.ready_ids == () and result.quarantined_ids == ("g051",)
+    assert not vision.calls
+    assert private_png.read_bytes() == png_before
+    assert diagnostics.read_bytes() == diagnostic_before
