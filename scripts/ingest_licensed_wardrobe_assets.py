@@ -144,6 +144,7 @@ _IMAGE_FAILURE_REASON_BY_CODE: dict[str, IngestionFailureReason] = {
 }
 
 FailureStage = Literal["image_provider", "local_validation", "vision"]
+SchemaStage = Literal["envelope", "content", "payload"]
 VisionFailureReason = Literal[
     "input_rejected",
     "timeout",
@@ -177,6 +178,7 @@ _VISION_FAILURE_REASONS = frozenset(
         "quality_rejected",
     }
 )
+_SCHEMA_STAGES = frozenset({"envelope", "content", "payload"})
 
 _PUBLIC_LICENSE_CODES = frozenset(
     {"CC0", "PDM", "CC-BY-2.0", "CC-BY-3.0", "CC-BY-4.0"}
@@ -373,6 +375,7 @@ class ItemIngestionOutcome(BaseModel):
     status: Literal["ready", "reused", "quarantined", "unattempted"]
     reason_code: IngestionFailureReason | None = None
     failure_stage: FailureStage | None = None
+    schema_stage: SchemaStage | None = None
     image_model_provenance: MinimalModelProvenance | None = None
     vision_model_provenance: MinimalModelProvenance | None = None
 
@@ -391,6 +394,14 @@ class ItemIngestionOutcome(BaseModel):
             raise ValueError("failure_stage_requires_quarantine")
         if self.failure_stage != "vision" and self.vision_model_provenance is not None:
             raise ValueError("vision_provenance_requires_vision_failure")
+        if (
+            self.failure_stage == "vision"
+            and self.reason_code == "response_schema_invalid"
+        ):
+            if self.schema_stage is None:
+                raise ValueError("vision_schema_failure_requires_stage")
+        elif self.schema_stage is not None:
+            raise ValueError("schema_stage_requires_vision_schema_failure")
         return self
 
 
@@ -462,6 +473,7 @@ class _AttemptOutcome:
         "licensed_photo", "user_owned_photo", "ai_generated_reference"
     ] | None = None
     failure_stage: FailureStage | None = None
+    schema_stage: SchemaStage | None = None
     image_model_provenance: MinimalModelProvenance | None = None
     vision_model_provenance: MinimalModelProvenance | None = None
     private_quarantine_bytes: bytes | None = None
@@ -1778,6 +1790,7 @@ class _PrivateQuarantineDiagnostic(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+    schema_version: Literal[2] | None = None
     transaction_id: str = Field(pattern=r"^[0-9a-f]{32}$")
     garment_id: str = Field(pattern=r"^g\d{3}$")
     user_id: str = Field(pattern=r"^u\d{2}$")
@@ -1790,11 +1803,24 @@ class _PrivateQuarantineDiagnostic(BaseModel):
     quarantine_relative_path: str = Field(min_length=68, max_length=68)
     failure_stage: Literal["vision"]
     reason_code: VisionFailureReason
+    schema_stage: SchemaStage | None = None
     image_model_provenance: MinimalModelProvenance
     vision_model_provenance: MinimalModelProvenance
 
     @model_validator(mode="after")
     def _validate_binding(self) -> "_PrivateQuarantineDiagnostic":
+        version_is_set = "schema_version" in self.model_fields_set
+        stage_is_set = "schema_stage" in self.model_fields_set
+        if self.schema_version is None:
+            if version_is_set or stage_is_set:
+                raise ValueError("invalid_private_quarantine_schema_version")
+        elif not version_is_set or not stage_is_set:
+            raise ValueError("invalid_private_quarantine_schema_version")
+        elif self.reason_code == "response_schema_invalid":
+            if self.schema_stage is None:
+                raise ValueError("vision_schema_failure_requires_stage")
+        elif self.schema_stage is not None:
+            raise ValueError("schema_stage_requires_vision_schema_failure")
         digests = (
             self.prompt_sha256,
             self.original_sha256,
@@ -1854,12 +1880,21 @@ def _image_failure_reason(error: ProviderUnavailable | ValueError | TypeError) -
     return "provider_unavailable"
 
 
-def _vision_failure_reason(error: VisionUnavailable) -> VisionFailureReason:
+def _vision_failure_details(
+    error: VisionUnavailable,
+) -> tuple[VisionFailureReason, SchemaStage | None]:
     trace = error.provider_trace
     reason = trace.get("reason_code") if isinstance(trace, dict) else None
-    if isinstance(reason, str) and reason in _VISION_FAILURE_REASONS:
-        return reason  # type: ignore[return-value]
-    return "response_schema_invalid"
+    if not isinstance(reason, str) or reason not in _VISION_FAILURE_REASONS:
+        raise ValueError("invalid_vision_schema_stage") from None
+    stage = trace.get("schema_stage") if isinstance(trace, dict) else None
+    if reason == "response_schema_invalid":
+        if not isinstance(stage, str) or stage not in _SCHEMA_STAGES:
+            raise ValueError("invalid_vision_schema_stage") from None
+        return reason, stage  # type: ignore[return-value]
+    if stage is not None:
+        raise ValueError("invalid_vision_schema_stage") from None
+    return reason, None  # type: ignore[return-value]
 
 
 async def _attempt_cpa_generated_garment(
@@ -1986,7 +2021,7 @@ async def _attempt_cpa_generated_garment(
     except asyncio.CancelledError:
         raise
     except VisionUnavailable as error:
-        reason = _vision_failure_reason(error)
+        reason, schema_stage = _vision_failure_details(error)
         vision_model_provenance = _minimal_model_provenance(
             error.provider_trace,
             requested_model=LOGICAL_GROK_MODEL,
@@ -1994,6 +2029,7 @@ async def _attempt_cpa_generated_garment(
         )
         private_bytes = fetched.processed_bytes
         private_record = _PrivateQuarantineDiagnostic(
+            schema_version=2,
             transaction_id=uuid.uuid4().hex,
             garment_id=garment.garment_id,
             user_id=garment.user_id,
@@ -2006,6 +2042,7 @@ async def _attempt_cpa_generated_garment(
             quarantine_relative_path=f"{fetched.processed_sha256}.png",
             failure_stage="vision",
             reason_code=reason,
+            schema_stage=schema_stage,
             image_model_provenance=image_model_provenance,
             vision_model_provenance=vision_model_provenance,
         ).model_dump(mode="json")
@@ -2014,6 +2051,7 @@ async def _attempt_cpa_generated_garment(
             status="quarantined",
             failure_reason=reason,
             failure_stage="vision",
+            schema_stage=schema_stage,
             image_model_provenance=image_model_provenance,
             vision_model_provenance=vision_model_provenance,
             private_quarantine_bytes=private_bytes,
@@ -2916,6 +2954,12 @@ def _prepare_private_quarantine(
             continue
         if record is None or payload is None:
             raise ValueError("invalid_private_quarantine_state")
+        if (
+            not isinstance(record, dict)
+            or record.get("schema_version") != 2
+            or not {"schema_version", "schema_stage"}.issubset(record)
+        ):
+            raise ValueError("invalid_private_quarantine_schema_version")
         validated = _PrivateQuarantineDiagnostic.model_validate(record)
         if hashlib.sha256(payload).hexdigest() != validated.quarantine_sha256:
             raise ValueError("invalid_private_quarantine_bytes")
@@ -2946,7 +2990,7 @@ def _prepare_private_quarantine(
                 raise ValueError("invalid_private_quarantine_diagnostics")
             prior_records = [
                 _PrivateQuarantineDiagnostic.model_validate(json.loads(line)).model_dump(
-                    mode="json"
+                    mode="json", exclude_unset=True
                 )
                 for line in decoded
                 if line
@@ -2957,18 +3001,24 @@ def _prepare_private_quarantine(
         json.dumps(record, ensure_ascii=False, sort_keys=True)
         for record in prior_records
     }
-    appended = list(prior_records)
+    new_records: list[dict[str, Any]] = []
     for record in records:
         fingerprint = json.dumps(record, ensure_ascii=False, sort_keys=True)
         if fingerprint not in unique:
             unique.add(fingerprint)
-            appended.append(record)
-    if len(appended) > 1000:
+            new_records.append(record)
+    if len(prior_records) + len(new_records) > 1000:
         raise ValueError("private_quarantine_diagnostics_full")
-    encoded = b"".join(
+    suffix = b"".join(
         (json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
-        for record in appended
+        for record in new_records
     )
+    separator = (
+        b"\n"
+        if prior_bytes and suffix and not prior_bytes.endswith(b"\n")
+        else b""
+    )
+    encoded = prior_bytes + separator + suffix
     return staged, diagnostics_path, (encoded if encoded != prior_bytes else None)
 
 
@@ -3298,6 +3348,7 @@ async def run_ingestion(
             status=outcome.status,
             reason_code=outcome.failure_reason,
             failure_stage=outcome.failure_stage,
+            schema_stage=outcome.schema_stage,
             image_model_provenance=outcome.image_model_provenance,
             vision_model_provenance=outcome.vision_model_provenance,
         )
