@@ -57,12 +57,12 @@ _COMPLETION_ENVELOPE_KEYS = frozenset(
         "created",
         "model",
         "choices",
-        "usage",
         "system_fingerprint",
     }
 )
 _COMPLETION_CHOICE_KEYS = frozenset({"index", "message", "finish_reason"})
 _COMPLETION_MESSAGE_KEYS = frozenset({"role", "content", "refusal"})
+_COMPLETION_METADATA_MAX_TEXT_LENGTH = 256
 
 CatalogQualityIssueCode = Literal[
     "logo_or_watermark",
@@ -290,6 +290,24 @@ def _completion_message(envelope: Any) -> dict[str, Any]:
         or not set(envelope).issubset(_COMPLETION_ENVELOPE_KEYS)
     ):
         raise ValueError("invalid_response_envelope")
+    if "id" in envelope and (
+        type(envelope["id"]) is not str
+        or not 1 <= len(envelope["id"]) <= _COMPLETION_METADATA_MAX_TEXT_LENGTH
+    ):
+        raise ValueError("invalid_response_id")
+    if "object" in envelope and envelope["object"] != "chat.completion":
+        raise ValueError("invalid_response_object")
+    if "created" in envelope and (
+        type(envelope["created"]) is not int or envelope["created"] < 0
+    ):
+        raise ValueError("invalid_response_created")
+    if "system_fingerprint" in envelope:
+        fingerprint = envelope["system_fingerprint"]
+        if fingerprint is not None and (
+            type(fingerprint) is not str
+            or len(fingerprint) > _COMPLETION_METADATA_MAX_TEXT_LENGTH
+        ):
+            raise ValueError("invalid_response_system_fingerprint")
     choices = envelope["choices"]
     if not isinstance(choices, list) or len(choices) != 1:
         raise ValueError("invalid_response_choices")
@@ -300,6 +318,12 @@ def _completion_message(envelope: Any) -> dict[str, Any]:
         or not set(choice).issubset(_COMPLETION_CHOICE_KEYS)
     ):
         raise ValueError("invalid_response_choice")
+    if "index" in choice and (
+        type(choice["index"]) is not int or choice["index"] != 0
+    ):
+        raise ValueError("invalid_response_choice_index")
+    if "finish_reason" in choice and choice["finish_reason"] != "stop":
+        raise ValueError("invalid_response_finish_reason")
     message = choice["message"]
     if (
         not isinstance(message, dict)
@@ -307,6 +331,8 @@ def _completion_message(envelope: Any) -> dict[str, Any]:
         or not set(message).issubset(_COMPLETION_MESSAGE_KEYS)
     ):
         raise ValueError("invalid_response_message")
+    if "role" in message and message["role"] != "assistant":
+        raise ValueError("invalid_response_message_role")
     return message
 
 
