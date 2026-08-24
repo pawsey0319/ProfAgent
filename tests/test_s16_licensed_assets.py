@@ -7482,3 +7482,391 @@ def test_new_private_v2_diagnostic_cannot_use_legacy_missing_stage_path(
     root, diagnostics = _ri_paths(config)
     assert not root.exists() and not diagnostics.exists()
     assert not config.manifest_path.exists() and not config.sources_path.exists()
+
+
+# Ruling O: after the fourth real canary localized the rejection to the
+# completion envelope, freeze a content-free diagnostic taxonomy before any
+# further external call.  Every transport below is MockTransport/local-only.
+_RO_ENVELOPE_FAILURE_CODES = frozenset(
+    {
+        "envelope_json_invalid",
+        "unsupported_envelope_fields",
+        "invalid_envelope_metadata",
+        "invalid_choices",
+        "invalid_choice_metadata",
+        "invalid_message",
+        "invalid_message_metadata",
+    }
+)
+_RO_METADATA_PROFILE = "cpa_chat_completion_metadata_v1"
+_RO_PROVIDER_PROSE = "provider-secret-envelope-value-must-not-leak"
+
+
+def _ro_vision_error(
+    vision_module: ModuleType,
+    *,
+    reason: str = "response_schema_invalid",
+    stage: str = "envelope",
+    failure_code: Any = "invalid_envelope_metadata",
+    profile: Any = _RO_METADATA_PROFILE,
+) -> Exception:
+    return vision_module.VisionUnavailable(
+        _RO_PROVIDER_PROSE,
+        {
+            "reason_code": reason,
+            "schema_stage": stage,
+            "envelope_failure_code": failure_code,
+            "envelope_metadata_profile": profile,
+            **_RI_VISION_MODEL,
+            "transport_model": "grok-4.6-high",
+            "provider_body": _RO_PROVIDER_PROSE,
+            "unknown_provider_key": _RO_PROVIDER_PROSE,
+        },
+    )
+
+
+def _ro_private_v3_payload(**overrides: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "schema_version": 3,
+        "transaction_id": "3" * 32,
+        "garment_id": "g051",
+        "user_id": "u01",
+        "slot": "top",
+        "product_type": "tie-neck blouse",
+        "prompt_sha256": "a" * 64,
+        "original_sha256": "b" * 64,
+        "processed_sha256": "c" * 64,
+        "quarantine_sha256": "c" * 64,
+        "quarantine_relative_path": f"{'c' * 64}.png",
+        "failure_stage": "vision",
+        "reason_code": "response_schema_invalid",
+        "schema_stage": "envelope",
+        "envelope_failure_code": "invalid_envelope_metadata",
+        "envelope_metadata_profile": _RO_METADATA_PROFILE,
+        "image_model_provenance": {
+            "requested_model": _RG_MODEL,
+            "resolved_model": _RG_MODEL,
+            "model_verified": True,
+        },
+        "vision_model_provenance": _RI_VISION_MODEL,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_envelope_failure_code_and_small_metadata_profile_are_exactly_frozen(
+    vision_module: ModuleType,
+    licensed_ingestion_cli: ModuleType,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    assert frozenset(get_args(vision_module.EnvelopeFailureCode)) == (
+        _RO_ENVELOPE_FAILURE_CODES
+    )
+    assert (
+        vision_module.CPA_CHAT_COMPLETION_METADATA_PROFILE
+        == _RO_METADATA_PROFILE
+    )
+    assert cli.CPA_CHAT_COMPLETION_METADATA_PROFILE == _RO_METADATA_PROFILE
+
+
+@pytest.mark.parametrize(
+    ("response_body", "expected_code", "forbidden_tokens"),
+    (
+        (b'\xff', "envelope_json_invalid", ()),
+        (b'{"model":', "envelope_json_invalid", ()),
+        (
+            b'{"model":"grok-4.6-high","model":"duplicate",'
+            b'"choices":[]}',
+            "envelope_json_invalid",
+            ("duplicate",),
+        ),
+        (
+            json.dumps({"model": "grok-4.6-high"}).encode(),
+            "unsupported_envelope_fields",
+            (),
+        ),
+        (
+            _rk_completion(
+                envelope_updates={"usage": {"secret": _RO_PROVIDER_PROSE}}
+            ),
+            "unsupported_envelope_fields",
+            ("usage", "secret"),
+        ),
+        (
+            _rk_completion(
+                envelope_updates={"provider_note": _RO_PROVIDER_PROSE}
+            ),
+            "unsupported_envelope_fields",
+            ("provider_note",),
+        ),
+        (
+            _rk_completion(envelope_updates={"id": ""}),
+            "invalid_envelope_metadata",
+            (),
+        ),
+        (
+            _rk_completion(envelope_updates={"object": "chat.completion.chunk"}),
+            "invalid_envelope_metadata",
+            ("chat.completion.chunk",),
+        ),
+        (
+            _rk_completion(envelope_updates={"choices": []}),
+            "invalid_choices",
+            (),
+        ),
+        (
+            _rk_completion(
+                choice_updates={"logprobs": {"secret": _RO_PROVIDER_PROSE}}
+            ),
+            "invalid_choices",
+            ("logprobs", "secret"),
+        ),
+        (
+            _rk_completion(choice_updates={"index": 1}),
+            "invalid_choice_metadata",
+            (),
+        ),
+        (
+            _rk_completion(choice_updates={"finish_reason": "length"}),
+            "invalid_choice_metadata",
+            ("length",),
+        ),
+        (
+            _rk_completion(message_updates={"content": None}),
+            "invalid_message",
+            (),
+        ),
+        (
+            _rk_completion(
+                message_updates={"audio": {"secret": _RO_PROVIDER_PROSE}}
+            ),
+            "invalid_message",
+            ("audio", "secret"),
+        ),
+        (
+            _rk_completion(message_updates={"role": "tool"}),
+            "invalid_message_metadata",
+            ("tool",),
+        ),
+    ),
+)
+def test_mock_cpa_envelope_failures_map_to_content_free_closed_codes(
+    vision_module: ModuleType,
+    offline_settings: Any,
+    response_body: bytes,
+    expected_code: str,
+    forbidden_tokens: tuple[str, ...],
+) -> None:
+    trace = _rj_schema_failure(
+        vision_module,
+        offline_settings,
+        response_body,
+        expected_stage="envelope",
+    )
+    assert trace["envelope_failure_code"] == expected_code
+    assert trace["envelope_metadata_profile"] == _RO_METADATA_PROFILE
+    rendered = json.dumps(trace, ensure_ascii=False)
+    assert _RO_PROVIDER_PROSE not in rendered
+    assert "unknown_provider_key" not in rendered
+    for token in forbidden_tokens:
+        assert token not in rendered
+
+
+def test_envelope_code_and_profile_reach_public_cli_and_private_v3_only(
+    licensed_ingestion_cli: ModuleType,
+    vision_module: ModuleType,
+    offline_settings: Any,
+    tmp_path: Path,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    config = _rg_config(cli, tmp_path)
+    response = _rk_completion(
+        envelope_updates={"provider_note": _RO_PROVIDER_PROSE}
+    )
+    result = _rg_run(
+        cli,
+        config,
+        RulingGImageProvider(_make_image("PNG")),
+        _vision_adapter(
+            vision_module,
+            offline_settings,
+            CatalogVisionTransportSpy(response),
+        ),
+    )
+    outcome = result.item_outcomes[0]
+    public = json.loads(result.model_dump_json())["item_outcomes"][0]
+    private = _ri_rows(_ri_paths(config)[1])[0]
+    for record in (public, private):
+        assert record["schema_stage"] == "envelope"
+        assert record["envelope_failure_code"] == "unsupported_envelope_fields"
+        assert record["envelope_metadata_profile"] == _RO_METADATA_PROFILE
+    assert private["schema_version"] == 3
+    assert result.ready_ids == () and result.quarantined_ids == ("g051",)
+    _ri_assert_public_quarantined(config)
+    assert not any(
+        row.get("garment_id") == "g051" for row in _ri_rows(config.sources_path)
+    )
+    rendered = json.dumps({"public": public, "private": private})
+    assert _RO_PROVIDER_PROSE not in rendered and "provider_note" not in rendered
+
+
+def test_envelope_diagnostic_fields_reject_unknown_and_illegal_combinations(
+    licensed_ingestion_cli: ModuleType,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    valid = {
+        "garment_id": "g051",
+        "status": "quarantined",
+        "reason_code": "response_schema_invalid",
+        "failure_stage": "vision",
+        "schema_stage": "envelope",
+        "envelope_failure_code": "invalid_envelope_metadata",
+        "envelope_metadata_profile": _RO_METADATA_PROFILE,
+    }
+    assert cli.ItemIngestionOutcome(**valid).envelope_failure_code == (
+        "invalid_envelope_metadata"
+    )
+    invalid_public = (
+        {**valid, "envelope_failure_code": "future_code"},
+        {**valid, "envelope_metadata_profile": "future_profile"},
+        {key: value for key, value in valid.items() if key != "envelope_failure_code"},
+        {**valid, "schema_stage": "content"},
+        {**valid, "schema_stage": "payload"},
+        {**valid, "reason_code": "slot_mismatch"},
+        {**valid, "failure_stage": "image_provider"},
+    )
+    for payload in invalid_public:
+        with pytest.raises(ValidationError):
+            cli.ItemIngestionOutcome(**payload)
+
+    assert cli._PrivateQuarantineDiagnostic.model_validate(
+        _ro_private_v3_payload()
+    ).schema_version == 3
+    for updates in (
+        {"envelope_failure_code": "future_code"},
+        {"envelope_metadata_profile": "future_profile"},
+        {"envelope_failure_code": None},
+        {"schema_stage": "content"},
+        {"reason_code": "slot_mismatch"},
+    ):
+        with pytest.raises(ValidationError):
+            cli._PrivateQuarantineDiagnostic.model_validate(
+                _ro_private_v3_payload(**updates)
+            )
+
+
+@pytest.mark.parametrize(
+    ("stage", "response_body"),
+    (
+        ("content", _rj_standard_completion(_RO_PROVIDER_PROSE)),
+        (
+            "payload",
+            _catalog_completion_bytes(
+                _catalog_payload(provider_note=_RO_PROVIDER_PROSE)
+            ),
+        ),
+    ),
+)
+def test_content_and_payload_failures_have_profile_but_no_envelope_code(
+    licensed_ingestion_cli: ModuleType,
+    vision_module: ModuleType,
+    offline_settings: Any,
+    tmp_path: Path,
+    stage: str,
+    response_body: bytes,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    config = _rg_config(cli, tmp_path)
+    result = _rg_run(
+        cli,
+        config,
+        RulingGImageProvider(_make_image("PNG")),
+        _vision_adapter(
+            vision_module,
+            offline_settings,
+            CatalogVisionTransportSpy(response_body),
+        ),
+    )
+    public = json.loads(result.model_dump_json())["item_outcomes"][0]
+    private = _ri_rows(_ri_paths(config)[1])[0]
+    for record in (public, private):
+        assert record["schema_stage"] == stage
+        assert record["envelope_failure_code"] is None
+        assert record["envelope_metadata_profile"] == _RO_METADATA_PROFILE
+    assert private["schema_version"] == 3
+    assert _RO_PROVIDER_PROSE not in json.dumps(
+        {"public": public, "private": private}
+    )
+
+
+def test_non_envelope_vision_failure_cannot_forge_envelope_code_before_write(
+    licensed_ingestion_cli: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    config = _rg_config(cli, tmp_path)
+    with pytest.raises(ValueError, match="invalid_vision_envelope_diagnostic"):
+        _rg_run(
+            cli,
+            config,
+            RulingGImageProvider(_make_image("PNG")),
+            Task4Vision(
+                _ro_vision_error(
+                    vision_module,
+                    reason="slot_mismatch",
+                    stage="payload",
+                )
+            ),
+        )
+    root, diagnostics = _ri_paths(config)
+    assert not root.exists() and not diagnostics.exists()
+    assert not config.manifest_path.exists() and not config.sources_path.exists()
+
+
+def test_historical_v1_v2_prefix_is_byte_exact_when_private_v3_is_appended(
+    licensed_ingestion_cli: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    repository = Path(__file__).resolve().parents[1]
+    frozen_diagnostics = (
+        repository / "data/assets/cpa_generated_quarantine_diagnostics.jsonl"
+    )
+    frozen_private = repository / "data/assets/private_quarantine/cpa_generated"
+    frozen_bytes = frozen_diagnostics.read_bytes()
+    assert hashlib.sha256(frozen_bytes).hexdigest() == (
+        "0f981797ee2dc37d41a0563e1d5d34b8d31802ac5589beae4aa223309843dd28"
+    )
+    frozen_rows = [json.loads(line) for line in frozen_bytes.splitlines()]
+    assert [row.get("schema_version") for row in frozen_rows] == [None, None, 2]
+    assert [row.get("schema_stage") for row in frozen_rows] == [
+        None,
+        None,
+        "envelope",
+    ]
+
+    config = _rg_config(cli, tmp_path)
+    private_root, diagnostics = _ri_paths(config)
+    private_root.mkdir(parents=True)
+    diagnostics.write_bytes(frozen_bytes)
+    for row in frozen_rows:
+        name = row["quarantine_relative_path"]
+        (private_root / name).write_bytes((frozen_private / name).read_bytes())
+
+    result = _rg_run(
+        cli,
+        config,
+        RulingGImageProvider(_make_image("PNG", size=(43, 31))),
+        Task4Vision(_ro_vision_error(vision_module)),
+    )
+    appended = diagnostics.read_bytes()
+    assert appended[: len(frozen_bytes)] == frozen_bytes
+    rows = [json.loads(line) for line in appended.splitlines()]
+    assert len(rows) == 4
+    assert rows[-1]["schema_version"] == 3
+    assert rows[-1]["schema_stage"] == "envelope"
+    assert rows[-1]["envelope_failure_code"] == "invalid_envelope_metadata"
+    assert rows[-1]["envelope_metadata_profile"] == _RO_METADATA_PROFILE
+    assert result.ready_ids == () and result.quarantined_ids == ("g051",)
