@@ -2132,6 +2132,7 @@ CATALOG_TRACE_KEYS = {
     "interaction_budget_seconds",
     "assessment_count",
     "quality_issue_count",
+    "schema_stage",
 }
 CATALOG_IMAGE = _make_image("PNG", size=(24, 32))
 
@@ -2583,20 +2584,6 @@ def _catalog_malformed_completion_cases() -> list[tuple[str, bytes]]:
             ).encode(),
         ),
         (
-            "choice-extra",
-            json.dumps(
-                {
-                    "model": "grok-4.6-high",
-                    "choices": [
-                        {
-                            "message": valid_outer["choices"][0]["message"],
-                            "finish_reason": "stop",
-                        }
-                    ],
-                }
-            ).encode(),
-        ),
-        (
             "choice-missing-message",
             json.dumps(
                 {"model": "grok-4.6-high", "choices": [{}]}
@@ -2606,22 +2593,6 @@ def _catalog_malformed_completion_cases() -> list[tuple[str, bytes]]:
             "choice-not-object",
             json.dumps(
                 {"model": "grok-4.6-high", "choices": ["message"]}
-            ).encode(),
-        ),
-        (
-            "message-extra",
-            json.dumps(
-                {
-                    "model": "grok-4.6-high",
-                    "choices": [
-                        {
-                            "message": {
-                                **valid_outer["choices"][0]["message"],
-                                "role": "assistant",
-                            }
-                        }
-                    ],
-                }
             ).encode(),
         ),
         (
@@ -6689,3 +6660,213 @@ def test_cpa_dry_run_validates_all_private_truth_before_provider_without_mutatio
         assert provider.prompts == []
         assert durable == tuple((path.exists(), path.read_bytes() if path.exists() else None)
                                 for path in paths)
+
+
+# S16B post-canary schema repair: CPA is OpenAI-compatible, but only a
+# deliberately small response envelope and one closed catalog payload are
+# trusted.  These tests are MockTransport/local-only and must never reach CPA.
+_RJ_SCHEMA_STAGES = frozenset({"envelope", "content", "payload"})
+
+
+def _rj_standard_completion(
+    content: Any,
+    *,
+    model: str = "grok-4.6-high",
+    envelope_updates: dict[str, Any] | None = None,
+    choice_updates: dict[str, Any] | None = None,
+    message_updates: dict[str, Any] | None = None,
+) -> bytes:
+    message: dict[str, Any] = {
+        "role": "assistant",
+        "content": content,
+        "refusal": None,
+    }
+    message.update(message_updates or {})
+    choice: dict[str, Any] = {
+        "index": 0,
+        "message": message,
+        "finish_reason": "stop",
+    }
+    choice.update(choice_updates or {})
+    envelope: dict[str, Any] = {
+        "id": "chatcmpl-mock-only",
+        "object": "chat.completion",
+        "created": 1_784_838_400,
+        "model": model,
+        "choices": [choice],
+        "usage": {
+            "prompt_tokens": 1,
+            "completion_tokens": 1,
+            "total_tokens": 2,
+        },
+        "system_fingerprint": "fp_mock_only",
+    }
+    envelope.update(envelope_updates or {})
+    return json.dumps(envelope).encode("utf-8")
+
+
+def _rj_schema_failure(
+    vision_module: ModuleType,
+    offline_settings: Any,
+    response_body: bytes,
+    *,
+    expected_stage: str,
+    expected_reason: str = "response_schema_invalid",
+) -> dict[str, Any]:
+    transport = CatalogVisionTransportSpy(response_body)
+    adapter = _vision_adapter(vision_module, offline_settings, transport)
+    with pytest.raises(vision_module.VisionUnavailable) as caught:
+        _inspect_catalog(adapter)
+    trace = _assert_catalog_failure(vision_module, caught, expected_reason)
+    assert trace["schema_stage"] == expected_stage
+    assert trace["schema_stage"] in _RJ_SCHEMA_STAGES
+    assert len(transport.calls) == 1
+    return trace
+
+
+def test_catalog_vision_accepts_minimal_standard_cpa_envelope_allowlist(
+    vision_module: ModuleType,
+    offline_settings: Any,
+) -> None:
+    transport = CatalogVisionTransportSpy(
+        _rj_standard_completion(json.dumps(_catalog_payload()))
+    )
+    assessment, trace = _inspect_catalog(
+        _vision_adapter(vision_module, offline_settings, transport)
+    )
+    assert assessment.model_dump(mode="json") == _catalog_payload()
+    assert trace["requested_model"] == "grok4.6"
+    assert trace["resolved_model"] == "grok-4.6-high"
+    assert trace["model_verified"] is True
+
+
+def test_catalog_vision_rejects_every_nonstandard_envelope_key_at_exact_layer(
+    vision_module: ModuleType,
+    offline_settings: Any,
+) -> None:
+    payload = json.dumps(_catalog_payload())
+    cases = (
+        _rj_standard_completion(payload, envelope_updates={"provider_note": "secret-top"}),
+        _rj_standard_completion(payload, choice_updates={"logprobs": {"secret": True}}),
+        _rj_standard_completion(payload, message_updates={"audio": "secret-audio"}),
+    )
+    for response_body in cases:
+        trace = _rj_schema_failure(
+            vision_module,
+            offline_settings,
+            response_body,
+            expected_stage="envelope",
+        )
+        assert vision_module.CATALOG_SCHEMA_STAGES == _RJ_SCHEMA_STAGES
+        assert trace["requested_model"] == "grok4.6"
+        assert trace["resolved_model"] is None
+        assert trace["model_verified"] is False
+        rendered = json.dumps(trace, ensure_ascii=False)
+        assert "secret" not in rendered and "provider_note" not in rendered
+
+
+def test_catalog_vision_accepts_bare_or_one_exact_complete_json_fence(
+    vision_module: ModuleType,
+    offline_settings: Any,
+) -> None:
+    payload = json.dumps(_catalog_payload())
+    for content in (payload, f"```json\n{payload}\n```"):
+        transport = CatalogVisionTransportSpy(_catalog_completion_bytes(content))
+        assessment, trace = _inspect_catalog(
+            _vision_adapter(vision_module, offline_settings, transport)
+        )
+        assert assessment.model_dump(mode="json") == _catalog_payload()
+        assert trace["model_verified"] is True
+
+
+def test_catalog_vision_rejects_ambiguous_or_refused_content_at_content_layer(
+    vision_module: ModuleType,
+    offline_settings: Any,
+) -> None:
+    payload = json.dumps(_catalog_payload())
+    cases = (
+        _catalog_completion_bytes(f"```json\n{payload}\n```\n```json\n{payload}\n```"),
+        _catalog_completion_bytes(f"provider prose\n```json\n{payload}\n```"),
+        _catalog_completion_bytes(f"```json\n{payload}"),
+        _rj_standard_completion(
+            payload,
+            message_updates={"refusal": "provider secret refusal"},
+        ),
+        _rj_standard_completion(_catalog_payload()),
+    )
+    for response_body in cases:
+        trace = _rj_schema_failure(
+            vision_module,
+            offline_settings,
+            response_body,
+            expected_stage="content",
+        )
+        assert "provider secret refusal" not in json.dumps(trace)
+
+
+def test_catalog_vision_rejects_closed_payload_violations_at_payload_layer(
+    vision_module: ModuleType,
+    offline_settings: Any,
+) -> None:
+    cases = (
+        (_catalog_payload(provider_note="secret-payload"), "response_schema_invalid"),
+        (_catalog_payload(slot="hat"), "response_schema_invalid"),
+        (_catalog_payload(product_type="unknown garment"), "response_schema_invalid"),
+        (_catalog_payload(audience="menswear"), "audience_rejected"),
+    )
+    for payload, reason in cases:
+        trace = _rj_schema_failure(
+            vision_module,
+            offline_settings,
+            _catalog_completion_bytes(payload),
+            expected_stage="payload",
+            expected_reason=reason,
+        )
+        assert "secret-payload" not in json.dumps(trace)
+
+
+def test_cpa_schema_failure_isolated_private_and_never_becomes_ready_or_source(
+    licensed_ingestion_cli: ModuleType,
+    vision_module: ModuleType,
+    offline_settings: Any,
+    tmp_path: Path,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    config = _rg_config(cli, tmp_path)
+    transport = CatalogVisionTransportSpy(
+        _catalog_completion_bytes("provider secret prose")
+    )
+    vision = _vision_adapter(vision_module, offline_settings, transport)
+
+    result = _rg_run(
+        cli,
+        config,
+        RulingGImageProvider(_make_image("PNG")),
+        vision,
+    )
+
+    outcome = result.item_outcomes[0]
+    assert result.ready_ids == () and result.quarantined_ids == ("g051",)
+    assert (outcome.failure_stage, outcome.reason_code) == (
+        "vision",
+        "response_schema_invalid",
+    )
+    assert outcome.vision_model_provenance.model_dump() == {
+        "requested_model": "grok4.6",
+        "resolved_model": None,
+        "model_verified": False,
+    }
+    _ri_assert_public_quarantined(config)
+    source_before_retry = config.sources_path.read_bytes()
+    assert not any(row.get("garment_id") == "g051" for row in _ri_rows(config.sources_path))
+    private_root, diagnostics = _ri_paths(config)
+    private_files = [path for path in private_root.iterdir() if path.suffix == ".png"]
+    assert len(private_files) == 1 and diagnostics.is_file()
+    diagnostic = _ri_rows(diagnostics)[0]
+    assert diagnostic["vision_model_provenance"] == {
+        "requested_model": "grok4.6",
+        "resolved_model": None,
+        "model_verified": False,
+    }
+    assert "provider secret prose" not in json.dumps(diagnostic)
+    assert config.sources_path.read_bytes() == source_before_retry
