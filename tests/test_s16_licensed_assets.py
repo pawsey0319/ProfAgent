@@ -7923,3 +7923,137 @@ def test_historical_v1_v2_prefix_is_byte_exact_when_private_v3_is_appended(
     assert rows[-1]["envelope_failure_code"] == "invalid_envelope_metadata"
     assert rows[-1]["envelope_metadata_profile"] == _RO_METADATA_PROFILE
     assert result.ready_ids == () and result.quarantined_ids == ("g051",)
+
+
+# Ruling O follow-up: schema v2 is historical evidence, never a generally
+# writable compatibility version.  Only the frozen Ruling N raw line is valid.
+_RP_FROZEN_V2_LINE_SHA256 = (
+    "51bbd3a82208c66f7269ad8adade0517a2f8c2b07689e1dddacbe22d9d86397e"
+)
+_RP_FROZEN_DIAGNOSTIC_SHA256 = (
+    "0f981797ee2dc37d41a0563e1d5d34b8d31802ac5589beae4aa223309843dd28"
+)
+
+
+def _rp_frozen_diagnostic_evidence() -> tuple[Path, bytes, list[bytes]]:
+    repository = Path(__file__).resolve().parents[1]
+    path = repository / "data/assets/cpa_generated_quarantine_diagnostics.jsonl"
+    payload = path.read_bytes()
+    lines = payload.splitlines()
+    assert len(lines) == 3
+    assert hashlib.sha256(payload).hexdigest() == _RP_FROZEN_DIAGNOSTIC_SHA256
+    assert hashlib.sha256(lines[2]).hexdigest() == _RP_FROZEN_V2_LINE_SHA256
+    return path, payload, lines
+
+
+def _rp_forged_v2_line(**updates: Any) -> bytes:
+    _, _, lines = _rp_frozen_diagnostic_evidence()
+    row = json.loads(lines[2])
+    row.update(updates)
+    forged = json.dumps(
+        row,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    assert hashlib.sha256(forged).hexdigest() != _RP_FROZEN_V2_LINE_SHA256
+    return forged
+
+
+def test_historical_private_v2_allowlist_contains_only_frozen_ruling_n_line(
+    licensed_ingestion_cli: ModuleType,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    assert cli._LEGACY_V2_PRIVATE_QUARANTINE_DIAGNOSTIC_SHA256_ALLOWLIST == (
+        frozenset({_RP_FROZEN_V2_LINE_SHA256})
+    )
+
+
+@pytest.mark.parametrize(
+    ("updates"),
+    (
+        {"transaction_id": "f" * 32},
+        {"prompt_sha256": "f" * 64},
+    ),
+)
+def test_any_mutated_private_v2_line_is_rejected_by_loader(
+    licensed_ingestion_cli: ModuleType,
+    updates: dict[str, Any],
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    forged = _rp_forged_v2_line(**updates)
+    with pytest.raises(
+        ValueError,
+        match="unrecognized_legacy_v2_private_quarantine_diagnostic",
+    ):
+        cli._private_quarantine_diagnostic_from_raw_line(forged.decode("utf-8"))
+
+
+def test_forged_private_v2_fails_before_provider_and_any_state_write(
+    licensed_ingestion_cli: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    repository = Path(__file__).resolve().parents[1]
+    _, _, lines = _rp_frozen_diagnostic_evidence()
+    forged = _rp_forged_v2_line(transaction_id="f" * 32)
+    config = _rg_config(cli, tmp_path)
+    private_root, diagnostics = _ri_paths(config)
+    private_root.mkdir(parents=True)
+    diagnostics.write_bytes(b"\n".join((*lines[:2], forged)) + b"\n")
+    frozen_private = repository / "data/assets/private_quarantine/cpa_generated"
+    for raw_line in (*lines[:2], forged):
+        row = json.loads(raw_line)
+        name = row["quarantine_relative_path"]
+        (private_root / name).write_bytes((frozen_private / name).read_bytes())
+
+    marker = config.asset_directory.parent / "cpa_generated_quarantine_transaction.json"
+    durable_paths = (private_root, diagnostics, config.manifest_path, config.sources_path, marker)
+    durable = {
+        path: (
+            tuple(
+                (child.relative_to(path), child.read_bytes())
+                for child in sorted(path.rglob("*"))
+                if child.is_file()
+            )
+            if path.is_dir()
+            else (path.read_bytes() if path.exists() else None)
+        )
+        for path in durable_paths
+    }
+    provider = RulingGImageProvider(_make_image("PNG"))
+    vision = Task4Vision(AssertionError("Vision must not run"))
+    with pytest.raises(
+        ValueError,
+        match="unrecognized_legacy_v2_private_quarantine_diagnostic",
+    ):
+        _rg_run(cli, config, provider, vision)
+    assert provider.prompts == [] and vision.calls == [] and not marker.exists()
+    assert durable == {
+        path: (
+            tuple(
+                (child.relative_to(path), child.read_bytes())
+                for child in sorted(path.rglob("*"))
+                if child.is_file()
+            )
+            if path.is_dir()
+            else (path.read_bytes() if path.exists() else None)
+        )
+        for path in durable_paths
+    }
+
+
+def test_frozen_ruling_n_private_v2_is_read_compatible_and_byte_exact(
+    licensed_ingestion_cli: ModuleType,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    path, before, lines = _rp_frozen_diagnostic_evidence()
+    record = cli._private_quarantine_diagnostic_from_raw_line(
+        lines[2].decode("utf-8")
+    )
+    assert record.schema_version == 2 and record.schema_stage == "envelope"
+    assert path.read_bytes() == before
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == (
+        _RP_FROZEN_DIAGNOSTIC_SHA256
+    )
