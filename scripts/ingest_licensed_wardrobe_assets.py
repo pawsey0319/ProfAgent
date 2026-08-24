@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from profagent.config import Settings
+from profagent.config import CPA_IMAGE_MODEL, Settings
 from profagent.licensed_assets import (
     CatalogCroppedImage,
     CatalogVisionInspector,
@@ -66,6 +66,7 @@ MAX_CONCURRENCY = 8
 MAX_TOTAL_BUDGET = 70
 MAX_SEARCH_BUDGET = 3
 CPA_GENERATED_PROMPT_VERSION = "womenswear_catalog_reference_prompt_v1"
+CPA_GENERATED_HISTORICAL_MODEL_ALLOWLIST = (CPA_IMAGE_MODEL,)
 
 _CPA_GENERATED_RECEIPT_FIELDS = frozenset(
     {
@@ -967,14 +968,42 @@ def _parse_imported_at(value: Any) -> datetime:
     return imported_at
 
 
-_CPA_PRODUCT_NOUN = {
-    "top": "blouse",
-    "bottom": "trousers",
-    "dress": "dress",
-    "outer": "jacket",
-    "shoes": "shoes",
-    "bag": "handbag",
-    "accessory": "accessory",
+_CPA_PRODUCT_NOUN_BY_GARMENT_ID = {
+    "g051": "tie-neck blouse", "g052": "square-neck knit top",
+    "g053": "draped button-up shirt", "g054": "fitted base-layer top",
+    "g055": "puff-sleeve blouse", "g056": "sleeveless knit vest",
+    "g057": "collared dress shirt", "g058": "linen shirt",
+    "g059": "tailored straight-leg trousers", "g060": "wide-leg trousers",
+    "g061": "pleated midi skirt", "g062": "pencil skirt",
+    "g063": "straight-leg jeans", "g064": "knit midi skirt",
+    "g065": "jogger trousers", "g066": "athletic trousers",
+    "g067": "a-line midi skirt", "g068": "waist-fitted work dress",
+    "g069": "shirt dress", "g070": "tea dress", "g071": "sheath work dress",
+    "g072": "linen travel dress", "g073": "knit dress",
+    "g074": "satin evening gown", "g075": "double-breasted blazer",
+    "g076": "windbreaker jacket", "g077": "cropped boucle jacket",
+    "g078": "trench coat", "g079": "oversized wool overcoat",
+    "g080": "hooded sports jacket", "g081": "evening shawl",
+    "g082": "low-heel loafers", "g083": "pointed-toe pumps",
+    "g084": "ballet flats", "g085": "travel sneakers",
+    "g086": "strappy sandals", "g087": "mary jane shoes",
+    "g088": "ankle boots", "g089": "structured tote bag",
+    "g090": "travel crossbody bag", "g091": "chain clutch bag",
+    "g092": "square neck scarf", "g093": "resin earrings",
+    "g094": "slim leather belt", "g095": "zip-up crop top",
+    "g096": "crew-neck cardigan", "g097": "satin evening blouse",
+    "g098": "cigarette trousers", "g099": "linen wide-leg trousers",
+    "g100": "satin midi skirt", "g101": "square-neck dress",
+    "g102": "polo sports dress", "g103": "linen blazer",
+    "g104": "denim jacket", "g105": "running shoes",
+    "g106": "low-heel mule shoes", "g107": "sun-protection shirt",
+    "g108": "knit sweater", "g109": "mock-neck knit top",
+    "g110": "cargo trousers", "g111": "slit midi skirt",
+    "g112": "tapered casual trousers", "g113": "a-line day dress",
+    "g114": "tailored blazer dress", "g115": "long knit cardigan",
+    "g116": "formal blazer", "g117": "leather derby shoes",
+    "g118": "soft leather shoulder bag", "g119": "sun hat",
+    "g120": "faux pearl necklace",
 }
 _CPA_COLORS = frozenset(
     {"beige", "black", "blue", "brown", "gray", "green", "khaki", "navy",
@@ -996,12 +1025,13 @@ _CPA_OCCASIONS = frozenset(
 def _cpa_generated_prompt(garment: Garment) -> str:
     """Build a deterministic prompt from server-owned closed vocabulary only."""
 
-    noun = _CPA_PRODUCT_NOUN.get(garment.slot)
+    noun = _CPA_PRODUCT_NOUN_BY_GARMENT_ID.get(garment.garment_id)
+    if noun is None:
+        raise ValueError("invalid_cpa_generated_product_noun")
     styles = tuple(garment.styles)
     occasions = tuple(garment.occasions)
     if (
-        noun is None
-        or garment.color not in _CPA_COLORS
+        garment.color not in _CPA_COLORS
         or garment.material not in _CPA_MATERIALS
         or not styles
         or any(value not in _CPA_STYLES for value in styles)
@@ -1027,6 +1057,8 @@ def _validated_cpa_model_receipt(
     raw: Any,
     *,
     allowlist: tuple[str, ...],
+    expected_requested_model: str | None = None,
+    expected_transport_model: str | None = None,
 ) -> dict[str, Any]:
     if not isinstance(raw, dict) or not allowlist or len(set(allowlist)) != len(allowlist):
         raise ValueError("invalid_cpa_model_receipt")
@@ -1037,6 +1069,8 @@ def _validated_cpa_model_receipt(
         or not isinstance(transport, str)
         or requested not in allowlist
         or transport not in allowlist
+        or (expected_requested_model is not None and requested != expected_requested_model)
+        or (expected_transport_model is not None and transport != expected_transport_model)
         or raw.get("request_model_pinned") is not True
         or raw.get("cpa_trace_verified") is not True
         or not isinstance(raw.get("model_reported"), bool)
@@ -1168,7 +1202,9 @@ def _validated_receipt(
     elif provider == "cpa_generated":
         prompt = _cpa_generated_prompt(garment)
         prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-        _validated_cpa_model_receipt(raw, allowlist=image_model_allowlist)
+        _validated_cpa_model_receipt(
+            raw, allowlist=CPA_GENERATED_HISTORICAL_MODEL_ALLOWLIST
+        )
         if (
             processing != "safe_decode_normalize_then_server_crop"
             or provider_item_id != prompt_sha256
@@ -1479,7 +1515,37 @@ def _receipt_identity(receipt: Any) -> dict[str, Any] | None:
         "expected_sha256",
         "attribution",
     }
-    return {key: receipt.get(key) for key in keys}
+    identity = {key: receipt.get(key) for key in keys}
+    if receipt.get("provider") == "cpa_generated" and "prompt_sha256" in receipt:
+        # A generated source is the immutable server recipe, not the mutable
+        # output bytes.  This identity is available before the Provider call,
+        # so a prior takedown cannot be regenerated into ready state.
+        return {
+            "provider": receipt.get("provider"),
+            "provider_license": receipt.get("provider_license"),
+            "provider_license_version": receipt.get("provider_license_version"),
+            "license_code": receipt.get("license_code"),
+            "prompt_template_version": receipt.get("prompt_template_version"),
+            "prompt_sha256": receipt.get("prompt_sha256"),
+            "requested_model": receipt.get("requested_model"),
+            "transport_model": receipt.get("transport_model"),
+        }
+    return identity
+
+
+def _cpa_generated_source_identity(
+    *, prompt_sha256: str, requested_model: str, transport_model: str
+) -> dict[str, Any]:
+    return {
+        "provider": "cpa_generated",
+        "provider_license": "ai-generated",
+        "provider_license_version": CPA_GENERATED_PROMPT_VERSION,
+        "license_code": "ai-generated",
+        "prompt_template_version": CPA_GENERATED_PROMPT_VERSION,
+        "prompt_sha256": prompt_sha256,
+        "requested_model": requested_model,
+        "transport_model": transport_model,
+    }
 
 
 def _safe_asset_path(asset_directory: Path, relative_path: Any) -> Path | None:
@@ -1618,6 +1684,29 @@ async def _attempt_cpa_generated_garment(
 ) -> _AttemptOutcome:
     prompt = _cpa_generated_prompt(garment)
     prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    requested_model = getattr(image_provider, "requested_model", None)
+    transport_model = getattr(image_provider, "transport_model", None)
+    if not isinstance(requested_model, str) or not isinstance(transport_model, str):
+        raise ValueError("cpa_image_provider_required")
+    history = existing_item.get("receipt_history") if isinstance(existing_item, dict) else None
+    if (
+        isinstance(existing_item, dict)
+        and existing_item.get("status") == "takedown"
+        and isinstance(history, list)
+        and bool(history)
+        and _receipt_identity(history[-1]) == _cpa_generated_source_identity(
+            prompt_sha256=prompt_sha256,
+            requested_model=requested_model,
+            transport_model=transport_model,
+        )
+    ):
+        return _AttemptOutcome(
+            garment=garment,
+            status="quarantined",
+            failure_reason="source_takedown",
+            existing_item=existing_item,
+            source_kind="ai_generated_reference",
+        )
     if config.resume and _reusable_cpa_generated_item(
         existing_item=existing_item,
         garment=garment,
@@ -1635,7 +1724,9 @@ async def _attempt_cpa_generated_garment(
         raw, mime_type, provider_trace = await image_provider.generate_static_2d(prompt)
         model_receipt = _validated_cpa_model_receipt(
             provider_trace,
-            allowlist=image_model_allowlist,
+            allowlist=CPA_GENERATED_HISTORICAL_MODEL_ALLOWLIST,
+            expected_requested_model=requested_model,
+            expected_transport_model=transport_model,
         )
         validator = getattr(safe_fetcher, "validate_local_bytes", None)
         if validator is None:
@@ -2232,10 +2323,8 @@ async def run_ingestion(
         transport = getattr(image_provider, "transport_model", None)
         if (
             image_provider is None
-            or not image_model_allowlist
-            or len(set(image_model_allowlist)) != len(image_model_allowlist)
-            or requested not in image_model_allowlist
-            or transport not in image_model_allowlist
+            or requested not in CPA_GENERATED_HISTORICAL_MODEL_ALLOWLIST
+            or transport not in CPA_GENERATED_HISTORICAL_MODEL_ALLOWLIST
         ):
             raise ValueError("cpa_image_provider_required")
 

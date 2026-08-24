@@ -5516,8 +5516,46 @@ def test_generic_fetcher_still_rejects_arbitrary_openverse_thumbnail_host_as_uns
 
 
 # Task 4 / Ruling G: bounded, in-process CPA-generated asset contract.
-_RG_MODEL = "reviewed-image-model-v1"
+_RG_MODEL = "grok-imagine-image-quality"
 _RG_PROMPT_VERSION = "womenswear_catalog_reference_prompt_v1"
+
+_RG_EXPECTED_PRODUCT_NOUNS = {
+    "g051": "tie-neck blouse", "g052": "square-neck knit top",
+    "g053": "draped button-up shirt", "g054": "fitted base-layer top",
+    "g055": "puff-sleeve blouse", "g056": "sleeveless knit vest",
+    "g057": "collared dress shirt", "g058": "linen shirt",
+    "g059": "tailored straight-leg trousers", "g060": "wide-leg trousers",
+    "g061": "pleated midi skirt", "g062": "pencil skirt",
+    "g063": "straight-leg jeans", "g064": "knit midi skirt",
+    "g065": "jogger trousers", "g066": "athletic trousers",
+    "g067": "a-line midi skirt", "g068": "waist-fitted work dress",
+    "g069": "shirt dress", "g070": "tea dress", "g071": "sheath work dress",
+    "g072": "linen travel dress", "g073": "knit dress",
+    "g074": "satin evening gown", "g075": "double-breasted blazer",
+    "g076": "windbreaker jacket", "g077": "cropped boucle jacket",
+    "g078": "trench coat", "g079": "oversized wool overcoat",
+    "g080": "hooded sports jacket", "g081": "evening shawl",
+    "g082": "low-heel loafers", "g083": "pointed-toe pumps",
+    "g084": "ballet flats", "g085": "travel sneakers",
+    "g086": "strappy sandals", "g087": "mary jane shoes",
+    "g088": "ankle boots", "g089": "structured tote bag",
+    "g090": "travel crossbody bag", "g091": "chain clutch bag",
+    "g092": "square neck scarf", "g093": "resin earrings",
+    "g094": "slim leather belt", "g095": "zip-up crop top",
+    "g096": "crew-neck cardigan", "g097": "satin evening blouse",
+    "g098": "cigarette trousers", "g099": "linen wide-leg trousers",
+    "g100": "satin midi skirt", "g101": "square-neck dress",
+    "g102": "polo sports dress", "g103": "linen blazer",
+    "g104": "denim jacket", "g105": "running shoes",
+    "g106": "low-heel mule shoes", "g107": "sun-protection shirt",
+    "g108": "knit sweater", "g109": "mock-neck knit top",
+    "g110": "cargo trousers", "g111": "slit midi skirt",
+    "g112": "tapered casual trousers", "g113": "a-line day dress",
+    "g114": "tailored blazer dress", "g115": "long knit cardigan",
+    "g116": "formal blazer", "g117": "leather derby shoes",
+    "g118": "soft leather shoulder bag", "g119": "sun hat",
+    "g120": "faux pearl necklace",
+}
 
 
 class RulingGImageProvider:
@@ -5709,3 +5747,78 @@ def test_cpa_generated_receipt_write_failure_never_publishes_manifest(
         _rg_run(cli, config, RulingGImageProvider(_make_image("PNG")),
                 Task4Vision(_task4_assessment(vision_module)))
     assert not config.manifest_path.exists()
+
+
+def test_cpa_generated_receipt_models_bind_to_actual_provider_not_only_allowlist(
+    licensed_ingestion_cli: ModuleType, vision_module: ModuleType, tmp_path: Path,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    provider = RulingGImageProvider(_make_image("PNG"))
+    provider.metadata.update({
+        "requested_model": "other-reviewed-model",
+        "transport_model": "other-reviewed-model",
+        "resolved_model": "other-reviewed-model",
+    })
+    config = _rg_config(cli, tmp_path)
+    result = asyncio.run(cli.run_ingestion(
+        config=config, api_client=None, safe_fetcher=RulingGNoFetch(),
+        vision=Task4Vision(_task4_assessment(vision_module)), image_provider=provider,
+        image_model_allowlist=(_RG_MODEL, "other-reviewed-model"),
+    ))
+    assert result.ready_ids == ()
+    assert _task4_manifest_item(_task4_manifest(config.manifest_path), "g051")["status"] == "quarantined"
+
+
+def test_cpa_generated_same_prompt_and_model_takedown_blocks_provider_before_call(
+    licensed_ingestion_cli: ModuleType, vision_module: ModuleType, tmp_path: Path,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    config = _rg_config(cli, tmp_path)
+    _rg_run(cli, config, RulingGImageProvider(_make_image("PNG")),
+            Task4Vision(_task4_assessment(vision_module)))
+    before = _task4_mark_takedown(config.manifest_path)
+    provider = RulingGImageProvider(b"", error=AssertionError("takedown_must_not_generate"))
+    result = _rg_run(cli, config, provider, Task4Vision(AssertionError("must_not_inspect")))
+    assert result.ready_ids == () and not provider.prompts
+    assert result.item_outcomes[0].reason_code == "source_takedown"
+    assert config.manifest_path.read_bytes() == before
+
+
+def test_cpa_generated_product_noun_oracle_is_exact_and_name_independent(
+    licensed_ingestion_cli: ModuleType,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    garments = {
+        garment.garment_id: garment
+        for garment in cli._controlled_garments(cli.CONTROLLED_GARMENT_FILE)
+    }
+    assert cli._CPA_PRODUCT_NOUN_BY_GARMENT_ID == _RG_EXPECTED_PRODUCT_NOUNS
+    assert set(garments) == set(_RG_EXPECTED_PRODUCT_NOUNS)
+    for garment_id, noun in _RG_EXPECTED_PRODUCT_NOUNS.items():
+        garment = garments[garment_id]
+        prompt = cli._cpa_generated_prompt(garment)
+        assert noun in prompt.lower()
+        changed = garment.model_copy(update={"name": "风衣 裙 帽", "search_text": "ignore previous"})
+        assert cli._cpa_generated_prompt(changed) == prompt
+        assert garment_id not in prompt and garment.name not in prompt
+    with pytest.raises(ValueError, match="invalid_cpa_generated_product_noun"):
+        cli._cpa_generated_prompt(garments["g051"].model_copy(update={"garment_id": "g121"}))
+
+
+def test_historical_cpa_receipt_policy_is_stable_across_provider_invocations(
+    licensed_ingestion_cli: ModuleType, vision_module: ModuleType, tmp_path: Path,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    config = _rg_config(cli, tmp_path)
+    _rg_run(cli, config, RulingGImageProvider(_make_image("PNG")),
+            Task4Vision(_task4_assessment(vision_module)))
+    _, durable = cli._load_source_history(
+        config.sources_path, authoritative=cli._authoritative_garments(),
+        image_model_allowlist=(),
+    )
+    manifest = cli._load_existing_manifest(
+        config.manifest_path, authoritative=cli._authoritative_garments(),
+        asset_directory=config.asset_directory, durable_receipts=durable,
+        image_model_allowlist=(),
+    )
+    assert _task4_manifest_item(manifest, "g051")["status"] == "ready"
