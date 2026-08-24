@@ -6361,8 +6361,6 @@ def test_failed_private_rollback_has_marker_and_next_run_recovers_pair(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    from profagent.providers import ProviderUnavailable
-
     cli = licensed_ingestion_cli._load()
     config = _rg_config(cli, tmp_path)
     root, diagnostics = _ri_paths(config)
@@ -6383,14 +6381,42 @@ def test_failed_private_rollback_has_marker_and_next_run_recovers_pair(
         )
     assert marker.is_file()
     assert diagnostics.is_file() and any(path.is_file() for path in root.rglob("*"))
+    private_png = next(path for path in root.rglob("*") if path.is_file())
+    png_before = private_png.read_bytes()
+    diagnostics_before = diagnostics.read_bytes()
+    manifest_before = (
+        config.manifest_path.read_bytes() if config.manifest_path.exists() else None
+    )
+    sources_before = (
+        config.sources_path.read_bytes() if config.sources_path.exists() else None
+    )
 
     monkeypatch.setattr(cli, "_atomic_write_json", original_json)
     provider = RulingGImageProvider(
-        b"", error=ProviderUnavailable("closed", reason_code="CPA_IMAGE_PROVIDER_UNAVAILABLE")
+        b"", error=AssertionError("provider must not run")
     )
-    _rg_run(cli, config, provider, Task4Vision(AssertionError("Vision must not run")))
-    assert not marker.exists() and not diagnostics.exists()
-    assert not [path for path in root.rglob("*") if path.is_file()]
+    with pytest.raises(ValueError, match="invalid_private_quarantine_transaction"):
+        _rg_run(
+            cli, config, provider, Task4Vision(AssertionError("Vision must not run"))
+        )
+    assert provider.prompts == [] and marker.is_file()
+    assert private_png.read_bytes() == png_before
+    assert diagnostics.read_bytes() == diagnostics_before
+    assert (
+        config.manifest_path.read_bytes() if config.manifest_path.exists() else None
+    ) == manifest_before
+    assert (
+        config.sources_path.read_bytes() if config.sources_path.exists() else None
+    ) == sources_before
+    if config.manifest_path.exists():
+        assert not any(
+            item.get("garment_id") == "g051" and item.get("status") == "ready"
+            for item in _task4_manifest(config.manifest_path)["items"]
+        )
+    if config.sources_path.exists():
+        assert not any(
+            row.get("garment_id") == "g051" for row in _ri_rows(config.sources_path)
+        )
 
 
 def test_private_quarantine_rejects_symlink_root_before_any_write(
