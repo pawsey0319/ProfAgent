@@ -179,6 +179,12 @@ _VISION_FAILURE_REASONS = frozenset(
     }
 )
 _SCHEMA_STAGES = frozenset({"envelope", "content", "payload"})
+_LEGACY_PRIVATE_QUARANTINE_DIAGNOSTIC_SHA256_ALLOWLIST = frozenset(
+    {
+        "8dfb54df971e3d5bc48fb04e9c31a86d57898ba7393915f99dff2404ecc9bf5f",
+        "c2cbcfd81f0f33f88a83cacfd534b09056223c56885c5560c89ab42657d759fc",
+    }
+)
 
 _PUBLIC_LICENSE_CODES = frozenset(
     {"CC0", "PDM", "CC-BY-2.0", "CC-BY-3.0", "CC-BY-4.0"}
@@ -400,7 +406,7 @@ class ItemIngestionOutcome(BaseModel):
         ):
             if self.schema_stage is None:
                 raise ValueError("vision_schema_failure_requires_stage")
-        elif self.schema_stage is not None:
+        elif self.failure_stage != "vision" and self.schema_stage is not None:
             raise ValueError("schema_stage_requires_vision_schema_failure")
         return self
 
@@ -1819,8 +1825,6 @@ class _PrivateQuarantineDiagnostic(BaseModel):
         elif self.reason_code == "response_schema_invalid":
             if self.schema_stage is None:
                 raise ValueError("vision_schema_failure_requires_stage")
-        elif self.schema_stage is not None:
-            raise ValueError("schema_stage_requires_vision_schema_failure")
         digests = (
             self.prompt_sha256,
             self.original_sha256,
@@ -1835,6 +1839,21 @@ class _PrivateQuarantineDiagnostic(BaseModel):
         ):
             raise ValueError("invalid_private_quarantine_binding")
         return self
+
+
+def _private_quarantine_diagnostic_from_raw_line(
+    line: str,
+) -> _PrivateQuarantineDiagnostic:
+    raw = json.loads(line)
+    if (
+        isinstance(raw, dict)
+        and "schema_version" not in raw
+        and "schema_stage" not in raw
+        and hashlib.sha256(line.encode("utf-8")).hexdigest()
+        not in _LEGACY_PRIVATE_QUARANTINE_DIAGNOSTIC_SHA256_ALLOWLIST
+    ):
+        raise ValueError("unrecognized_legacy_private_quarantine_diagnostic")
+    return _PrivateQuarantineDiagnostic.model_validate(raw)
 
 
 def _minimal_model_provenance(
@@ -1888,13 +1907,13 @@ def _vision_failure_details(
     if not isinstance(reason, str) or reason not in _VISION_FAILURE_REASONS:
         raise ValueError("invalid_vision_schema_stage") from None
     stage = trace.get("schema_stage") if isinstance(trace, dict) else None
-    if reason == "response_schema_invalid":
-        if not isinstance(stage, str) or stage not in _SCHEMA_STAGES:
-            raise ValueError("invalid_vision_schema_stage") from None
-        return reason, stage  # type: ignore[return-value]
-    if stage is not None:
+    if stage is not None and (
+        not isinstance(stage, str) or stage not in _SCHEMA_STAGES
+    ):
         raise ValueError("invalid_vision_schema_stage") from None
-    return reason, None  # type: ignore[return-value]
+    if reason == "response_schema_invalid" and stage is None:
+        raise ValueError("invalid_vision_schema_stage") from None
+    return reason, stage  # type: ignore[return-value]
 
 
 async def _attempt_cpa_generated_garment(
@@ -2563,7 +2582,7 @@ def _validate_existing_private_quarantine(
         if not raw_lines or len(raw_lines) > 1000 or any(not line for line in raw_lines):
             raise ValueError("invalid_private_quarantine_diagnostics")
         records = tuple(
-            _PrivateQuarantineDiagnostic.model_validate(json.loads(line))
+            _private_quarantine_diagnostic_from_raw_line(line)
             for line in raw_lines
         )
         transaction_ids: set[str] = set()
@@ -2989,7 +3008,7 @@ def _prepare_private_quarantine(
             if len(decoded) > 1000:
                 raise ValueError("invalid_private_quarantine_diagnostics")
             prior_records = [
-                _PrivateQuarantineDiagnostic.model_validate(json.loads(line)).model_dump(
+                _private_quarantine_diagnostic_from_raw_line(line).model_dump(
                     mode="json", exclude_unset=True
                 )
                 for line in decoded
