@@ -202,6 +202,9 @@ _LEGACY_PRIVATE_QUARANTINE_DIAGNOSTIC_SHA256_ALLOWLIST = frozenset(
         "c2cbcfd81f0f33f88a83cacfd534b09056223c56885c5560c89ab42657d759fc",
     }
 )
+_LEGACY_V2_PRIVATE_QUARANTINE_DIAGNOSTIC_SHA256_ALLOWLIST = frozenset(
+    {"51bbd3a82208c66f7269ad8adade0517a2f8c2b07689e1dddacbe22d9d86397e"}
+)
 
 _PUBLIC_LICENSE_CODES = frozenset(
     {"CC0", "PDM", "CC-BY-2.0", "CC-BY-3.0", "CC-BY-4.0"}
@@ -1922,14 +1925,21 @@ def _private_quarantine_diagnostic_from_raw_line(
     line: str,
 ) -> _PrivateQuarantineDiagnostic:
     raw = json.loads(line)
+    line_sha256 = hashlib.sha256(line.encode("utf-8")).hexdigest()
     if (
         isinstance(raw, dict)
         and "schema_version" not in raw
         and "schema_stage" not in raw
-        and hashlib.sha256(line.encode("utf-8")).hexdigest()
-        not in _LEGACY_PRIVATE_QUARANTINE_DIAGNOSTIC_SHA256_ALLOWLIST
+        and line_sha256 not in _LEGACY_PRIVATE_QUARANTINE_DIAGNOSTIC_SHA256_ALLOWLIST
     ):
         raise ValueError("unrecognized_legacy_private_quarantine_diagnostic")
+    if (
+        isinstance(raw, dict)
+        and raw.get("schema_version") == 2
+        and line_sha256
+        not in _LEGACY_V2_PRIVATE_QUARANTINE_DIAGNOSTIC_SHA256_ALLOWLIST
+    ):
+        raise ValueError("unrecognized_legacy_v2_private_quarantine_diagnostic")
     return _PrivateQuarantineDiagnostic.model_validate(raw)
 
 
@@ -2748,7 +2758,9 @@ def _validate_existing_private_quarantine(
             if actual_pngs != relative_paths:
                 raise ValueError("invalid_private_quarantine_diagnostics")
         return records
-    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+        if str(error) == "unrecognized_legacy_v2_private_quarantine_diagnostic":
+            raise
         raise ValueError("invalid_private_quarantine_diagnostics") from None
 
 
