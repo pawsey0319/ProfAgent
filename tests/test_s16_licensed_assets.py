@@ -6090,3 +6090,201 @@ def test_frozen_grok_provider_uses_exact_cpa_transport_boundary(
         "size": "1024x1024",
         "response_format": "b64_json",
     }
+
+
+# Task 4 / Ruling I: closed failure diagnostics and private Vision quarantine.
+_RI_VISION_MODEL = {
+    "requested_model": "grok4.6",
+    "resolved_model": "grok-4.6-high",
+    "model_verified": True,
+}
+
+
+def _ri_paths(config: Any) -> tuple[Path, Path]:
+    state_root = config.asset_directory.parent
+    return (
+        state_root / "private_quarantine" / "cpa_generated",
+        state_root / "cpa_generated_quarantine_diagnostics.jsonl",
+    )
+
+
+def _ri_rows(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+
+
+def _ri_vision_error(vision_module: ModuleType, reason: str) -> Exception:
+    return vision_module.VisionUnavailable(
+        "provider prose must not escape",
+        {
+            "reason_code": reason,
+            **_RI_VISION_MODEL,
+            "transport_model": "grok-4.6-high",
+            "provider_body": "secret-body",
+            "prompt": "secret-prompt",
+            "owner_id": "secret-owner",
+        },
+    )
+
+
+def _ri_assert_public_quarantined(config: Any) -> None:
+    item = _task4_manifest_item(_task4_manifest(config.manifest_path), "g051")
+    assert item["status"] == "quarantined"
+    assert item["license"] is None and item["relative_path"] is None
+    assert item["original_sha256"] is None and item["processed_sha256"] is None
+    assert item["receipt_history"] == []
+    assert not any(row.get("garment_id") == "g051" for row in _ri_rows(config.sources_path))
+
+
+def test_cpa_failure_outcome_is_closed_content_free_and_has_minimal_image_model(
+    licensed_ingestion_cli: ModuleType, vision_module: ModuleType, tmp_path: Path,
+) -> None:
+    from profagent.providers import ProviderUnavailable
+
+    cli = licensed_ingestion_cli._load()
+    config = _rg_config(cli, tmp_path)
+    provider = RulingGImageProvider(
+        b"", error=ProviderUnavailable(
+            "secret-provider-body g051 u01", reason_code="CPA_IMAGE_PROVIDER_TIMEOUT"
+        )
+    )
+    result = _rg_run(cli, config, provider, Task4Vision(AssertionError("no Vision")))
+    outcome = result.item_outcomes[0]
+    assert outcome.failure_stage == "image_provider"
+    assert outcome.reason_code == "timeout"
+    assert outcome.image_model_provenance.model_dump() == {
+        "requested_model": _RG_MODEL, "resolved_model": None, "model_verified": False,
+    }
+    assert outcome.vision_model_provenance is None
+    public = outcome.model_dump_json()
+    assert all(secret not in public for secret in (
+        "secret-provider-body", "secret-owner", "secret-prompt", "u01"
+    ))
+    _ri_assert_public_quarantined(config)
+    root, diagnostics = _ri_paths(config)
+    assert not root.exists() and not diagnostics.exists()
+
+
+@pytest.mark.parametrize(
+    "reason", ["unsupported_mime", "decode_failed", "dimension_out_of_range", "pixel_limit_exceeded"]
+)
+def test_local_validation_failures_are_exact_and_create_no_private_artifact(
+    licensed_ingestion_cli: ModuleType, vision_module: ModuleType, tmp_path: Path,
+    reason: str,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+
+    class RejectingLocal(RulingGNoFetch):
+        def validate_local_bytes(self, *_args: Any, **_kwargs: Any) -> Any:
+            raise cli.ImageFetchError(reason)
+
+    config = _rg_config(cli, tmp_path)
+    vision = Task4Vision(AssertionError("Vision must not be reached"))
+    result = asyncio.run(cli.run_ingestion(
+        config=config, api_client=None, safe_fetcher=RejectingLocal(), vision=vision,
+        image_provider=RulingGImageProvider(_make_image("PNG")),
+        image_model_allowlist=(_RG_MODEL,),
+    ))
+    outcome = result.item_outcomes[0]
+    assert (outcome.failure_stage, outcome.reason_code) == ("local_validation", reason)
+    assert not vision.calls
+    _ri_assert_public_quarantined(config)
+    root, diagnostics = _ri_paths(config)
+    assert not root.exists() and not diagnostics.exists()
+
+
+@pytest.mark.parametrize(
+    "reason", ["product_type_mismatch", "identifiable_person", "quality_rejected",
+               "response_schema_invalid", "timeout"],
+)
+def test_vision_rejection_persists_only_normalized_private_content_and_minimal_record(
+    licensed_ingestion_cli: ModuleType, vision_module: ModuleType, tmp_path: Path,
+    reason: str,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    raw = _make_image_with_authoritative_metadata("PNG")
+    provider, config = RulingGImageProvider(raw), _rg_config(cli, tmp_path)
+    vision = Task4Vision(_ri_vision_error(vision_module, reason))
+    result = _rg_run(cli, config, provider, vision)
+    outcome = result.item_outcomes[0]
+    assert (outcome.failure_stage, outcome.reason_code) == ("vision", reason)
+    assert outcome.image_model_provenance.model_dump() == {
+        "requested_model": _RG_MODEL, "resolved_model": _RG_MODEL, "model_verified": True,
+    }
+    assert outcome.vision_model_provenance.model_dump() == _RI_VISION_MODEL
+    _ri_assert_public_quarantined(config)
+
+    normalized = vision.calls[0]["image_bytes"]
+    digest = hashlib.sha256(normalized).hexdigest()
+    root, diagnostics = _ri_paths(config)
+    files = [path for path in root.rglob("*") if path.is_file()]
+    assert files == [root / f"{digest}.png"] and files[0].read_bytes() == normalized
+    assert root.resolve() != config.asset_directory.resolve()
+    with Image.open(files[0]) as image:
+        image.load()
+        assert image.format == "PNG" and image.getexif() == {} and not image.info
+    rows = _ri_rows(diagnostics)
+    assert len(rows) == 1
+    record = rows[0]
+    assert record["garment_id"] == "g051" and record["user_id"] == "u01"
+    assert record["prompt_sha256"] == hashlib.sha256(provider.prompts[0].encode()).hexdigest()
+    assert record["original_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert record["processed_sha256"] == digest == record["quarantine_sha256"]
+    assert record["quarantine_relative_path"] == f"{digest}.png"
+    assert (record["failure_stage"], record["reason_code"]) == ("vision", reason)
+    assert record["image_model_provenance"] == outcome.image_model_provenance.model_dump()
+    assert record["vision_model_provenance"] == _RI_VISION_MODEL
+    encoded = json.dumps(record, ensure_ascii=False)
+    assert all(secret not in encoded for secret in (
+        "provider prose", "secret-body", "secret-prompt", "secret-owner", provider.prompts[0]
+    ))
+
+
+def test_cpa_cancellation_creates_no_public_or_private_state(
+    licensed_ingestion_cli: ModuleType, vision_module: ModuleType, tmp_path: Path,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    config = _rg_config(cli, tmp_path)
+    with pytest.raises(asyncio.CancelledError):
+        _rg_run(cli, config, RulingGImageProvider(b"", error=asyncio.CancelledError()),
+                Task4Vision(AssertionError("no Vision")))
+    root, diagnostics = _ri_paths(config)
+    assert not root.exists() and not diagnostics.exists()
+    assert not config.manifest_path.exists() and not config.sources_path.exists()
+
+
+@pytest.mark.parametrize("failure_point", ["quarantine", "diagnostic", "manifest"])
+def test_vision_quarantine_publication_is_atomic_without_dangling_trust(
+    licensed_ingestion_cli: ModuleType, vision_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure_point: str,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    config = _rg_config(cli, tmp_path)
+    root, diagnostics = _ri_paths(config)
+    original_bytes, original_json = cli._atomic_write_bytes, cli._atomic_write_json
+
+    def fail_bytes(path: Path, payload: bytes) -> None:
+        target = Path(path)
+        if (failure_point == "quarantine" and root in target.parents) or (
+            failure_point == "diagnostic" and target == diagnostics
+        ):
+            raise OSError(failure_point)
+        original_bytes(target, payload)
+
+    def fail_json(path: Path, payload: dict[str, Any]) -> None:
+        if failure_point == "manifest" and Path(path) == config.manifest_path:
+            raise OSError("manifest")
+        original_json(path, payload)
+
+    monkeypatch.setattr(cli, "_atomic_write_bytes", fail_bytes)
+    monkeypatch.setattr(cli, "_atomic_write_json", fail_json)
+    with pytest.raises(OSError, match=failure_point):
+        _rg_run(cli, config, RulingGImageProvider(_make_image("PNG")),
+                Task4Vision(_ri_vision_error(vision_module, "product_type_mismatch")))
+    assert not [path for path in root.rglob("*") if path.is_file()]
+    assert _ri_rows(diagnostics) == []
+    if config.manifest_path.exists():
+        assert not any(row.get("garment_id") == "g051" and row.get("status") == "ready"
+                       for row in _task4_manifest(config.manifest_path)["items"])
+    assert not any(row.get("garment_id") == "g051" for row in _ri_rows(config.sources_path))
