@@ -608,6 +608,8 @@ S16 复用 S15 Memory 路线 A、R1 owner/ID/HardFilter/购物门控、不可变
 - **目标**：在保留 `fixtures_v1.0` 50 件稳定 ID 的前提下扩充至总计 120 件（`u01=72/u02=24/u03=24`），提供 owner-bound、来源明确的 ready 2D 资产和按类别折叠展示。
 - **范围边界**：只允许用户自有/明确授权、机器可读许可 API、正式合作 API 或明确标记的 AI 生成参考；不开放通用爬虫，不用许可不明图片凑数。
 - **验收口径**：120/120 资产可展示、来源和受众闭集可审计，旧 ID 不重编号，Overlay 启用后 R1 固定评测不退化。
+- **Task 4 / Ruling I 关闭证据（2026-08-24）**：CPA 女装目录图的失败诊断与私有隔离合同已完成 mock-only TDD 和 fresh reviewer 收口；最终实现 `4468cb7`，licensed-assets `383 passed`、full `869 passed, 1 skipped`、两项 validator 通过，fresh reviewer `P0/P1/P2=0/0/0`。隔离图不进入公开 manifest/source/静态服务，Provider/local 失败不伪造资产；所有 existing diagnostic（含 dry-run）在 Provider 前重验 canonical garment/user/prompt/product/private hash 与服务端模型策略。首轮真实 g051 失败证据继续保持 untracked 且哈希冻结；S16B 仍未完成。
+- **Ruling J（仅授权、尚未执行）**：允许使用冻结的一条 canonical g051 JSONL 再执行恰好一次 CPA Image canary，并在到达时最多一次 CPA Vision；不允许重试循环、g052–g120、resume/bulk、Openverse 或 UI。任何结果后立即停止并再次只读审查；该授权不等于批量授权或 S16B 完成。
 
 #### S16C — 图上长按替换、Look vN 与异步图片（`backend` + `frontend` → `reviewer` → `tester`，未完成）
 
