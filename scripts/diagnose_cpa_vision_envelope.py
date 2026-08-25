@@ -380,6 +380,12 @@ def _closed_provider_result(trace: Any) -> tuple[int, dict[str, Any]]:
         else:
             state_is_valid = failure_code is None
     elif reason in semantic_failures:
+        if reason == "quality_rejected":
+            quality_count_is_valid = 1 <= quality_issue_count <= 5
+        elif reason in {"audience_rejected", "invalid_region"}:
+            quality_count_is_valid = quality_issue_count == 0
+        else:
+            quality_count_is_valid = quality_issue_count <= 5
         state_is_valid = (
             verified
             and resolved in EXPECTED_VISION_REPORTED_MODELS
@@ -387,6 +393,7 @@ def _closed_provider_result(trace: Any) -> tuple[int, dict[str, Any]]:
             and failure_code is None
             and profile is None
             and assessment_count == 0
+            and quality_count_is_valid
         )
     else:
         state_is_valid = False
