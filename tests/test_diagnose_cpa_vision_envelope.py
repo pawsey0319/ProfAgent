@@ -237,6 +237,31 @@ def _vision_failure(**updates: Any) -> VisionUnavailable:
     return VisionUnavailable(PROVIDER_SECRET, trace)
 
 
+def _literal_catalog_trace(**updates: Any) -> dict[str, Any]:
+    """Independent test contract: do not derive diagnostic states from its code."""
+    trace: dict[str, Any] = {
+        "component": "vision",
+        "operation": "catalog_asset_assessment",
+        "status": "quarantined",
+        "reason_code": "provider_unavailable",
+        "requested_model": "grok4.6",
+        "transport_model": "grok-4.6-high",
+        "resolved_model": None,
+        "model_verified": False,
+        "schema": "catalog_asset_assessment_v2",
+        "image_logged": False,
+        "latency_ms": 17,
+        "interaction_budget_seconds": 30,
+        "assessment_count": 0,
+        "quality_issue_count": 0,
+        "schema_stage": None,
+        "envelope_failure_code": None,
+        "envelope_metadata_profile": None,
+    }
+    trace.update(updates)
+    return trace
+
+
 def _assert_production_trace_shape(
     trace: dict[str, Any], *, status: str, reason_code: str | None
 ) -> None:
@@ -359,32 +384,32 @@ def test_known_vision_failures_map_to_closed_fields_with_one_attempt_no_retry(
             _vision_failure(
                 schema_stage="content",
                 envelope_failure_code=None,
-                resolved_model="grok-4.6-high",
-                model_verified=True,
+                resolved_model=None,
+                model_verified=False,
             ),
             (
                 "response_schema_invalid",
                 "content",
                 None,
                 PROFILE,
-                "grok-4.6-high",
-                True,
+                None,
+                False,
             ),
         ),
         (
             _vision_failure(
                 schema_stage="payload",
                 envelope_failure_code=None,
-                resolved_model="grok-4.6-build",
-                model_verified=True,
+                resolved_model=None,
+                model_verified=False,
             ),
             (
                 "response_schema_invalid",
                 "payload",
                 None,
                 PROFILE,
-                "grok-4.6-build",
-                True,
+                None,
+                False,
             ),
         ),
         (
@@ -485,6 +510,227 @@ def test_extra_provider_trace_key_fails_closed_without_leak_or_retry(
     trace["envelope_metadata_profile"] = PROFILE
     trace[extra_key] = PROVIDER_SECRET
     vision = _VisionSpy(trace)
+    _install_runtime(monkeypatch, module, settings=_settings(), vision=vision)
+    before = _snapshot()
+    code, payload = _invoke(module, capsys, "--expected-head", _head())
+    assert code != 0
+    assert payload == {
+        "reason_code": "provider_unavailable",
+        "schema_stage": None,
+        "envelope_failure_code": None,
+        "envelope_metadata_profile": None,
+        "model_provenance": {
+            "requested_model": "grok4.6",
+            "resolved_model": None,
+            "model_verified": False,
+        },
+        "vision_call_count": 1,
+    }
+    assert len(vision.calls) == 1
+    assert _snapshot() == before
+
+
+@pytest.mark.parametrize(
+    ("trace", "expected"),
+    (
+        (
+            _literal_catalog_trace(
+                status="ok",
+                reason_code=None,
+                resolved_model="grok-4.6-high",
+                model_verified=True,
+                assessment_count=1,
+            ),
+            (0, None, None, None, PROFILE, "grok-4.6-high", True),
+        ),
+        *(
+            (
+                _literal_catalog_trace(reason_code=reason),
+                (1, reason, None, None, None, None, False),
+            )
+            for reason in (
+                "input_rejected",
+                "timeout",
+                "provider_unavailable",
+                "http_error",
+            )
+        ),
+        (
+            _literal_catalog_trace(
+                reason_code="model_mismatch",
+                schema_stage="envelope",
+            ),
+            (1, "model_mismatch", "envelope", None, None, None, False),
+        ),
+        (
+            _literal_catalog_trace(
+                reason_code="response_schema_invalid",
+                schema_stage="envelope",
+                envelope_failure_code="invalid_envelope_metadata",
+                envelope_metadata_profile=PROFILE,
+            ),
+            (
+                1,
+                "response_schema_invalid",
+                "envelope",
+                "invalid_envelope_metadata",
+                PROFILE,
+                None,
+                False,
+            ),
+        ),
+        *(
+            (
+                _literal_catalog_trace(
+                    reason_code="response_schema_invalid",
+                    schema_stage=stage,
+                    envelope_metadata_profile=PROFILE,
+                ),
+                (
+                    1,
+                    "response_schema_invalid",
+                    stage,
+                    None,
+                    PROFILE,
+                    None,
+                    False,
+                ),
+            )
+            for stage in ("content", "payload")
+        ),
+        *(
+            (
+                _literal_catalog_trace(
+                    reason_code=reason,
+                    resolved_model=(
+                        "grok-4.6-high" if index % 2 == 0 else "grok-4.6-build"
+                    ),
+                    model_verified=True,
+                    schema_stage="payload",
+                    quality_issue_count=(2 if reason == "quality_rejected" else 0),
+                ),
+                (
+                    1,
+                    reason,
+                    "payload",
+                    None,
+                    None,
+                    "grok-4.6-high" if index % 2 == 0 else "grok-4.6-build",
+                    True,
+                ),
+            )
+            for index, reason in enumerate(
+                (
+                    "slot_mismatch",
+                    "product_type_mismatch",
+                    "audience_rejected",
+                    "identifiable_person",
+                    "low_confidence",
+                    "invalid_region",
+                    "quality_rejected",
+                )
+            )
+        ),
+    ),
+)
+def test_real_catalog_trace_state_matrix_is_reported_honestly(
+    diagnostic_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    trace: dict[str, Any],
+    expected: tuple[int, str | None, str | None, str | None, str | None, str | None, bool],
+) -> None:
+    module = diagnostic_module
+    vision = _VisionSpy(
+        trace if trace["status"] == "ok" else VisionUnavailable(PROVIDER_SECRET, trace)
+    )
+    _install_runtime(monkeypatch, module, settings=_settings(), vision=vision)
+    before = _snapshot()
+    code, payload = _invoke(module, capsys, "--expected-head", _head())
+    (
+        expected_code,
+        reason,
+        stage,
+        envelope_code,
+        profile,
+        resolved,
+        verified,
+    ) = expected
+    assert code == expected_code
+    assert payload == {
+        "reason_code": reason,
+        "schema_stage": stage,
+        "envelope_failure_code": envelope_code,
+        "envelope_metadata_profile": profile,
+        "model_provenance": {
+            "requested_model": "grok4.6",
+            "resolved_model": resolved,
+            "model_verified": verified,
+        },
+        "vision_call_count": 1,
+    }
+    assert len(vision.calls) == 1
+    assert _snapshot() == before
+
+
+@pytest.mark.parametrize(
+    ("updates", "missing_key"),
+    (
+        (
+            {
+                "reason_code": "response_schema_invalid",
+                "schema_stage": "envelope",
+                "envelope_failure_code": "invalid_envelope_metadata",
+                "envelope_metadata_profile": PROFILE,
+                "resolved_model": "grok-4.6-high",
+                "model_verified": True,
+            },
+            None,
+        ),
+        (
+            {
+                "reason_code": "slot_mismatch",
+                "resolved_model": "grok-4.6-high",
+                "model_verified": True,
+                "schema_stage": None,
+            },
+            None,
+        ),
+        (
+            {"reason_code": "timeout", "schema_stage": "payload"},
+            None,
+        ),
+        (
+            {"reason_code": "model_mismatch", "schema_stage": None},
+            None,
+        ),
+        (
+            {
+                "reason_code": "response_schema_invalid",
+                "schema_stage": "content",
+                "envelope_metadata_profile": PROFILE,
+                "resolved_model": "grok-4.6-build",
+                "model_verified": True,
+            },
+            None,
+        ),
+        ({}, "status"),
+        ({"status": PROVIDER_SECRET}, None),
+        ({"reason_code": PROVIDER_SECRET}, None),
+    ),
+)
+def test_impossible_missing_or_poisoned_trace_state_fails_closed(
+    diagnostic_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    updates: dict[str, Any],
+    missing_key: str | None,
+) -> None:
+    module = diagnostic_module
+    trace = _literal_catalog_trace(**updates)
+    if missing_key is not None:
+        del trace[missing_key]
+    vision = _VisionSpy(VisionUnavailable(PROVIDER_SECRET, trace))
     _install_runtime(monkeypatch, module, settings=_settings(), vision=vision)
     before = _snapshot()
     code, payload = _invoke(module, capsys, "--expected-head", _head())
