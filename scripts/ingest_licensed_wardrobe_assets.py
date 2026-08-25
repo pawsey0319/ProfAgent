@@ -49,6 +49,7 @@ from profagent.providers import (
 )
 from profagent.vision import (
     CPA_CHAT_COMPLETION_METADATA_PROFILE,
+    CPA_CHAT_COMPLETION_METADATA_V2_PROFILE,
     EnvelopeFailureCode,
     VisionAdapter,
     VisionUnavailable,
@@ -150,7 +151,10 @@ _IMAGE_FAILURE_REASON_BY_CODE: dict[str, IngestionFailureReason] = {
 
 FailureStage = Literal["image_provider", "local_validation", "vision"]
 SchemaStage = Literal["envelope", "content", "payload"]
-EnvelopeMetadataProfile = Literal["cpa_chat_completion_metadata_v1"]
+EnvelopeMetadataProfile = Literal[
+    "cpa_chat_completion_metadata_v1",
+    "cpa_chat_completion_metadata_v2",
+]
 VisionFailureReason = Literal[
     "input_rejected",
     "timeout",
@@ -194,6 +198,12 @@ _ENVELOPE_FAILURE_CODES = frozenset(
         "invalid_choice_metadata",
         "invalid_message",
         "invalid_message_metadata",
+    }
+)
+_ENVELOPE_METADATA_PROFILES = frozenset(
+    {
+        CPA_CHAT_COMPLETION_METADATA_PROFILE,
+        CPA_CHAT_COMPLETION_METADATA_V2_PROFILE,
     }
 )
 _LEGACY_PRIVATE_QUARANTINE_DIAGNOSTIC_SHA256_ALLOWLIST = frozenset(
@@ -428,18 +438,32 @@ class ItemIngestionOutcome(BaseModel):
         ):
             if self.schema_stage is None:
                 raise ValueError("vision_schema_failure_requires_stage")
-            if self.envelope_metadata_profile != CPA_CHAT_COMPLETION_METADATA_PROFILE:
+            if self.envelope_metadata_profile not in _ENVELOPE_METADATA_PROFILES:
                 raise ValueError("invalid_vision_envelope_diagnostic")
             if self.schema_stage == "envelope":
                 if self.envelope_failure_code is None:
                     raise ValueError("invalid_vision_envelope_diagnostic")
             elif self.envelope_failure_code is not None:
                 raise ValueError("invalid_vision_envelope_diagnostic")
+        elif (
+            self.failure_stage == "vision"
+            and self.reason_code == "model_mismatch"
+        ):
+            if (
+                self.schema_stage != "envelope"
+                or self.envelope_failure_code is not None
+                or (
+                    self.envelope_metadata_profile is not None
+                    and self.envelope_metadata_profile
+                    not in _ENVELOPE_METADATA_PROFILES
+                )
+            ):
+                raise ValueError("invalid_vision_envelope_diagnostic")
         elif self.failure_stage != "vision" and self.schema_stage is not None:
             raise ValueError("schema_stage_requires_vision_schema_failure")
         if not (
             self.failure_stage == "vision"
-            and self.reason_code == "response_schema_invalid"
+            and self.reason_code in {"response_schema_invalid", "model_mismatch"}
         ) and (
             self.envelope_failure_code is not None
             or self.envelope_metadata_profile is not None
@@ -1892,7 +1916,7 @@ class _PrivateQuarantineDiagnostic(BaseModel):
             if self.schema_version == 3:
                 if (
                     self.envelope_metadata_profile
-                    != CPA_CHAT_COMPLETION_METADATA_PROFILE
+                    not in _ENVELOPE_METADATA_PROFILES
                 ):
                     raise ValueError("invalid_vision_envelope_diagnostic")
                 if self.schema_stage == "envelope":
@@ -1900,6 +1924,19 @@ class _PrivateQuarantineDiagnostic(BaseModel):
                         raise ValueError("invalid_vision_envelope_diagnostic")
                 elif self.envelope_failure_code is not None:
                     raise ValueError("invalid_vision_envelope_diagnostic")
+        elif (
+            self.schema_version == 3 and self.reason_code == "model_mismatch"
+        ):
+            if (
+                self.schema_stage != "envelope"
+                or self.envelope_failure_code is not None
+                or (
+                    self.envelope_metadata_profile is not None
+                    and self.envelope_metadata_profile
+                    not in _ENVELOPE_METADATA_PROFILES
+                )
+            ):
+                raise ValueError("invalid_vision_envelope_diagnostic")
         elif self.schema_version == 3 and (
             self.envelope_failure_code is not None
             or self.envelope_metadata_profile is not None
@@ -2016,15 +2053,26 @@ def _vision_failure_details(
         or failure_code not in _ENVELOPE_FAILURE_CODES
     ):
         raise ValueError("invalid_vision_envelope_diagnostic") from None
-    if profile is not None and profile != CPA_CHAT_COMPLETION_METADATA_PROFILE:
+    if profile is not None and (
+        not isinstance(profile, str) or profile not in _ENVELOPE_METADATA_PROFILES
+    ):
         raise ValueError("invalid_vision_envelope_diagnostic") from None
     if reason == "response_schema_invalid":
-        if profile != CPA_CHAT_COMPLETION_METADATA_PROFILE:
+        if profile not in _ENVELOPE_METADATA_PROFILES:
             raise ValueError("invalid_vision_envelope_diagnostic") from None
         if stage == "envelope":
             if failure_code is None:
                 raise ValueError("invalid_vision_envelope_diagnostic") from None
         elif failure_code is not None:
+            raise ValueError("invalid_vision_envelope_diagnostic") from None
+    elif reason == "model_mismatch":
+        if (
+            stage != "envelope"
+            or failure_code is not None
+            or (
+                profile is not None and profile not in _ENVELOPE_METADATA_PROFILES
+            )
+        ):
             raise ValueError("invalid_vision_envelope_diagnostic") from None
     elif failure_code is not None or profile is not None:
         raise ValueError("invalid_vision_envelope_diagnostic") from None

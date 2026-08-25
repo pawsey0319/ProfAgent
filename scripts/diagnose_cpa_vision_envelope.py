@@ -24,6 +24,7 @@ from PIL import Image
 from profagent.config import Settings
 from profagent.vision import (
     CPA_CHAT_COMPLETION_METADATA_PROFILE,
+    CPA_CHAT_COMPLETION_METADATA_V2_PROFILE,
     VISION_REPORTED_MODELS,
     VISION_TRANSPORT_MODEL,
     VisionAdapter,
@@ -52,6 +53,12 @@ EXPECTED_VISION_REPORTED_MODELS = frozenset(
 )
 METADATA_PROFILE = CPA_CHAT_COMPLETION_METADATA_PROFILE
 EXPECTED_METADATA_PROFILE = "cpa_chat_completion_metadata_v1"
+_ENVELOPE_METADATA_PROFILES = frozenset(
+    {
+        CPA_CHAT_COMPLETION_METADATA_PROFILE,
+        CPA_CHAT_COMPLETION_METADATA_V2_PROFILE,
+    }
+)
 EXPECTED_CATALOG_SCHEMA = "catalog_asset_assessment_v2"
 
 _HEAD_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
@@ -299,7 +306,7 @@ def _closed_provider_result(trace: Any) -> tuple[int, dict[str, Any]]:
         or schema != EXPECTED_CATALOG_SCHEMA
         or image_logged is not False
         or (stage is not None and stage not in _SCHEMA_STAGES)
-        or (profile is not None and profile != EXPECTED_METADATA_PROFILE)
+        or (profile is not None and profile not in _ENVELOPE_METADATA_PROFILES)
     ):
         return 1, _provider_unavailable()
     if verified:
@@ -362,7 +369,9 @@ def _closed_provider_result(trace: Any) -> tuple[int, dict[str, Any]]:
             and resolved is None
             and stage == "envelope"
             and failure_code is None
-            and profile is None
+            and (
+                profile is None or profile in _ENVELOPE_METADATA_PROFILES
+            )
             and assessment_count == 0
             and quality_issue_count == 0
         )
@@ -371,7 +380,7 @@ def _closed_provider_result(trace: Any) -> tuple[int, dict[str, Any]]:
             not verified
             and resolved is None
             and stage in _SCHEMA_STAGES
-            and profile == EXPECTED_METADATA_PROFILE
+            and profile in _ENVELOPE_METADATA_PROFILES
             and assessment_count == 0
             and quality_issue_count == 0
         )

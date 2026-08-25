@@ -387,28 +387,8 @@ def _valid_v2_usage(value: Any) -> bool:
 
 
 def _valid_v2_tool_calls(value: Any) -> bool:
-    if value is None:
-        return True
-    if not isinstance(value, list):
-        return False
-    for tool_call in value:
-        if not isinstance(tool_call, dict) or set(tool_call) != {
-            "id",
-            "type",
-            "function",
-        }:
-            return False
-        function = tool_call["function"]
-        if (
-            type(tool_call["id"]) is not str
-            or tool_call["type"] != "function"
-            or not isinstance(function, dict)
-            or set(function) != {"name", "arguments"}
-            or type(function["name"]) is not str
-            or type(function["arguments"]) is not str
-        ):
-            return False
-    return True
+    """Vision is stop-only: any tool call would be an unusable response."""
+    return value is None
 
 
 def _v1_completion_message(envelope: Any) -> dict[str, Any]:
@@ -1059,6 +1039,26 @@ class VisionAdapter:
         return raw, trace, envelope_metadata_profile
 
     @staticmethod
+    def _request_json_result(
+        result: Any,
+    ) -> tuple[dict[str, Any], dict[str, Any], str]:
+        """Keep historical two-value test overrides on the v1 safe default."""
+        if not isinstance(result, tuple):
+            raise ValueError("invalid_request_json_result")
+        if len(result) == 2:
+            raw, trace = result
+            return raw, trace, CPA_CHAT_COMPLETION_METADATA_PROFILE
+        if len(result) == 3:
+            raw, trace, profile = result
+            if not isinstance(profile, str) or profile not in {
+                CPA_CHAT_COMPLETION_METADATA_PROFILE,
+                CPA_CHAT_COMPLETION_METADATA_V2_PROFILE,
+            }:
+                raise ValueError("invalid_request_json_result")
+            return raw, trace, profile
+        raise ValueError("invalid_request_json_result")
+
+    @staticmethod
     def _valid_catalog_image_input(
         image_bytes: Any,
         mime_type: Any,
@@ -1088,23 +1088,25 @@ class VisionAdapter:
             raise self._fail("CPA vision is disabled", "disabled")
         if not assets or any(record.visual_quality != "usable" for record, _ in assets):
             raise self._fail("no technically usable owned asset", "insufficient_asset")
-        raw, trace, _ = await self._request_json(
-            operation="garment_visibility_inspection",
-            image_bytes=tuple(raw for _, raw in assets),
-            mime_type=tuple(record.media_type for record, _ in assets),
-            allowed_values={
-                "slot": ("top", "bottom", "shoes", "overall"),
-                "observation": tuple(get_args(ObservationCode)),
-                "issue_codes": (
-                    "none",
-                    "bottom_cuff_messy",
-                    "layer_alignment_issue",
-                    "shoe_coordination_issue",
-                    "detail_competition",
-                ),
-            },
-            schema="garment_visibility_codes_v2",
-            max_tokens=800,
+        raw, trace, _ = self._request_json_result(
+            await self._request_json(
+                operation="garment_visibility_inspection",
+                image_bytes=tuple(raw for _, raw in assets),
+                mime_type=tuple(record.media_type for record, _ in assets),
+                allowed_values={
+                    "slot": ("top", "bottom", "shoes", "overall"),
+                    "observation": tuple(get_args(ObservationCode)),
+                    "issue_codes": (
+                        "none",
+                        "bottom_cuff_messy",
+                        "layer_alignment_issue",
+                        "shoe_coordination_issue",
+                        "detail_competition",
+                    ),
+                },
+                schema="garment_visibility_codes_v2",
+                max_tokens=800,
+            )
         )
         try:
             assessment = VisionAssessment.model_validate(raw)
@@ -1141,18 +1143,20 @@ class VisionAdapter:
         if self.settings.vision_force_failure or not self.settings.cpa_text_enabled:
             raise self._catalog_failure("provider_unavailable") from None
 
-        raw, request_trace, envelope_metadata_profile = await self._request_json(
-            operation="catalog_asset_assessment",
-            image_bytes=image_bytes,
-            mime_type=mime_type,
-            allowed_values={
-                "slot": (allowed_slot,),
-                "product_type": (expected_product_type,),
-                "audience": CATALOG_AUDIENCES,
-                "quality_issues": CATALOG_QUALITY_SIGNALS,
-            },
-            schema=CATALOG_ASSESSMENT_SCHEMA,
-            max_tokens=300,
+        raw, request_trace, envelope_metadata_profile = self._request_json_result(
+            await self._request_json(
+                operation="catalog_asset_assessment",
+                image_bytes=image_bytes,
+                mime_type=mime_type,
+                allowed_values={
+                    "slot": (allowed_slot,),
+                    "product_type": (expected_product_type,),
+                    "audience": CATALOG_AUDIENCES,
+                    "quality_issues": CATALOG_QUALITY_SIGNALS,
+                },
+                schema=CATALOG_ASSESSMENT_SCHEMA,
+                max_tokens=300,
+            )
         )
         if set(raw) != set(CatalogAssetAssessment.model_fields):
             raise self._catalog_failure(
@@ -1187,7 +1191,11 @@ class VisionAdapter:
                 resolved_model=request_trace["resolved_model"],
                 model_verified=(reason not in {"response_schema_invalid"}),
                 schema_stage="payload",
-                envelope_metadata_profile=envelope_metadata_profile,
+                envelope_metadata_profile=(
+                    envelope_metadata_profile
+                    if reason == "response_schema_invalid"
+                    else None
+                ),
             ) from None
 
         failure_reason: CatalogFailureReason | None = None
@@ -1211,7 +1219,6 @@ class VisionAdapter:
                 model_verified=True,
                 quality_issue_count=len(assessment.quality_issues),
                 schema_stage="payload",
-                envelope_metadata_profile=envelope_metadata_profile,
             ) from None
 
         trace = self._catalog_trace(
