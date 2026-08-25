@@ -50,6 +50,7 @@ CATALOG_MIME_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
 CATALOG_SLOTS = frozenset(get_args(Slot))
 CATALOG_SCHEMA_STAGES = frozenset({"envelope", "content", "payload"})
 CPA_CHAT_COMPLETION_METADATA_PROFILE = "cpa_chat_completion_metadata_v1"
+CPA_CHAT_COMPLETION_METADATA_V2_PROFILE = "cpa_chat_completion_metadata_v2"
 ENVELOPE_METADATA_PROFILE = CPA_CHAT_COMPLETION_METADATA_PROFILE
 
 _COMPLETION_ENVELOPE_KEYS = frozenset(
@@ -64,6 +65,28 @@ _COMPLETION_ENVELOPE_KEYS = frozenset(
 )
 _COMPLETION_CHOICE_KEYS = frozenset({"index", "message", "finish_reason"})
 _COMPLETION_MESSAGE_KEYS = frozenset({"role", "content", "refusal"})
+_V2_COMPLETION_ENVELOPE_KEYS = frozenset(
+    {"id", "object", "created", "model", "choices", "usage"}
+)
+_V2_COMPLETION_CHOICE_KEYS = frozenset(
+    {"index", "message", "finish_reason", "native_finish_reason"}
+)
+_V2_COMPLETION_MESSAGE_KEYS = frozenset(
+    {"role", "content", "reasoning_content", "tool_calls"}
+)
+_V2_USAGE_KEYS = frozenset(
+    {
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "prompt_tokens_details",
+        "completion_tokens_details",
+    }
+)
+_V2_PROMPT_TOKEN_DETAIL_KEYS = frozenset(
+    {"cached_tokens", "cached_creation_tokens"}
+)
+_V2_COMPLETION_TOKEN_DETAIL_KEYS = frozenset({"reasoning_tokens"})
 _COMPLETION_METADATA_MAX_TEXT_LENGTH = 256
 
 CatalogQualityIssueCode = Literal[
@@ -301,7 +324,94 @@ class _CompletionEnvelopeInvalid(ValueError):
         self.code = code
 
 
-def _completion_message(envelope: Any) -> dict[str, Any]:
+def _completion_metadata_profile(envelope: Any) -> str:
+    """Select v2 only from one of its source-proven serializer markers."""
+    if not isinstance(envelope, dict):
+        return CPA_CHAT_COMPLETION_METADATA_PROFILE
+    choices = envelope.get("choices")
+    if isinstance(choices, list):
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            if "native_finish_reason" in choice:
+                return CPA_CHAT_COMPLETION_METADATA_V2_PROFILE
+            message = choice.get("message")
+            if isinstance(message, dict) and (
+                "reasoning_content" in message or "tool_calls" in message
+            ):
+                return CPA_CHAT_COMPLETION_METADATA_V2_PROFILE
+    if "usage" in envelope:
+        if "system_fingerprint" in envelope:
+            return CPA_CHAT_COMPLETION_METADATA_PROFILE
+        if isinstance(choices, list) and any(
+            isinstance(choice, dict)
+            and isinstance(choice.get("message"), dict)
+            and "refusal" in choice["message"]
+            for choice in choices
+        ):
+            return CPA_CHAT_COMPLETION_METADATA_PROFILE
+        return CPA_CHAT_COMPLETION_METADATA_V2_PROFILE
+    return CPA_CHAT_COMPLETION_METADATA_PROFILE
+
+
+def _valid_v2_token_leaf(value: Any) -> bool:
+    return type(value) is int and value >= 0
+
+
+def _valid_v2_usage_details(value: Any, allowed_keys: frozenset[str]) -> bool:
+    return (
+        isinstance(value, dict)
+        and bool(value)
+        and set(value).issubset(allowed_keys)
+        and all(_valid_v2_token_leaf(token) for token in value.values())
+    )
+
+
+def _valid_v2_usage(value: Any) -> bool:
+    if not isinstance(value, dict) or not value or not set(value).issubset(
+        _V2_USAGE_KEYS
+    ):
+        return False
+    for key, token in value.items():
+        if key == "prompt_tokens_details":
+            if not _valid_v2_usage_details(token, _V2_PROMPT_TOKEN_DETAIL_KEYS):
+                return False
+        elif key == "completion_tokens_details":
+            if not _valid_v2_usage_details(
+                token, _V2_COMPLETION_TOKEN_DETAIL_KEYS
+            ):
+                return False
+        elif not _valid_v2_token_leaf(token):
+            return False
+    return True
+
+
+def _valid_v2_tool_calls(value: Any) -> bool:
+    if value is None:
+        return True
+    if not isinstance(value, list):
+        return False
+    for tool_call in value:
+        if not isinstance(tool_call, dict) or set(tool_call) != {
+            "id",
+            "type",
+            "function",
+        }:
+            return False
+        function = tool_call["function"]
+        if (
+            type(tool_call["id"]) is not str
+            or tool_call["type"] != "function"
+            or not isinstance(function, dict)
+            or set(function) != {"name", "arguments"}
+            or type(function["name"]) is not str
+            or type(function["arguments"]) is not str
+        ):
+            return False
+    return True
+
+
+def _v1_completion_message(envelope: Any) -> dict[str, Any]:
     """Validate only the deliberately supported CPA completion envelope."""
     if (
         not isinstance(envelope, dict)
@@ -354,6 +464,67 @@ def _completion_message(envelope: Any) -> dict[str, Any]:
     if "role" in message and message["role"] != "assistant":
         raise _CompletionEnvelopeInvalid("invalid_message_metadata")
     return message
+
+
+def _v2_completion_message(envelope: Any) -> dict[str, Any]:
+    """Validate and discard the pinned CLIProxyAPI serializer metadata."""
+    if (
+        not isinstance(envelope, dict)
+        or set(envelope) - _V2_COMPLETION_ENVELOPE_KEYS
+        or not {"id", "object", "created", "model", "choices"}.issubset(envelope)
+    ):
+        raise _CompletionEnvelopeInvalid("unsupported_envelope_fields")
+    if (
+        type(envelope["id"]) is not str
+        or not 1 <= len(envelope["id"]) <= _COMPLETION_METADATA_MAX_TEXT_LENGTH
+        or envelope["object"] != "chat.completion"
+        or type(envelope["created"]) is not int
+        or envelope["created"] < 0
+    ):
+        raise _CompletionEnvelopeInvalid("invalid_envelope_metadata")
+    if "usage" in envelope and not _valid_v2_usage(envelope["usage"]):
+        raise _CompletionEnvelopeInvalid("invalid_envelope_metadata")
+    choices = envelope["choices"]
+    if not isinstance(choices, list) or len(choices) != 1:
+        raise _CompletionEnvelopeInvalid("invalid_choices")
+    choice = choices[0]
+    if (
+        not isinstance(choice, dict)
+        or set(choice) != _V2_COMPLETION_CHOICE_KEYS
+        or type(choice["index"]) is not int
+        or choice["index"] != 0
+        or choice["finish_reason"] != "stop"
+        or (
+            choice["native_finish_reason"] is not None
+            and (
+                type(choice["native_finish_reason"]) is not str
+                or choice["native_finish_reason"] != "stop"
+            )
+        )
+    ):
+        raise _CompletionEnvelopeInvalid("invalid_choice_metadata")
+    message = choice["message"]
+    if (
+        not isinstance(message, dict)
+        or set(message) != _V2_COMPLETION_MESSAGE_KEYS
+        or message["role"] != "assistant"
+        or type(message["content"]) is not str
+        or (
+            message["reasoning_content"] is not None
+            and type(message["reasoning_content"]) is not str
+        )
+        or not _valid_v2_tool_calls(message["tool_calls"])
+    ):
+        raise _CompletionEnvelopeInvalid("invalid_message")
+    return {"role": "assistant", "content": message["content"]}
+
+
+def _completion_message(envelope: Any) -> tuple[dict[str, Any], str]:
+    """Return only content-bearing message data and its validated profile."""
+    profile = _completion_metadata_profile(envelope)
+    if profile == CPA_CHAT_COMPLETION_METADATA_V2_PROFILE:
+        return _v2_completion_message(envelope), profile
+    return _v1_completion_message(envelope), profile
 
 
 def _closed_content_object(message: dict[str, Any]) -> dict[str, Any]:
@@ -607,7 +778,7 @@ class VisionAdapter:
         allowed_values: dict[str, tuple[str, ...]],
         schema: str,
         max_tokens: int,
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
+    ) -> tuple[dict[str, Any], dict[str, Any], str]:
         """Use one verified timeout/model/closed-JSON path for all Vision calls."""
         images = (image_bytes,) if isinstance(image_bytes, bytes) else image_bytes
         mime_types = (mime_type,) if isinstance(mime_type, str) else mime_type
@@ -799,8 +970,9 @@ class VisionAdapter:
                 ),
             ) from None
         try:
-            message = _completion_message(envelope)
+            message, envelope_metadata_profile = _completion_message(envelope)
         except _CompletionEnvelopeInvalid as error:
+            envelope_metadata_profile = _completion_metadata_profile(envelope)
             raise self._request_failure(
                 operation=operation,
                 reason_code="response_schema_invalid",
@@ -817,7 +989,7 @@ class VisionAdapter:
                     else None
                 ),
                 envelope_metadata_profile=(
-                    CPA_CHAT_COMPLETION_METADATA_PROFILE
+                    envelope_metadata_profile
                     if operation == "catalog_asset_assessment"
                     else None
                 ),
@@ -838,6 +1010,11 @@ class VisionAdapter:
                     if operation == "catalog_asset_assessment"
                     else None
                 ),
+                envelope_metadata_profile=(
+                    envelope_metadata_profile
+                    if operation == "catalog_asset_assessment"
+                    else None
+                ),
             ) from None
         try:
             raw = _closed_content_object(message)
@@ -853,7 +1030,7 @@ class VisionAdapter:
                     else None
                 ),
                 envelope_metadata_profile=(
-                    CPA_CHAT_COMPLETION_METADATA_PROFILE
+                    envelope_metadata_profile
                     if operation == "catalog_asset_assessment"
                     else None
                 ),
@@ -879,7 +1056,7 @@ class VisionAdapter:
             "resolved_model": resolved_model,
             "model_verified": True,
         }
-        return raw, trace
+        return raw, trace, envelope_metadata_profile
 
     @staticmethod
     def _valid_catalog_image_input(
@@ -911,7 +1088,7 @@ class VisionAdapter:
             raise self._fail("CPA vision is disabled", "disabled")
         if not assets or any(record.visual_quality != "usable" for record, _ in assets):
             raise self._fail("no technically usable owned asset", "insufficient_asset")
-        raw, trace = await self._request_json(
+        raw, trace, _ = await self._request_json(
             operation="garment_visibility_inspection",
             image_bytes=tuple(raw for _, raw in assets),
             mime_type=tuple(record.media_type for record, _ in assets),
@@ -964,7 +1141,7 @@ class VisionAdapter:
         if self.settings.vision_force_failure or not self.settings.cpa_text_enabled:
             raise self._catalog_failure("provider_unavailable") from None
 
-        raw, request_trace = await self._request_json(
+        raw, request_trace, envelope_metadata_profile = await self._request_json(
             operation="catalog_asset_assessment",
             image_bytes=image_bytes,
             mime_type=mime_type,
@@ -982,6 +1159,7 @@ class VisionAdapter:
                 "response_schema_invalid",
                 latency_ms=request_trace["latency_ms"],
                 schema_stage="payload",
+                envelope_metadata_profile=envelope_metadata_profile,
             ) from None
         try:
             assessment = CatalogAssetAssessment.model_validate(raw)
@@ -1009,6 +1187,7 @@ class VisionAdapter:
                 resolved_model=request_trace["resolved_model"],
                 model_verified=(reason not in {"response_schema_invalid"}),
                 schema_stage="payload",
+                envelope_metadata_profile=envelope_metadata_profile,
             ) from None
 
         failure_reason: CatalogFailureReason | None = None
@@ -1032,6 +1211,7 @@ class VisionAdapter:
                 model_verified=True,
                 quality_issue_count=len(assessment.quality_issues),
                 schema_stage="payload",
+                envelope_metadata_profile=envelope_metadata_profile,
             ) from None
 
         trace = self._catalog_trace(
