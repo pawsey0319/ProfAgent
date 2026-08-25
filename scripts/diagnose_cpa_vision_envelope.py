@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import io
 import json
+import math
 import re
 import stat
 import subprocess
@@ -48,6 +49,8 @@ EXPECTED_VISION_REPORTED_MODELS = frozenset(
     {"grok-4.6-high", "grok-4.6-build"}
 )
 METADATA_PROFILE = CPA_CHAT_COMPLETION_METADATA_PROFILE
+EXPECTED_METADATA_PROFILE = "cpa_chat_completion_metadata_v1"
+EXPECTED_CATALOG_SCHEMA = "catalog_asset_assessment_v2"
 
 _HEAD_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
 _SCHEMA_STAGES = frozenset({"envelope", "content", "payload"})
@@ -81,13 +84,23 @@ _FAILURE_REASONS = frozenset(
 )
 _TRACE_KEYS = frozenset(
     {
+        "component",
+        "operation",
+        "status",
         "reason_code",
+        "requested_model",
+        "transport_model",
+        "resolved_model",
+        "model_verified",
+        "schema",
+        "image_logged",
+        "latency_ms",
+        "interaction_budget_seconds",
+        "assessment_count",
+        "quality_issue_count",
         "schema_stage",
         "envelope_failure_code",
         "envelope_metadata_profile",
-        "requested_model",
-        "resolved_model",
-        "model_verified",
     }
 )
 
@@ -179,6 +192,8 @@ def _settings_are_exact(settings: Any) -> bool:
         and getattr(settings, "vision_force_failure", None) is False
         and VISION_TRANSPORT_MODEL == EXPECTED_VISION_TRANSPORT_MODEL
         and frozenset(VISION_REPORTED_MODELS) == EXPECTED_VISION_REPORTED_MODELS
+        and CPA_CHAT_COMPLETION_METADATA_PROFILE == EXPECTED_METADATA_PROFILE
+        and METADATA_PROFILE == EXPECTED_METADATA_PROFILE
     )
 
 
@@ -223,33 +238,66 @@ def _provider_unavailable() -> dict[str, Any]:
     return _output(reason_code="provider_unavailable", vision_call_count=1)
 
 
+def _is_nonnegative_finite_number(value: Any) -> bool:
+    if type(value) is int:
+        return value >= 0
+    return type(value) is float and math.isfinite(value) and value >= 0
+
+
 def _closed_provider_result(trace: Any) -> tuple[int, dict[str, Any]]:
-    if type(trace) is not dict or not _TRACE_KEYS.issubset(trace):
+    if type(trace) is not dict or set(trace) != _TRACE_KEYS:
         return 1, _provider_unavailable()
 
+    component = trace.get("component")
+    operation = trace.get("operation")
+    status = trace.get("status")
     reason = trace.get("reason_code")
+    requested = trace.get("requested_model")
+    transport = trace.get("transport_model")
+    resolved = trace.get("resolved_model")
+    verified = trace.get("model_verified")
+    schema = trace.get("schema")
+    image_logged = trace.get("image_logged")
+    latency_ms = trace.get("latency_ms")
+    interaction_budget = trace.get("interaction_budget_seconds")
+    assessment_count = trace.get("assessment_count")
+    quality_issue_count = trace.get("quality_issue_count")
     stage = trace.get("schema_stage")
     failure_code = trace.get("envelope_failure_code")
     profile = trace.get("envelope_metadata_profile")
-    requested = trace.get("requested_model")
-    resolved = trace.get("resolved_model")
-    verified = trace.get("model_verified")
 
     values_are_closed = (
-        type(requested) is str
+        type(component) is str
+        and type(operation) is str
+        and type(status) is str
         and (reason is None or type(reason) is str)
+        and type(requested) is str
+        and type(transport) is str
         and (stage is None or type(stage) is str)
         and (failure_code is None or type(failure_code) is str)
         and (profile is None or type(profile) is str)
         and (resolved is None or type(resolved) is str)
         and type(verified) is bool
+        and type(schema) is str
+        and type(image_logged) is bool
+        and _is_nonnegative_finite_number(latency_ms)
+        and _is_nonnegative_finite_number(interaction_budget)
+        and type(assessment_count) is int
+        and assessment_count >= 0
+        and type(quality_issue_count) is int
+        and quality_issue_count >= 0
     )
     if not values_are_closed:
         return 1, _provider_unavailable()
     if (
-        requested != LOGICAL_VISION_MODEL
+        component != "vision"
+        or operation != "catalog_asset_assessment"
+        or requested != LOGICAL_VISION_MODEL
+        or transport != EXPECTED_VISION_TRANSPORT_MODEL
+        or schema != EXPECTED_CATALOG_SCHEMA
+        or image_logged is not False
         or (stage is not None and stage not in _SCHEMA_STAGES)
-        or (profile is not None and profile != METADATA_PROFILE)
+        or (profile is not None and profile != EXPECTED_METADATA_PROFILE)
     ):
         return 1, _provider_unavailable()
     if verified:
@@ -260,31 +308,58 @@ def _closed_provider_result(trace: Any) -> tuple[int, dict[str, Any]]:
 
     if reason is None:
         if (
-            stage is not None
+            status != "ok"
+            or stage is not None
             or failure_code is not None
-            or profile != METADATA_PROFILE
+            or profile is not None
             or not verified
+            or assessment_count != 1
+            or quality_issue_count != 0
         ):
             return 1, _provider_unavailable()
         return 0, _output(
             reason_code=None,
-            envelope_metadata_profile=METADATA_PROFILE,
+            envelope_metadata_profile=EXPECTED_METADATA_PROFILE,
             resolved_model=resolved,
             model_verified=True,
             vision_call_count=1,
         )
 
-    if reason not in _FAILURE_REASONS:
+    if (
+        status != "quarantined"
+        or reason not in _FAILURE_REASONS
+        or assessment_count != 0
+    ):
+        return 1, _provider_unavailable()
+    pre_model_failures = {
+        "input_rejected",
+        "timeout",
+        "provider_unavailable",
+        "http_error",
+        "model_mismatch",
+    }
+    semantic_failures = {
+        "slot_mismatch",
+        "product_type_mismatch",
+        "audience_rejected",
+        "identifiable_person",
+        "low_confidence",
+        "invalid_region",
+        "quality_rejected",
+    }
+    if reason in pre_model_failures and verified:
+        return 1, _provider_unavailable()
+    if reason in semantic_failures and not verified:
         return 1, _provider_unavailable()
     if reason == "response_schema_invalid":
-        if profile != METADATA_PROFILE or stage not in _SCHEMA_STAGES:
+        if profile != EXPECTED_METADATA_PROFILE or stage not in _SCHEMA_STAGES:
             return 1, _provider_unavailable()
         if stage == "envelope":
             if failure_code not in _ENVELOPE_FAILURE_CODES:
                 return 1, _provider_unavailable()
         elif failure_code is not None:
             return 1, _provider_unavailable()
-    elif failure_code is not None:
+    elif failure_code is not None or profile is not None:
         return 1, _provider_unavailable()
 
     return 1, _output(
