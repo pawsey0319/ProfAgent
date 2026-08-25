@@ -674,6 +674,248 @@ def test_real_catalog_trace_state_matrix_is_reported_honestly(
 
 
 @pytest.mark.parametrize(
+    ("trace", "accepted"),
+    (
+        *(
+            pytest.param(
+                _literal_catalog_trace(
+                    reason_code=reason,
+                    resolved_model="grok-4.6-high",
+                    model_verified=True,
+                    schema_stage="payload",
+                    quality_issue_count=5,
+                ),
+                True,
+                id=f"{reason}-allows-five-quality-issues",
+            )
+            for reason in (
+                "slot_mismatch",
+                "product_type_mismatch",
+                "identifiable_person",
+                "low_confidence",
+            )
+        ),
+        pytest.param(
+            _literal_catalog_trace(
+                reason_code="quality_rejected",
+                resolved_model="grok-4.6-high",
+                model_verified=True,
+                schema_stage="payload",
+                quality_issue_count=1,
+            ),
+            True,
+            id="quality-rejected-allows-one-quality-issue",
+        ),
+        pytest.param(
+            _literal_catalog_trace(
+                reason_code="quality_rejected",
+                resolved_model="grok-4.6-high",
+                model_verified=True,
+                schema_stage="payload",
+                quality_issue_count=5,
+            ),
+            True,
+            id="quality-rejected-allows-five-quality-issues",
+        ),
+        *(
+            pytest.param(
+                _literal_catalog_trace(
+                    reason_code="quality_rejected",
+                    resolved_model="grok-4.6-high",
+                    model_verified=True,
+                    schema_stage="payload",
+                    quality_issue_count=count,
+                ),
+                False,
+                id=f"quality-rejected-rejects-{count}",
+            )
+            for count in (0, 6, 999)
+        ),
+        *(
+            pytest.param(
+                _literal_catalog_trace(
+                    reason_code="invalid_region",
+                    resolved_model="grok-4.6-high",
+                    model_verified=True,
+                    schema_stage="payload",
+                    quality_issue_count=count,
+                ),
+                False,
+                id=f"invalid-region-rejects-{count}",
+            )
+            for count in (1, 999)
+        ),
+        pytest.param(
+            _literal_catalog_trace(
+                reason_code="audience_rejected",
+                resolved_model="grok-4.6-high",
+                model_verified=True,
+                schema_stage="payload",
+                quality_issue_count=1,
+            ),
+            False,
+            id="audience-rejected-requires-zero-quality-issues",
+        ),
+        *(
+            pytest.param(
+                _literal_catalog_trace(
+                    reason_code=reason,
+                    resolved_model="grok-4.6-high",
+                    model_verified=True,
+                    schema_stage="payload",
+                    quality_issue_count=count,
+                ),
+                False,
+                id=f"{reason}-rejects-{count}",
+            )
+            for reason, count in (
+                ("slot_mismatch", 6),
+                ("product_type_mismatch", 999),
+                ("identifiable_person", 6),
+                ("low_confidence", 999),
+            )
+        ),
+        pytest.param(
+            _literal_catalog_trace(
+                status="ok",
+                reason_code=None,
+                resolved_model="grok-4.6-high",
+                model_verified=True,
+                assessment_count=1,
+                quality_issue_count=1,
+            ),
+            False,
+            id="success-requires-zero-quality-issues",
+        ),
+        pytest.param(
+            _literal_catalog_trace(
+                reason_code="timeout",
+                quality_issue_count=1,
+            ),
+            False,
+            id="pre-model-failure-requires-zero-quality-issues",
+        ),
+        pytest.param(
+            _literal_catalog_trace(
+                reason_code="response_schema_invalid",
+                schema_stage="envelope",
+                envelope_failure_code="invalid_envelope_metadata",
+                envelope_metadata_profile=PROFILE,
+                quality_issue_count=1,
+            ),
+            False,
+            id="schema-failure-requires-zero-quality-issues",
+        ),
+        pytest.param(
+            _literal_catalog_trace(
+                reason_code="model_mismatch",
+                schema_stage="envelope",
+                quality_issue_count=1,
+            ),
+            False,
+            id="model-failure-requires-zero-quality-issues",
+        ),
+        pytest.param(
+            _literal_catalog_trace(
+                reason_code="slot_mismatch",
+                resolved_model="grok-4.6-high",
+                model_verified=True,
+                schema_stage="payload",
+                quality_issue_count=True,
+            ),
+            False,
+            id="quality-count-rejects-bool",
+        ),
+        pytest.param(
+            _literal_catalog_trace(
+                reason_code="quality_rejected",
+                resolved_model="grok-4.6-high",
+                model_verified=True,
+                schema_stage="payload",
+                quality_issue_count=1.0,
+            ),
+            False,
+            id="quality-count-rejects-float",
+        ),
+        pytest.param(
+            _literal_catalog_trace(
+                reason_code="slot_mismatch",
+                resolved_model="grok-4.6-high",
+                model_verified=True,
+                schema_stage="payload",
+                quality_issue_count=-1,
+            ),
+            False,
+            id="quality-count-rejects-negative",
+        ),
+        pytest.param(
+            _literal_catalog_trace(assessment_count=True),
+            False,
+            id="assessment-count-rejects-bool",
+        ),
+        pytest.param(
+            _literal_catalog_trace(assessment_count=0.0),
+            False,
+            id="assessment-count-rejects-float",
+        ),
+        pytest.param(
+            _literal_catalog_trace(assessment_count=-1),
+            False,
+            id="assessment-count-rejects-negative",
+        ),
+        pytest.param(
+            _literal_catalog_trace(assessment_count=6),
+            False,
+            id="pre-model-failure-rejects-unreachable-assessment-count",
+        ),
+    ),
+)
+def test_catalog_trace_quality_counts_match_production_reachable_bounds(
+    diagnostic_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    trace: dict[str, Any],
+    accepted: bool,
+) -> None:
+    module = diagnostic_module
+    vision = _VisionSpy(
+        trace if trace["status"] == "ok" else VisionUnavailable(PROVIDER_SECRET, trace)
+    )
+    _install_runtime(monkeypatch, module, settings=_settings(), vision=vision)
+    before = _snapshot()
+    code, payload = _invoke(module, capsys, "--expected-head", _head())
+    assert code != 0
+    if accepted:
+        assert payload == {
+            "reason_code": trace["reason_code"],
+            "schema_stage": "payload",
+            "envelope_failure_code": None,
+            "envelope_metadata_profile": None,
+            "model_provenance": {
+                "requested_model": "grok4.6",
+                "resolved_model": "grok-4.6-high",
+                "model_verified": True,
+            },
+            "vision_call_count": 1,
+        }
+    else:
+        assert payload == {
+            "reason_code": "provider_unavailable",
+            "schema_stage": None,
+            "envelope_failure_code": None,
+            "envelope_metadata_profile": None,
+            "model_provenance": {
+                "requested_model": "grok4.6",
+                "resolved_model": None,
+                "model_verified": False,
+            },
+            "vision_call_count": 1,
+        }
+    assert len(vision.calls) == 1
+    assert _snapshot() == before
+
+
+@pytest.mark.parametrize(
     ("updates", "missing_key"),
     (
         (
