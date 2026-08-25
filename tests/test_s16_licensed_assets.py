@@ -8057,3 +8057,239 @@ def test_frozen_ruling_n_private_v2_is_read_compatible_and_byte_exact(
     assert hashlib.sha256(path.read_bytes()).hexdigest() == (
         _RP_FROZEN_DIAGNOSTIC_SHA256
     )
+
+
+# Ruling U: CLIProxyAPI 7.2.97 commit 42f36b94's non-stream OpenAI serializer
+# has a different, source-proven completion shape.  These are hand-written
+# wire envelopes: the only double is the HTTP opener below VisionAdapter.
+_RU_PROFILE = "cpa_chat_completion_metadata_v2"
+_RU_METADATA_SENTINEL = "serializer-metadata-must-not-escape"
+
+
+def _ru_tool_call() -> dict[str, Any]:
+    return {
+        "id": "call_mock_only",
+        "type": "function",
+        "function": {"name": "inspect_catalog_asset", "arguments": "{}"},
+    }
+
+
+def _ru_usage() -> dict[str, Any]:
+    return {
+        "prompt_tokens": 11,
+        "completion_tokens": 7,
+        "total_tokens": 18,
+        "prompt_tokens_details": {
+            "cached_tokens": 2,
+            "cached_creation_tokens": 1,
+        },
+        "completion_tokens_details": {"reasoning_tokens": 3},
+    }
+
+
+def _ru_completion(
+    *,
+    native_finish_reason: str | None = "stop",
+    reasoning_content: str | None = None,
+    tool_calls: list[dict[str, Any]] | None = None,
+    usage: dict[str, Any] | None = None,
+    envelope_updates: dict[str, Any] | None = None,
+    choice_updates: dict[str, Any] | None = None,
+    message_updates: dict[str, Any] | None = None,
+) -> bytes:
+    """One complete, independently-written CPA v2 non-stream response."""
+    message: dict[str, Any] = {
+        "role": "assistant",
+        "content": json.dumps(_catalog_payload()),
+        "reasoning_content": reasoning_content,
+        "tool_calls": tool_calls,
+    }
+    message.update(message_updates or {})
+    choice: dict[str, Any] = {
+        "index": 0,
+        "finish_reason": "stop",
+        "native_finish_reason": native_finish_reason,
+        "message": message,
+    }
+    choice.update(choice_updates or {})
+    envelope: dict[str, Any] = {
+        "id": "chatcmpl-cli-proxy-mock",
+        "object": "chat.completion",
+        "created": 1_784_838_400,
+        "model": "grok-4.6-high",
+        "choices": [choice],
+    }
+    if usage is not None:
+        envelope["usage"] = usage
+    envelope.update(envelope_updates or {})
+    return json.dumps(envelope).encode("utf-8")
+
+
+def _ru_assert_rejected(
+    vision_module: ModuleType,
+    offline_settings: Any,
+    response_body: bytes,
+    *,
+    forbidden: tuple[str, ...],
+) -> None:
+    transport = CatalogVisionTransportSpy(response_body)
+    adapter = _vision_adapter(vision_module, offline_settings, transport)
+    with pytest.raises(vision_module.VisionUnavailable) as caught:
+        _inspect_catalog(adapter)
+    trace = _assert_catalog_failure(
+        vision_module, caught, "response_schema_invalid"
+    )
+    assert trace["schema_stage"] == "envelope"
+    assert trace["envelope_metadata_profile"] == _RU_PROFILE
+    rendered = json.dumps(trace, ensure_ascii=False)
+    assert _RU_METADATA_SENTINEL not in rendered
+    for value in forbidden:
+        assert value not in rendered
+    # The real adapter performs exactly one fake HTTP round-trip.  It has no
+    # ingestion or persistence collaborator on this direct boundary.
+    assert len(transport.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("native_finish_reason", "reasoning_content", "tool_calls", "usage"),
+    (
+        ("stop", None, None, _ru_usage()),
+        (None, _RU_METADATA_SENTINEL, [], {"total_tokens": 0}),
+        ("stop", _RU_METADATA_SENTINEL, [_ru_tool_call()], None),
+    ),
+)
+def test_ruling_u_accepts_and_discards_complete_cliproxy_v2_metadata(
+    vision_module: ModuleType,
+    offline_settings: Any,
+    native_finish_reason: str | None,
+    reasoning_content: str | None,
+    tool_calls: list[dict[str, Any]] | None,
+    usage: dict[str, Any] | None,
+) -> None:
+    transport = CatalogVisionTransportSpy(
+        _ru_completion(
+            native_finish_reason=native_finish_reason,
+            reasoning_content=reasoning_content,
+            tool_calls=tool_calls,
+            usage=usage,
+        )
+    )
+    assessment, trace = _inspect_catalog(
+        _vision_adapter(vision_module, offline_settings, transport)
+    )
+    assert assessment.model_dump(mode="json") == _catalog_payload()
+    rendered = json.dumps({"assessment": assessment.model_dump(), "trace": trace})
+    for metadata_key in (
+        "native_finish_reason",
+        "reasoning_content",
+        "tool_calls",
+        "usage",
+        "cached_tokens",
+        "cached_creation_tokens",
+        "reasoning_tokens",
+    ):
+        assert metadata_key not in rendered
+    assert _RU_METADATA_SENTINEL not in rendered
+    assert len(transport.calls) == 1
+
+
+def test_ruling_u_discards_v2_metadata_before_ready_output_or_persistence(
+    licensed_ingestion_cli: ModuleType,
+    vision_module: ModuleType,
+    offline_settings: Any,
+    tmp_path: Path,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    config = _rg_config(cli, tmp_path)
+    transport = CatalogVisionTransportSpy(
+        _ru_completion(
+            reasoning_content=_RU_METADATA_SENTINEL,
+            tool_calls=[_ru_tool_call()],
+            usage=_ru_usage(),
+        )
+    )
+    result = _rg_run(
+        cli,
+        config,
+        RulingGImageProvider(_make_image("PNG")),
+        _vision_adapter(vision_module, offline_settings, transport),
+    )
+    persisted = json.dumps(
+        {
+            "output": json.loads(result.model_dump_json()),
+            "manifest": _task4_manifest(config.manifest_path),
+            "sources": _ri_rows(config.sources_path),
+        },
+        ensure_ascii=False,
+    )
+    assert result.ready_ids == ("g051",) and result.quarantined_ids == ()
+    assert not _ri_paths(config)[1].exists()
+    for metadata_key in (
+        "native_finish_reason",
+        "reasoning_content",
+        "tool_calls",
+        "usage",
+        "cached_tokens",
+        "cached_creation_tokens",
+        "reasoning_tokens",
+        _RU_METADATA_SENTINEL,
+    ):
+        assert metadata_key not in persisted
+    assert len(transport.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("response_body", "forbidden"),
+    (
+        (_ru_completion(envelope_updates={"future_top": _RU_METADATA_SENTINEL}), ("future_top",)),
+        (_ru_completion(choice_updates={"future_choice": _RU_METADATA_SENTINEL}), ("future_choice",)),
+        (_ru_completion(message_updates={"future_message": _RU_METADATA_SENTINEL}), ("future_message",)),
+        (_ru_completion(envelope_updates={"usage": {"future_usage": _RU_METADATA_SENTINEL}}), ("future_usage",)),
+        (_ru_completion(envelope_updates={"usage": {"prompt_tokens_details": {"future_detail": _RU_METADATA_SENTINEL}}}), ("future_detail",)),
+        (_ru_completion(message_updates={"tool_calls": [{**_ru_tool_call(), "future_tool": _RU_METADATA_SENTINEL}]}), ("future_tool",)),
+        (_ru_completion(message_updates={"tool_calls": [{**_ru_tool_call(), "function": {"name": "inspect_catalog_asset", "arguments": "{}", "future_function": _RU_METADATA_SENTINEL}}]}), ("future_function",)),
+        (_ru_completion(envelope_updates={"system_fingerprint": _RU_METADATA_SENTINEL}), ("system_fingerprint",)),
+        (_ru_completion(message_updates={"refusal": _RU_METADATA_SENTINEL}), ("refusal",)),
+        (_ru_completion(choice_updates={"finish_reason": None}), ()),
+        (_ru_completion(choice_updates={"finish_reason": "length"}), ("length",)),
+        (_ru_completion(choice_updates={"native_finish_reason": True}), ()),
+        (_ru_completion(choice_updates={"native_finish_reason": "length"}), ("length",)),
+        (_ru_completion(choice_updates={"native_finish_reason": []}), ()),
+        (_ru_completion(choice_updates={"native_finish_reason": {"value": _RU_METADATA_SENTINEL}}), ()),
+        (_ru_completion(choice_updates={"native_finish_reason": 1.0}), ()),
+        (_ru_completion(message_updates={"content": None}), ()),
+        (_ru_completion(message_updates={"reasoning_content": {"value": _RU_METADATA_SENTINEL}}), ()),
+        (_ru_completion(message_updates={"reasoning_content": True}), ()),
+        (_ru_completion(message_updates={"reasoning_content": 1.0}), ()),
+        (_ru_completion(message_updates={"reasoning_content": []}), ()),
+        (_ru_completion(message_updates={"tool_calls": {"value": _RU_METADATA_SENTINEL}}), ()),
+        (_ru_completion(message_updates={"tool_calls": True}), ()),
+        (_ru_completion(message_updates={"tool_calls": 1.0}), ()),
+        (_ru_completion(message_updates={"tool_calls": "call"}), ("call",)),
+        (_ru_completion(message_updates={"tool_calls": [{**_ru_tool_call(), "id": None}]}), ()),
+        (_ru_completion(message_updates={"tool_calls": [None]}), ()),
+        (_ru_completion(message_updates={"tool_calls": ["call"]}), ("call",)),
+        (_ru_completion(message_updates={"tool_calls": [{**_ru_tool_call(), "type": "other"}]}), ("other",)),
+        (_ru_completion(message_updates={"tool_calls": [{**_ru_tool_call(), "function": {"name": 1, "arguments": "{}"}}]}), ()),
+        (_ru_completion(envelope_updates={"usage": {}}), ()),
+        (_ru_completion(envelope_updates={"usage": None}), ()),
+        (_ru_completion(envelope_updates={"usage": []}), ()),
+        (_ru_completion(envelope_updates={"usage": "18"}), ("18",)),
+        (_ru_completion(envelope_updates={"usage": True}), ()),
+        (_ru_completion(envelope_updates={"usage": -1}), ()),
+        (_ru_completion(envelope_updates={"usage": {"prompt_tokens": True}}), ()),
+        (_ru_completion(envelope_updates={"usage": {"prompt_tokens": 1.5}}), ()),
+        (_ru_completion(envelope_updates={"usage": {"prompt_tokens": -1}}), ()),
+        (_ru_completion(envelope_updates={"usage": {"prompt_tokens_details": {"cached_tokens": False}}}), ()),
+        (_ru_completion(envelope_updates={"usage": {"completion_tokens_details": {"reasoning_tokens": -1}}}), ()),
+    ),
+)
+def test_ruling_u_rejects_unknown_or_noncanonical_v2_metadata_without_leaks(
+    vision_module: ModuleType,
+    offline_settings: Any,
+    response_body: bytes,
+    forbidden: tuple[str, ...],
+) -> None:
+    _ru_assert_rejected(
+        vision_module, offline_settings, response_body, forbidden=forbidden
+    )
