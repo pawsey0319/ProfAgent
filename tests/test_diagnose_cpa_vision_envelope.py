@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from dataclasses import replace
@@ -65,6 +66,10 @@ EVIDENCE_PATHS = (
     "afc00f9705193d7d0ea2072989b07bdb6b74ceae757b1f20ba5f8575db662abf.png",
 )
 TRANSACTION_MARKER = ROOT / "data/assets/cpa_generated_quarantine_transaction.json"
+REPORT_PATHS = (
+    ROOT / "reports/eval/r1_demo_v1.json",
+    ROOT / "reports/eval/r1_demo_v1.md",
+)
 PROVIDER_SECRET = "provider-secret-body-user-g051-must-not-leak"
 
 
@@ -113,6 +118,41 @@ def _snapshot() -> tuple[tuple[tuple[str, bool, int | None, str | None], ...], b
         text=True,
     ).stdout
     return evidence, TRANSACTION_MARKER.exists(), status
+
+
+def _direct_script_write_surface_snapshot() -> tuple[
+    tuple[tuple[str, bool, int | None, str | None], ...],
+    tuple[tuple[str, int, str], ...],
+    tuple[str, ...],
+    tuple[tuple[str, bool, int | None, str | None], ...],
+    bool,
+    str,
+]:
+    reports = tuple(
+        (
+            str(path.relative_to(ROOT)),
+            path.is_file(),
+            path.stat().st_size if path.is_file() else None,
+            hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None,
+        )
+        for path in REPORT_PATHS
+    )
+    pyc_files = tuple(
+        (
+            str(path.relative_to(ROOT)),
+            path.stat().st_size,
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
+        for path in sorted(ROOT.rglob("*.pyc"))
+        if path.is_file()
+    )
+    cache_dirs = tuple(
+        str(path.relative_to(ROOT))
+        for path in sorted(ROOT.rglob("*"))
+        if path.is_dir() and path.name in {"__pycache__", ".pytest_cache"}
+    )
+    evidence, marker, status = _snapshot()
+    return reports, pyc_files, cache_dirs, evidence, marker, status
 
 
 def _settings(**updates: Any) -> Settings:
@@ -1016,3 +1056,50 @@ def test_unexpected_provider_exception_is_one_closed_attempt_and_zero_write(
     assert payload["vision_call_count"] == 1
     assert len(vision.calls) == 1
     assert _snapshot() == before
+
+
+def test_direct_script_from_repository_root_fails_closed_before_provider_on_head_mismatch() -> None:
+    controlled_mismatch = "0" * 40
+    assert controlled_mismatch != _head()
+    assert "torch128" in str(Path(sys.executable)).lower()
+
+    environment = os.environ.copy()
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    before = _direct_script_write_surface_snapshot()
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/diagnose_cpa_vision_envelope.py",
+            "--expected-head",
+            controlled_mismatch,
+        ],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    after = _direct_script_write_surface_snapshot()
+
+    assert after == before
+    assert "Traceback" not in result.stderr
+    assert "ModuleNotFoundError" not in result.stderr
+    assert result.stderr == ""
+    assert result.returncode == 1
+    lines = result.stdout.splitlines()
+    assert len(lines) == 1
+    payload = json.loads(lines[0])
+    _assert_minimized(payload)
+    assert payload == {
+        "reason_code": "input_rejected",
+        "schema_stage": None,
+        "envelope_failure_code": None,
+        "envelope_metadata_profile": None,
+        "model_provenance": {
+            "requested_model": "grok4.6",
+            "resolved_model": None,
+            "model_verified": False,
+        },
+        "vision_call_count": 0,
+    }
