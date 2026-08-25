@@ -15,6 +15,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from PIL import Image
 
 from profagent.config import Settings
@@ -26,8 +30,6 @@ from profagent.vision import (
     VisionUnavailable,
 )
 
-
-ROOT = Path(__file__).resolve().parents[1]
 FIXED_IMAGE_RELATIVE_PATH = Path(
     "data/assets/private_quarantine/cpa_generated/"
     "33c9439e4516e571925689f0ef501a9771f3d25888ff24ecbe044c6b16d19749.png"
