@@ -25,6 +25,9 @@ FIXED_RELATIVE_PATH = Path(
 )
 FIXED_SHA256 = "33c9439e4516e571925689f0ef501a9771f3d25888ff24ecbe044c6b16d19749"
 PROFILE = "cpa_chat_completion_metadata_v1"
+RULING_U_PROFILES = frozenset(
+    {"cpa_chat_completion_metadata_v1", "cpa_chat_completion_metadata_v2"}
+)
 OUTPUT_KEYS = {
     "reason_code",
     "schema_stage",
@@ -554,6 +557,122 @@ def test_extra_provider_trace_key_fails_closed_without_leak_or_retry(
     before = _snapshot()
     code, payload = _invoke(module, capsys, "--expected-head", _head())
     assert code != 0
+    assert payload == {
+        "reason_code": "provider_unavailable",
+        "schema_stage": None,
+        "envelope_failure_code": None,
+        "envelope_metadata_profile": None,
+        "model_provenance": {
+            "requested_model": "grok4.6",
+            "resolved_model": None,
+            "model_verified": False,
+        },
+        "vision_call_count": 1,
+    }
+    assert len(vision.calls) == 1
+    assert _snapshot() == before
+
+
+@pytest.mark.parametrize("profile", tuple(sorted(RULING_U_PROFILES)))
+@pytest.mark.parametrize(
+    ("reason", "stage", "failure_code"),
+    (
+        ("response_schema_invalid", "envelope", "invalid_envelope_metadata"),
+        ("response_schema_invalid", "content", None),
+        ("response_schema_invalid", "payload", None),
+        ("model_mismatch", "envelope", None),
+    ),
+)
+def test_ruling_u_profiled_failure_trace_has_only_minimized_diagnostic_output(
+    diagnostic_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    profile: str,
+    reason: str,
+    stage: str,
+    failure_code: str | None,
+) -> None:
+    module = diagnostic_module
+    trace = _literal_catalog_trace(
+        reason_code=reason,
+        schema_stage=stage,
+        envelope_failure_code=failure_code,
+        envelope_metadata_profile=profile,
+    )
+    vision = _VisionSpy(VisionUnavailable(PROVIDER_SECRET, trace))
+    _install_runtime(monkeypatch, module, settings=_settings(), vision=vision)
+    before = _snapshot()
+    code, payload = _invoke(module, capsys, "--expected-head", _head())
+    assert code == 1
+    assert payload == {
+        "reason_code": reason,
+        "schema_stage": stage,
+        "envelope_failure_code": failure_code,
+        "envelope_metadata_profile": profile,
+        "model_provenance": {
+            "requested_model": "grok4.6",
+            "resolved_model": None,
+            "model_verified": False,
+        },
+        "vision_call_count": 1,
+    }
+    assert len(vision.calls) == 1
+    assert _snapshot() == before
+
+
+@pytest.mark.parametrize("profile", ("future_profile", PROVIDER_SECRET))
+def test_ruling_u_unknown_profile_is_rejected_without_output_leak(
+    diagnostic_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    profile: str,
+) -> None:
+    module = diagnostic_module
+    trace = _literal_catalog_trace(
+        reason_code="response_schema_invalid",
+        schema_stage="envelope",
+        envelope_failure_code="invalid_envelope_metadata",
+        envelope_metadata_profile=profile,
+    )
+    vision = _VisionSpy(VisionUnavailable(PROVIDER_SECRET, trace))
+    _install_runtime(monkeypatch, module, settings=_settings(), vision=vision)
+    before = _snapshot()
+    code, payload = _invoke(module, capsys, "--expected-head", _head())
+    assert code == 1
+    assert payload == {
+        "reason_code": "provider_unavailable",
+        "schema_stage": None,
+        "envelope_failure_code": None,
+        "envelope_metadata_profile": None,
+        "model_provenance": {
+            "requested_model": "grok4.6",
+            "resolved_model": None,
+            "model_verified": False,
+        },
+        "vision_call_count": 1,
+    }
+    assert len(vision.calls) == 1
+    assert _snapshot() == before
+
+
+def test_ruling_u_v2_trace_with_raw_metadata_is_rejected_without_output_leak(
+    diagnostic_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = diagnostic_module
+    trace = _literal_catalog_trace(
+        reason_code="response_schema_invalid",
+        schema_stage="envelope",
+        envelope_failure_code="invalid_envelope_metadata",
+        envelope_metadata_profile="cpa_chat_completion_metadata_v2",
+    )
+    trace["serializer_metadata"] = {"raw_key": PROVIDER_SECRET}
+    vision = _VisionSpy(VisionUnavailable(PROVIDER_SECRET, trace))
+    _install_runtime(monkeypatch, module, settings=_settings(), vision=vision)
+    before = _snapshot()
+    code, payload = _invoke(module, capsys, "--expected-head", _head())
+    assert code == 1
     assert payload == {
         "reason_code": "provider_unavailable",
         "schema_stage": None,

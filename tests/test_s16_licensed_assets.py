@@ -8063,6 +8063,9 @@ def test_frozen_ruling_n_private_v2_is_read_compatible_and_byte_exact(
 # has a different, source-proven completion shape.  These are hand-written
 # wire envelopes: the only double is the HTTP opener below VisionAdapter.
 _RU_PROFILE = "cpa_chat_completion_metadata_v2"
+_RU_FAILURE_PROFILES = frozenset(
+    {"cpa_chat_completion_metadata_v1", "cpa_chat_completion_metadata_v2"}
+)
 _RU_METADATA_SENTINEL = "serializer-metadata-must-not-escape"
 
 
@@ -8154,8 +8157,8 @@ def _ru_assert_rejected(
     ("native_finish_reason", "reasoning_content", "tool_calls", "usage"),
     (
         ("stop", None, None, _ru_usage()),
-        (None, _RU_METADATA_SENTINEL, [], {"total_tokens": 0}),
-        ("stop", _RU_METADATA_SENTINEL, [_ru_tool_call()], None),
+        (None, _RU_METADATA_SENTINEL, None, {"total_tokens": 0}),
+        ("stop", _RU_METADATA_SENTINEL, None, None),
     ),
 )
 def test_ruling_u_accepts_and_discards_complete_cliproxy_v2_metadata(
@@ -8204,7 +8207,7 @@ def test_ruling_u_discards_v2_metadata_before_ready_output_or_persistence(
     transport = CatalogVisionTransportSpy(
         _ru_completion(
             reasoning_content=_RU_METADATA_SENTINEL,
-            tool_calls=[_ru_tool_call()],
+            tool_calls=None,
             usage=_ru_usage(),
         )
     )
@@ -8262,6 +8265,8 @@ def test_ruling_u_discards_v2_metadata_before_ready_output_or_persistence(
         (_ru_completion(message_updates={"reasoning_content": True}), ()),
         (_ru_completion(message_updates={"reasoning_content": 1.0}), ()),
         (_ru_completion(message_updates={"reasoning_content": []}), ()),
+        (_ru_completion(message_updates={"tool_calls": []}), ()),
+        (_ru_completion(message_updates={"tool_calls": [_ru_tool_call()]}), ()),
         (_ru_completion(message_updates={"tool_calls": {"value": _RU_METADATA_SENTINEL}}), ()),
         (_ru_completion(message_updates={"tool_calls": True}), ()),
         (_ru_completion(message_updates={"tool_calls": 1.0}), ()),
@@ -8293,3 +8298,109 @@ def test_ruling_u_rejects_unknown_or_noncanonical_v2_metadata_without_leaks(
     _ru_assert_rejected(
         vision_module, offline_settings, response_body, forbidden=forbidden
     )
+
+
+def _ru_profiled_failure(
+    vision_module: ModuleType,
+    *,
+    reason: str,
+    stage: str,
+    failure_code: str | None,
+    profile: str,
+) -> Exception:
+    """A hand-written post-transport trace; metadata must never leave its boundary."""
+    return vision_module.VisionUnavailable(
+        _RU_METADATA_SENTINEL,
+        {
+            "reason_code": reason,
+            "schema_stage": stage,
+            "envelope_failure_code": failure_code,
+            "envelope_metadata_profile": profile,
+            **_RI_VISION_MODEL,
+            "transport_model": "grok-4.6-high",
+            "provider_body": _RU_METADATA_SENTINEL,
+            "serializer_metadata": {"tool_calls": _RU_METADATA_SENTINEL},
+        },
+    )
+
+
+def test_ruling_u_failure_profile_allowlist_is_exactly_v1_and_v2(
+    licensed_ingestion_cli: ModuleType,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    assert frozenset(get_args(cli.EnvelopeMetadataProfile)) == _RU_FAILURE_PROFILES
+
+
+@pytest.mark.parametrize("profile", tuple(sorted(_RU_FAILURE_PROFILES)))
+@pytest.mark.parametrize(
+    ("reason", "stage", "failure_code"),
+    (
+        ("response_schema_invalid", "envelope", "invalid_envelope_metadata"),
+        ("response_schema_invalid", "content", None),
+        ("response_schema_invalid", "payload", None),
+        ("model_mismatch", "envelope", None),
+    ),
+)
+def test_ruling_u_profiled_failures_reach_public_and_private_v3_without_leaks(
+    licensed_ingestion_cli: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+    profile: str,
+    reason: str,
+    stage: str,
+    failure_code: str | None,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    config = _rg_config(cli, tmp_path)
+    provider = RulingGImageProvider(_make_image("PNG"))
+    vision = Task4Vision(
+        _ru_profiled_failure(
+            vision_module,
+            reason=reason,
+            stage=stage,
+            failure_code=failure_code,
+            profile=profile,
+        )
+    )
+    result = _rg_run(cli, config, provider, vision)
+    public = json.loads(result.model_dump_json())["item_outcomes"][0]
+    private = _ri_rows(_ri_paths(config)[1])[0]
+    for record in (public, private):
+        assert record["reason_code"] == reason
+        assert record["schema_stage"] == stage
+        assert record["envelope_failure_code"] == failure_code
+        assert record["envelope_metadata_profile"] == profile
+    assert private["schema_version"] == 3
+    assert result.ready_ids == () and result.quarantined_ids == ("g051",)
+    _ri_assert_public_quarantined(config)
+    rendered = json.dumps({"public": public, "private": private}, ensure_ascii=False)
+    assert _RU_METADATA_SENTINEL not in rendered
+    assert "serializer_metadata" not in rendered and "tool_calls" not in rendered
+    assert len(provider.prompts) == 1 and len(vision.calls) == 1
+
+
+@pytest.mark.parametrize("profile", ("future_profile", _RU_METADATA_SENTINEL))
+def test_ruling_u_unknown_profile_is_rejected_before_any_durable_write(
+    licensed_ingestion_cli: ModuleType,
+    vision_module: ModuleType,
+    tmp_path: Path,
+    profile: str,
+) -> None:
+    cli = licensed_ingestion_cli._load()
+    config = _rg_config(cli, tmp_path)
+    provider = RulingGImageProvider(_make_image("PNG"))
+    vision = Task4Vision(
+        _ru_profiled_failure(
+            vision_module,
+            reason="response_schema_invalid",
+            stage="envelope",
+            failure_code="invalid_envelope_metadata",
+            profile=profile,
+        )
+    )
+    with pytest.raises(ValueError, match="invalid_vision_envelope_diagnostic"):
+        _rg_run(cli, config, provider, vision)
+    private_root, diagnostics = _ri_paths(config)
+    assert not private_root.exists() and not diagnostics.exists()
+    assert not config.manifest_path.exists() and not config.sources_path.exists()
+    assert len(provider.prompts) == 1 and len(vision.calls) == 1
