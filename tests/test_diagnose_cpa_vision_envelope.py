@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from profagent.config import Settings
-from profagent.vision import VisionUnavailable
+from profagent.vision import VisionAdapter, VisionUnavailable
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +33,25 @@ OUTPUT_KEYS = {
     "vision_call_count",
 }
 PROVENANCE_KEYS = {"requested_model", "resolved_model", "model_verified"}
+PRODUCTION_TRACE_KEYS = {
+    "component",
+    "operation",
+    "status",
+    "reason_code",
+    "requested_model",
+    "transport_model",
+    "resolved_model",
+    "model_verified",
+    "schema",
+    "image_logged",
+    "latency_ms",
+    "interaction_budget_seconds",
+    "assessment_count",
+    "quality_issue_count",
+    "schema_stage",
+    "envelope_failure_code",
+    "envelope_metadata_profile",
+}
 EVIDENCE_PATHS = (
     ROOT / "data/manifests/wardrobe_assets_v2.json",
     ROOT / "data/sources/wardrobe_s16_sources.jsonl",
@@ -176,33 +195,77 @@ def _assert_minimized(payload: dict[str, Any]) -> None:
 
 
 def _success_trace() -> dict[str, Any]:
-    return {
-        "reason_code": None,
-        "schema_stage": None,
-        "envelope_failure_code": None,
-        "envelope_metadata_profile": PROFILE,
-        "requested_model": "grok4.6",
-        "resolved_model": "grok-4.6-high",
-        "model_verified": True,
-        "latency_ms": 999,
-        "provider_body": PROVIDER_SECRET,
-    }
+    trace = VisionAdapter(_settings())._catalog_trace(
+        status="ok",
+        reason_code=None,
+        latency_ms=999,
+        resolved_model="grok-4.6-high",
+        model_verified=True,
+        assessment_count=1,
+        quality_issue_count=0,
+        schema_stage=None,
+        envelope_failure_code=None,
+        envelope_metadata_profile=None,
+    )
+    _assert_production_trace_shape(trace, status="ok", reason_code=None)
+    assert trace["envelope_metadata_profile"] is None
+    return trace
 
 
 def _vision_failure(**updates: Any) -> VisionUnavailable:
-    trace: dict[str, Any] = {
+    values: dict[str, Any] = {
         "reason_code": "response_schema_invalid",
+        "latency_ms": 999,
+        "resolved_model": None,
+        "model_verified": False,
+        "assessment_count": 0,
+        "quality_issue_count": 0,
         "schema_stage": "envelope",
         "envelope_failure_code": "invalid_envelope_metadata",
         "envelope_metadata_profile": PROFILE,
-        "requested_model": "grok4.6",
-        "resolved_model": None,
-        "model_verified": False,
-        "provider_body": PROVIDER_SECRET,
-        "unknown_provider_key": PROVIDER_SECRET,
     }
-    trace.update(updates)
+    values.update(updates)
+    trace = VisionAdapter(_settings())._catalog_trace(
+        status="quarantined",
+        **values,
+    )
+    _assert_production_trace_shape(
+        trace,
+        status="quarantined",
+        reason_code=trace["reason_code"],
+    )
     return VisionUnavailable(PROVIDER_SECRET, trace)
+
+
+def _assert_production_trace_shape(
+    trace: dict[str, Any], *, status: str, reason_code: str | None
+) -> None:
+    assert set(trace) == PRODUCTION_TRACE_KEYS
+    assert trace["component"] == "vision"
+    assert trace["operation"] == "catalog_asset_assessment"
+    assert trace["status"] == status
+    assert trace["reason_code"] == reason_code
+    assert trace["requested_model"] == "grok4.6"
+    assert trace["transport_model"] == "grok-4.6-high"
+    assert trace["schema"] == "catalog_asset_assessment_v2"
+    assert trace["image_logged"] is False
+    assert trace["resolved_model"] is None or type(trace["resolved_model"]) is str
+    assert type(trace["model_verified"]) is bool
+    assert type(trace["latency_ms"]) in {int, float}
+    assert type(trace["interaction_budget_seconds"]) in {int, float}
+    assert type(trace["assessment_count"]) is int
+    assert type(trace["quality_issue_count"]) is int
+    assert trace["assessment_count"] >= 0
+    assert trace["quality_issue_count"] >= 0
+    assert trace["schema_stage"] is None or type(trace["schema_stage"]) is str
+    assert (
+        trace["envelope_failure_code"] is None
+        or type(trace["envelope_failure_code"]) is str
+    )
+    assert (
+        trace["envelope_metadata_profile"] is None
+        or type(trace["envelope_metadata_profile"]) is str
+    )
 
 
 def test_cli_surface_and_fixed_private_input_are_closed(
@@ -283,7 +346,14 @@ def test_known_vision_failures_map_to_closed_fields_with_one_attempt_no_retry(
     cases = (
         (
             _vision_failure(),
-            ("response_schema_invalid", "envelope", "invalid_envelope_metadata", None, False),
+            (
+                "response_schema_invalid",
+                "envelope",
+                "invalid_envelope_metadata",
+                PROFILE,
+                None,
+                False,
+            ),
         ),
         (
             _vision_failure(
@@ -292,7 +362,14 @@ def test_known_vision_failures_map_to_closed_fields_with_one_attempt_no_retry(
                 resolved_model="grok-4.6-high",
                 model_verified=True,
             ),
-            ("response_schema_invalid", "content", None, "grok-4.6-high", True),
+            (
+                "response_schema_invalid",
+                "content",
+                None,
+                PROFILE,
+                "grok-4.6-high",
+                True,
+            ),
         ),
         (
             _vision_failure(
@@ -301,17 +378,25 @@ def test_known_vision_failures_map_to_closed_fields_with_one_attempt_no_retry(
                 resolved_model="grok-4.6-build",
                 model_verified=True,
             ),
-            ("response_schema_invalid", "payload", None, "grok-4.6-build", True),
+            (
+                "response_schema_invalid",
+                "payload",
+                None,
+                PROFILE,
+                "grok-4.6-build",
+                True,
+            ),
         ),
         (
             _vision_failure(
                 reason_code="slot_mismatch",
                 schema_stage="payload",
                 envelope_failure_code=None,
+                envelope_metadata_profile=None,
                 resolved_model="grok-4.6-high",
                 model_verified=True,
             ),
-            ("slot_mismatch", "payload", None, "grok-4.6-high", True),
+            ("slot_mismatch", "payload", None, None, "grok-4.6-high", True),
         ),
     )
     before = _snapshot()
@@ -319,13 +404,13 @@ def test_known_vision_failures_map_to_closed_fields_with_one_attempt_no_retry(
         vision = _VisionSpy(error)
         _install_runtime(monkeypatch, module, settings=_settings(), vision=vision)
         code, payload = _invoke(module, capsys, "--expected-head", _head())
-        reason, stage, envelope_code, resolved, verified = expected
+        reason, stage, envelope_code, profile, resolved, verified = expected
         assert code != 0
         assert payload == {
             "reason_code": reason,
             "schema_stage": stage,
             "envelope_failure_code": envelope_code,
-            "envelope_metadata_profile": PROFILE,
+            "envelope_metadata_profile": profile,
             "model_provenance": {
                 "requested_model": "grok4.6",
                 "resolved_model": resolved,
@@ -388,22 +473,18 @@ def test_head_hash_config_and_model_startup_mismatch_fail_before_vision(
     assert _snapshot() == before
 
 
-def test_unknown_or_poisoned_provider_trace_fails_closed_without_leak_or_retry(
+@pytest.mark.parametrize("extra_key", ("provider_body", "unknown_provider_key"))
+def test_extra_provider_trace_key_fails_closed_without_leak_or_retry(
     diagnostic_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    extra_key: str,
 ) -> None:
     module = diagnostic_module
-    poison = _vision_failure(
-        reason_code="future_reason_" + PROVIDER_SECRET,
-        schema_stage="future_stage_" + PROVIDER_SECRET,
-        envelope_failure_code="future_code_" + PROVIDER_SECRET,
-        envelope_metadata_profile="future_profile_" + PROVIDER_SECRET,
-        requested_model=PROVIDER_SECRET,
-        resolved_model=PROVIDER_SECRET,
-        model_verified=True,
-    )
-    vision = _VisionSpy(poison)
+    trace = _success_trace()
+    trace["envelope_metadata_profile"] = PROFILE
+    trace[extra_key] = PROVIDER_SECRET
+    vision = _VisionSpy(trace)
     _install_runtime(monkeypatch, module, settings=_settings(), vision=vision)
     before = _snapshot()
     code, payload = _invoke(module, capsys, "--expected-head", _head())
