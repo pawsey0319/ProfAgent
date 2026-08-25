@@ -325,18 +325,14 @@ def _closed_provider_result(trace: Any) -> tuple[int, dict[str, Any]]:
             vision_call_count=1,
         )
 
-    if (
-        status != "quarantined"
-        or reason not in _FAILURE_REASONS
-        or assessment_count != 0
-    ):
+    if status != "quarantined" or reason not in _FAILURE_REASONS:
         return 1, _provider_unavailable()
+
     pre_model_failures = {
         "input_rejected",
         "timeout",
         "provider_unavailable",
         "http_error",
-        "model_mismatch",
     }
     semantic_failures = {
         "slot_mismatch",
@@ -347,19 +343,55 @@ def _closed_provider_result(trace: Any) -> tuple[int, dict[str, Any]]:
         "invalid_region",
         "quality_rejected",
     }
-    if reason in pre_model_failures and verified:
-        return 1, _provider_unavailable()
-    if reason in semantic_failures and not verified:
-        return 1, _provider_unavailable()
-    if reason == "response_schema_invalid":
-        if profile != EXPECTED_METADATA_PROFILE or stage not in _SCHEMA_STAGES:
+
+    if reason in pre_model_failures:
+        state_is_valid = (
+            not verified
+            and resolved is None
+            and stage is None
+            and failure_code is None
+            and profile is None
+            and assessment_count == 0
+            and quality_issue_count == 0
+        )
+    elif reason == "model_mismatch":
+        state_is_valid = (
+            not verified
+            and resolved is None
+            and stage == "envelope"
+            and failure_code is None
+            and profile is None
+            and assessment_count == 0
+            and quality_issue_count == 0
+        )
+    elif reason == "response_schema_invalid":
+        state_is_valid = (
+            not verified
+            and resolved is None
+            and stage in _SCHEMA_STAGES
+            and profile == EXPECTED_METADATA_PROFILE
+            and assessment_count == 0
+            and quality_issue_count == 0
+        )
+        if not state_is_valid:
             return 1, _provider_unavailable()
         if stage == "envelope":
-            if failure_code not in _ENVELOPE_FAILURE_CODES:
-                return 1, _provider_unavailable()
-        elif failure_code is not None:
-            return 1, _provider_unavailable()
-    elif failure_code is not None or profile is not None:
+            state_is_valid = failure_code in _ENVELOPE_FAILURE_CODES
+        else:
+            state_is_valid = failure_code is None
+    elif reason in semantic_failures:
+        state_is_valid = (
+            verified
+            and resolved in EXPECTED_VISION_REPORTED_MODELS
+            and stage == "payload"
+            and failure_code is None
+            and profile is None
+            and assessment_count == 0
+        )
+    else:
+        state_is_valid = False
+
+    if not state_is_valid:
         return 1, _provider_unavailable()
 
     return 1, _output(
