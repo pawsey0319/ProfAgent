@@ -1,2 +1,3 @@
 data/fixtures/*.jsonl text eol=lf
 data/eval/*.jsonl text eol=lf
+data/schemas/garment_s16.schema.json text eol=lf
