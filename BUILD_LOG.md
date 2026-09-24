@@ -643,6 +643,11 @@ S16 复用 S15 Memory 路线 A、R1 owner/ID/HardFilter/购物门控、不可变
 - fresh fetch 审计确认交接前 `codex/s16-personal-stylist` 本地/远端同为 `149d92e418a4de684a0f0bd935a776e7b37e2334` 且 ahead/behind `0/0`、tracked/staged diff 为 0；本地 `main` 的 4 个未推 main 提交均已作为远端 S16 祖先上传，S16 相对本地 main 领先 123、落后 0。仓库无 submodule/LFS 对象，普通 clone 可恢复全部 tracked 文件；两项未跟踪 S16 证据和 ignored 私有证据/SQLite 不属于已上传内容。
 - 新增 `docs/DEVICE_HANDOFF.md` 并从 README 链接，记录权威分支、Python 3.10.19 基线、无 lock 的复现限制、环境/配置、运行/评测、本地状态安全迁移、S16 U/V 边界、后续多 agent 顺序与 fresh preflight 禁令。本阶段只做文档与 Git 事实审计，真实 CPA/Vision/Image/Provider 调用为 0，未执行功能门禁，不能据此新增 PASS；S16B、S16C、S16R 仍未完成、未上线。
 
+#### Cross-device EOL / private-test / report-drift blocker（2026-09-24，已关闭）
+
+- Windows `core.autocrlf` fresh clone 先反证 `c4f3783` 可单独代表迁移完成：schema 被检出为 CRLF SHA `4565fcc...252cf`，与 canonical LF SHA `014e923...f292` 不同，S16 validator fail-closed。tester RED `15f512b` 审计全部 7 个 SHA-bound 文本输入，`e84ba1f` 固定唯一缺失的 schema LF。下一轮 clean clone 又暴露 `73 failed, 970 passed, 1 skipped` 与报告漂移；repo-only fixture RED `b3adef4`、实现 `dd1c747` 固定 manifest LF，并加入 tracked 脱敏合成 75-byte PNG（SHA `dbc3dcec...1eca2`）和 450-byte JSONL（SHA `9cbeb3ef...b341`）。private-absent 分支使用 synthetic fallback 且不 skip；完整冻结私有证据存在时仍有意走历史真实证据分支，并只复制到 test temp state 做 byte-exact 兼容检查。`dd1c747` 还隔离 frozen eval 测试输出。剩余 endpoint 报告漂移由 RED `39cdabc` 捕获；`4afd54e` 仅在 endpoint 测试中 monkeypatch lazy evaluator，让原 evaluator 以 `write_reports=False` 运行并保留相对 `report_paths`，生产 `/eval/run` 不变。
+- code/test HEAD `4afd54ec5e56714b57c666337cf2c2685ab027a9` 的全新 `core.autocrlf=true` clone 最终得到 clean contracts `8 passed`、EOL `2 passed`、两个 validator exit 0、full `1051 passed, 1 skipped in 301.05s`；唯一 skip 是 Windows symlink 权限用例 `tests/test_s16a_report.py:861`。post-status clean、六份冻结证据哈希不变、真实 CPA/Vision/Image/Provider 调用为 0。新设备运行全套测试无需私有证据；私有证据仅用于可选的历史真实证据复核。该关闭只证明 clean-clone 代码/测试可移植性，S16B、S16C、S16R 仍未完成、未上线。
+
 #### S17+ — 已同步的未来规划（S16 不实施）
 
 1. **A + LangMem 后台提取（路线 B）**：仅在积累真实对话与误提取标注后启用；回复完成后异步产生结构化候选，仍经本项目敏感过滤、用户确认和 SQL 提交，不允许自动改写人格/安全 prompt。

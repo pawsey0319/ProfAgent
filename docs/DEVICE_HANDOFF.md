@@ -20,6 +20,20 @@ fresh `git fetch --prune origin` 后，交接文档修改前的审计事实为�
 - 仓库没有 submodule，也没有 Git LFS 跟踪对象；普通 `git clone` 加 `git switch` 可以恢复全部 **tracked** 文件，不需要额外拉取 submodule/LFS。
 - 普通 clone 不会恢复两项未跟踪开发证据 `data/manifests/wardrobe_assets_v2.json`、`data/sources/wardrobe_s16_sources.jsonl`，也不会恢复 `.gitignore` 排除的私有 quarantine、诊断证据和本地 SQLite。它们不是“已上传内容”，迁移规则见第 8 节。
 
+#### 已关闭的 Windows EOL / clean-clone 迁移阻塞
+
+先前交接提交 `c4f3783` 中“普通 clone 可恢复全部 tracked 文件”的判断只证明 Git 对象已上传，**没有证明 Windows checkout 后的工作区字节仍满足 hash-bound 合同**。fresh clone 在启用 `core.autocrlf` 的 Windows 环境中，把 `data/schemas/garment_s16.schema.json` 检出为 CRLF，SHA-256 变为 `4565fcc...252cf`；S16 manifest 绑定的 canonical LF SHA-256 是 `014e923...f292`，因此 `scripts/validate_s16_wardrobe.py` 正确 fail-closed。`c4f3783` 不能单独视为“跨设备迁移完成”。
+
+修复按 TDD 分阶段关闭：
+
+1. tester RED `15f512b` 审计全部 7 个 SHA-bound 文本输入，确认前 6 个 JSONL 已有 LF 属性、唯一缺口是 schema；`e84ba1f` 为 schema 增加精确 LF checkout 属性。
+2. 随后的 clean clone 全量测试暴露 `73 failed, 970 passed, 1 skipped` 和 eval 报告漂移：部分测试把旧机 ignored 私有证据错误地当成必需前置条件，测试运行还会改写仓库报告。repo-only fixture RED 为 `b3adef4`；实现 `dd1c747` 固定 manifest LF，并加入两个 tracked、脱敏、合成 fixture：75-byte PNG，SHA-256 `dbc3dcecb2f1fba670900c97391b7946f6da34f4cdbfba34946655ee0e81eca2`；450-byte JSONL，SHA-256 `9cbeb3efad19e017b785754020770f940142e3e42757ae09065713752810b341`。私有证据从此**不再是必需依赖**：clean clone / private-absent 分支使用 tracked synthetic fallback 且不会 skip；若 checkout 恰好具有完整冻结私有证据，测试仍有意运行历史真实证据分支，并且只把它复制到测试临时状态，用于 byte-exact 向后兼容检查。`dd1c747` 同时隔离 frozen eval 测试输出。
+3. 剩余 eval endpoint 报告漂移由 RED `39cdabc` 捕获。`4afd54ec5e56714b57c666337cf2c2685ab027a9` 没有改变生产 `/eval/run`，也没有把 endpoint 的 report path 重定向到 `tmp_path`；endpoint 测试 monkeypatch lazy evaluator，使其调用原 evaluator 时传入 `write_reports=False`，同时保留相对 `report_paths` 合同。
+
+最终在 code/test HEAD `4afd54ec5e56714b57c666337cf2c2685ab027a9` 建立全新 `core.autocrlf=true` clone 验收：clean-checkout contracts `8 passed`、EOL contracts `2 passed`、base 与 S16 两个 validator 均 exit 0、full pytest `1051 passed, 1 skipped in 301.05s`；唯一 skip 是 Windows 无符号链接权限的 `tests/test_s16a_report.py:861`。运行后 tracked/staged/untracked 状态 clean，六份冻结历史证据哈希不变，真实 CPA/Vision/Image/Provider 调用为 0。
+
+这关闭了代码/测试的 clean-clone 可移植性阻塞，但没有完成 S16B/C/R。接手者仍要在自己的 checkout 上先运行两个 validator 和适用门禁；历史 PASS 不能替代新环境的实际结果。
+
 在新设备的 PowerShell 中：
 
 ```powershell
@@ -59,8 +73,11 @@ conda run -n torch128 python -m pip install -e ".[dev,postgres]"
 ```powershell
 conda run --no-capture-output -n torch128 python --version
 conda run --no-capture-output -n torch128 python scripts/validate.py
+conda run --no-capture-output -n torch128 python scripts/validate_s16_wardrobe.py
 conda run --no-capture-output -n torch128 python -m pytest -q
 ```
+
+必须先看到 `scripts/validate.py` 与 `scripts/validate_s16_wardrobe.py` 都成功，才能称 checkout 的数据/合同可恢复；仅凭 `git status` clean、文件已下载或测试依赖安装成功都不够。
 
 不要直接使用激活后的裸 `python` 来替代这些命令；CI/验收记录统一以 `conda run -n torch128 ...` 为准。
 
@@ -174,11 +191,11 @@ Git 不负责跨设备恢复运行时状态。本文编写时，旧设备还有�
 | `data/sources/wardrobe_s16_sources.jsonl` | 未跟踪 | S16 候选来源记录，仍待 S16B 收口 |
 | CPA 本地 JSON、`.env`、API key | 必须留在 Git 外 | 只可在新设备重新安全配置，不能随项目归档 |
 
-这解释了为什么只 clone 仓库不能恢复旧设备的 Memory 和 S16 私有诊断现场；它不会影响从已跟踪 fixture 启动基本 Demo。
+这解释了为什么只 clone 仓库不能恢复旧设备的 Memory 和 S16 私有诊断现场。自 `dd1c747` 起，**新设备不再需要复制任何私有证据即可运行全量测试**：private-absent 分支使用 tracked 的脱敏合成 fallback 且不 skip。私有证据仍是可选的历史真实证据复核输入；如果 checkout 具有完整冻结证据，测试会有意执行该分支，并只复制到测试临时状态做 byte-exact 兼容检查。它不是普通开发或 clean-clone 测试的必需依赖。
 
 ### 可选的安全人工迁移
 
-只有确实要继续 S16B 取证或保留本地 Demo 记忆时才迁移上述文件：
+只有确实要复核历史真实调用证据链或保留本地 Demo 记忆时才迁移对应文件；继续普通开发、运行 validator 或全量测试都不需要私有证据：
 
 1. 先停止 ProfAgent、测试、CPA 诊断和所有使用 SQLite 的进程。
 2. 绝不打包 `.env`、`config.local.json`、`*.key`、`*.pem`、shell history 或 credential。
@@ -217,6 +234,8 @@ conda run --no-capture-output -n torch128 python scripts/validate.py
 conda run --no-capture-output -n torch128 python scripts/validate_s16_wardrobe.py
 conda run --no-capture-output -n torch128 python -m pytest -q
 ```
+
+两个 validator 是 fresh-clone 的首要字节完整性门禁，尤其用于阻止 Windows EOL 转换破坏 manifest 绑定输入。任何一个失败都要停止，不得跳过后直接宣布迁移完成或执行 Provider。
 
 ### 迁移本地文件后
 
