@@ -487,10 +487,26 @@ def test_frozen_eval_writes_stable_json_and_markdown(
     }
 
 
-def test_eval_run_endpoint_returns_same_stable_contract(offline_settings) -> None:
+def test_eval_run_endpoint_returns_same_stable_contract(
+    offline_settings, monkeypatch
+) -> None:
+    report_paths = (
+        offline_settings.root_dir / REPORT_JSON,
+        offline_settings.root_dir / REPORT_MARKDOWN,
+    )
+    before = {path: path.read_bytes() for path in report_paths}
+    original_run_evaluation = eval_module.run_evaluation
+
+    async def run_without_writing_reports(root_dir=None):
+        return await original_run_evaluation(root_dir, write_reports=False)
+
+    monkeypatch.setattr(
+        eval_module, "run_evaluation", run_without_writing_reports
+    )
     app = create_app(offline_settings)
     with TestClient(app) as client:
         response = client.post("/eval/run")
+    assert {path: path.read_bytes() for path in report_paths} == before
     assert response.status_code == 200, response.text
     report = response.json()
     _assert_safe_report(report)
