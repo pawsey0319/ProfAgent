@@ -638,6 +638,11 @@ S16 复用 S15 Memory 路线 A、R1 owner/ID/HardFilter/购物门控、不可变
 - **终审边界**：先由 Codex 核查本地事实和门禁；实际调用 Grok 前必须让用户确认当次模型 ID，Grok 只提供咨询证据，最终由 Codex 收拢。
 - **退出条件**：UrgencyAcc≥95%、高急 ShoppingGateAcc=100%、Catalog 0、Item Hallucination=0、Hard Constraint Violation=0、Slot Completeness≥95%，其余 R1 P0 门槛不退化；在此之前 S16 不得宣布完成。
 
+#### 跨设备交接与上传审计（2026-09-24，纯文档）
+
+- fresh fetch 审计确认交接前 `codex/s16-personal-stylist` 本地/远端同为 `149d92e418a4de684a0f0bd935a776e7b37e2334` 且 ahead/behind `0/0`、tracked/staged diff 为 0；本地 `main` 的 4 个未推 main 提交均已作为远端 S16 祖先上传，S16 相对本地 main 领先 123、落后 0。仓库无 submodule/LFS 对象，普通 clone 可恢复全部 tracked 文件；两项未跟踪 S16 证据和 ignored 私有证据/SQLite 不属于已上传内容。
+- 新增 `docs/DEVICE_HANDOFF.md` 并从 README 链接，记录权威分支、Python 3.10.19 基线、无 lock 的复现限制、环境/配置、运行/评测、本地状态安全迁移、S16 U/V 边界、后续多 agent 顺序与 fresh preflight 禁令。本阶段只做文档与 Git 事实审计，真实 CPA/Vision/Image/Provider 调用为 0，未执行功能门禁，不能据此新增 PASS；S16B、S16C、S16R 仍未完成、未上线。
+
 #### S17+ — 已同步的未来规划（S16 不实施）
 
 1. **A + LangMem 后台提取（路线 B）**：仅在积累真实对话与误提取标注后启用；回复完成后异步产生结构化候选，仍经本项目敏感过滤、用户确认和 SQL 提交，不允许自动改写人格/安全 prompt。
