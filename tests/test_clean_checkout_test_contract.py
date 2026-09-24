@@ -197,3 +197,25 @@ def test_focused_eval_report_test_does_not_modify_tracked_reports() -> None:
         assert after == before, "focused eval test modified tracked report bytes"
     finally:
         _restore_reports(before)
+
+
+def test_eval_run_endpoint_test_does_not_modify_tracked_reports() -> None:
+    before = _snapshot_reports()
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            f"{REPORT_TEST_MODULE.relative_to(ROOT).as_posix()}::test_eval_run_endpoint_returns_same_stable_contract",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    after = _snapshot_reports()
+    try:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert after == before, "eval endpoint test modified tracked report bytes"
+    finally:
+        _restore_reports(before)
