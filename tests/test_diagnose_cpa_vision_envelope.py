@@ -74,10 +74,15 @@ REPORT_PATHS = (
     ROOT / "reports/eval/r1_demo_v1.md",
 )
 PROVIDER_SECRET = "provider-secret-body-user-g051-must-not-leak"
+SYNTHETIC_DIAGNOSTIC_INPUT = (
+    ROOT / "tests/fixtures/diagnostic_input.synthetic.png"
+)
 
 
 @pytest.fixture
-def diagnostic_module() -> ModuleType:
+def diagnostic_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> ModuleType:
     if not SCRIPT.is_file():
         pytest.fail(
             "Ruling P RED: scripts/diagnose_cpa_vision_envelope.py is missing",
@@ -89,6 +94,39 @@ def diagnostic_module() -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
+    production_fixed_image_contract = (
+        module.FIXED_IMAGE_RELATIVE_PATH,
+        module.FIXED_IMAGE_SHA256,
+        module.FIXED_IMAGE_SIZE,
+        module.FIXED_IMAGE_DIMENSIONS,
+    )
+    assert production_fixed_image_contract == (
+        FIXED_RELATIVE_PATH,
+        FIXED_SHA256,
+        784_326,
+        (1024, 1024),
+    )
+    module._TEST_PRODUCTION_FIXED_IMAGE_CONTRACT = production_fixed_image_contract
+
+    fixed_image_path = ROOT / FIXED_RELATIVE_PATH
+    if not fixed_image_path.is_file():
+        synthetic_bytes = SYNTHETIC_DIAGNOSTIC_INPUT.read_bytes()
+        with module.Image.open(module.io.BytesIO(synthetic_bytes)) as image:
+            synthetic_dimensions = image.size
+            assert image.format == "PNG"
+            image.verify()
+        monkeypatch.setattr(
+            module, "FIXED_IMAGE_RELATIVE_PATH", SYNTHETIC_DIAGNOSTIC_INPUT
+        )
+        monkeypatch.setattr(
+            module,
+            "FIXED_IMAGE_SHA256",
+            hashlib.sha256(synthetic_bytes).hexdigest(),
+        )
+        monkeypatch.setattr(module, "FIXED_IMAGE_SIZE", len(synthetic_bytes))
+        monkeypatch.setattr(
+            module, "FIXED_IMAGE_DIMENSIONS", synthetic_dimensions
+        )
     return module
 
 
@@ -341,8 +379,12 @@ def test_cli_surface_and_fixed_private_input_are_closed(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     module = diagnostic_module
-    assert module.FIXED_IMAGE_RELATIVE_PATH == FIXED_RELATIVE_PATH
-    assert module.FIXED_IMAGE_SHA256 == FIXED_SHA256
+    assert module._TEST_PRODUCTION_FIXED_IMAGE_CONTRACT == (
+        FIXED_RELATIVE_PATH,
+        FIXED_SHA256,
+        784_326,
+        (1024, 1024),
+    )
     assert module.FIXED_MIME_TYPE == "image/png"
     assert module.FIXED_SLOT == "top"
     assert module.FIXED_PRODUCT_TYPE == "tie-neck blouse"
@@ -397,8 +439,10 @@ def test_success_stdout_is_exact_and_calls_fixed_vision_once_without_image_or_wr
         "allowed_slot",
         "expected_product_type",
     }
-    assert hashlib.sha256(call["image_bytes"]).hexdigest() == FIXED_SHA256
-    assert call["image_bytes"] == (ROOT / FIXED_RELATIVE_PATH).read_bytes()
+    assert hashlib.sha256(call["image_bytes"]).hexdigest() == module.FIXED_IMAGE_SHA256
+    assert call["image_bytes"] == (
+        ROOT / module.FIXED_IMAGE_RELATIVE_PATH
+    ).read_bytes()
     assert call["mime_type"] == "image/png"
     assert call["allowed_slot"] == "top"
     assert call["expected_product_type"] == "tie-neck blouse"

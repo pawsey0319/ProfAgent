@@ -431,12 +431,21 @@ def test_ac07_trace_witness_selection_fails_closed_when_post_trace_is_insufficie
         raise AssertionError("insufficient Trace witnesses must fail closed")
 
 
-def test_frozen_eval_writes_stable_json_and_markdown(project_root: Path) -> None:
+def test_frozen_eval_writes_stable_json_and_markdown(
+    project_root: Path,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    isolated_report_dir = tmp_path / "reports" / "eval"
+    shutil.copytree(project_root / "reports" / "eval", isolated_report_dir)
+    json_path = isolated_report_dir / REPORT_JSON.name
+    markdown_path = isolated_report_dir / REPORT_MARKDOWN.name
+    monkeypatch.setattr(eval_module, "REPORT_JSON", json_path)
+    monkeypatch.setattr(eval_module, "REPORT_MARKDOWN", markdown_path)
+
     report = asyncio.run(run_evaluation(project_root))
     _assert_safe_report(report)
 
-    json_path = project_root / REPORT_JSON
-    markdown_path = project_root / REPORT_MARKDOWN
     assert json_path.is_file()
     assert markdown_path.is_file()
     persisted = json.loads(json_path.read_text(encoding="utf-8"))

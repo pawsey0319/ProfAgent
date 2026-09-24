@@ -7881,18 +7881,25 @@ def test_historical_v1_v2_prefix_is_byte_exact_when_private_v3_is_appended(
     licensed_ingestion_cli: ModuleType,
     vision_module: ModuleType,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cli = licensed_ingestion_cli._load()
-    repository = Path(__file__).resolve().parents[1]
-    frozen_diagnostics = (
-        repository / "data/assets/cpa_generated_quarantine_diagnostics.jsonl"
+    source_path, evidence_bytes, evidence_lines, private_payloads, is_real = (
+        _rp_diagnostic_evidence(cli)
     )
-    frozen_private = repository / "data/assets/private_quarantine/cpa_generated"
-    frozen_bytes = frozen_diagnostics.read_bytes()
-    assert hashlib.sha256(frozen_bytes).hexdigest() == (
-        "0f981797ee2dc37d41a0563e1d5d34b8d31802ac5589beae4aa223309843dd28"
+    _rp_install_synthetic_allowlists(
+        cli, monkeypatch, evidence_lines, is_real=is_real
     )
-    frozen_rows = [json.loads(line) for line in frozen_bytes.splitlines()]
+    assert source_path.is_file()
+    if is_real:
+        assert hashlib.sha256(evidence_bytes).hexdigest() == (
+            "0f981797ee2dc37d41a0563e1d5d34b8d31802ac5589beae4aa223309843dd28"
+        )
+    else:
+        assert hashlib.sha256(evidence_bytes).hexdigest() != (
+            "0f981797ee2dc37d41a0563e1d5d34b8d31802ac5589beae4aa223309843dd28"
+        )
+    frozen_rows = [json.loads(line) for line in evidence_lines]
     assert [row.get("schema_version") for row in frozen_rows] == [None, None, 2]
     assert [row.get("schema_stage") for row in frozen_rows] == [
         None,
@@ -7903,10 +7910,10 @@ def test_historical_v1_v2_prefix_is_byte_exact_when_private_v3_is_appended(
     config = _rg_config(cli, tmp_path)
     private_root, diagnostics = _ri_paths(config)
     private_root.mkdir(parents=True)
-    diagnostics.write_bytes(frozen_bytes)
+    diagnostics.write_bytes(evidence_bytes)
     for row in frozen_rows:
         name = row["quarantine_relative_path"]
-        (private_root / name).write_bytes((frozen_private / name).read_bytes())
+        (private_root / name).write_bytes(private_payloads[name])
 
     result = _rg_run(
         cli,
@@ -7915,7 +7922,7 @@ def test_historical_v1_v2_prefix_is_byte_exact_when_private_v3_is_appended(
         Task4Vision(_ro_vision_error(vision_module)),
     )
     appended = diagnostics.read_bytes()
-    assert appended[: len(frozen_bytes)] == frozen_bytes
+    assert appended[: len(evidence_bytes)] == evidence_bytes
     rows = [json.loads(line) for line in appended.splitlines()]
     assert len(rows) == 4
     assert rows[-1]["schema_version"] == 3
@@ -7933,21 +7940,116 @@ _RP_FROZEN_V2_LINE_SHA256 = (
 _RP_FROZEN_DIAGNOSTIC_SHA256 = (
     "0f981797ee2dc37d41a0563e1d5d34b8d31802ac5589beae4aa223309843dd28"
 )
+_RP_SYNTHETIC_DIAGNOSTIC = (
+    Path(__file__).resolve().parents[1]
+    / "tests/fixtures/diagnostic_evidence.synthetic.jsonl"
+)
+_RP_SYNTHETIC_IMAGE = (
+    Path(__file__).resolve().parents[1]
+    / "tests/fixtures/diagnostic_input.synthetic.png"
+)
 
 
-def _rp_frozen_diagnostic_evidence() -> tuple[Path, bytes, list[bytes]]:
+def _rp_synthetic_diagnostic_evidence(
+    cli: ModuleType,
+) -> tuple[Path, bytes, list[bytes], dict[str, bytes], bool]:
+    descriptors = [
+        json.loads(line)
+        for line in _RP_SYNTHETIC_DIAGNOSTIC.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    assert [row["schema_generation"] for row in descriptors] == ["v1", "v1", "v2"]
+    image_bytes = _RP_SYNTHETIC_IMAGE.read_bytes()
+    image_sha256 = hashlib.sha256(image_bytes).hexdigest()
+    garment = cli._authoritative_garments()["g051"]
+    prompt_sha256 = hashlib.sha256(
+        cli._cpa_generated_prompt(garment).encode("utf-8")
+    ).hexdigest()
+    rows: list[bytes] = []
+    for descriptor in descriptors:
+        row: dict[str, Any] = {
+            "transaction_id": descriptor["transaction_seed"],
+            "garment_id": garment.garment_id,
+            "user_id": garment.user_id,
+            "slot": garment.slot,
+            "product_type": cli.product_type_for_garment(garment.garment_id),
+            "prompt_sha256": prompt_sha256,
+            "original_sha256": image_sha256,
+            "processed_sha256": image_sha256,
+            "quarantine_sha256": image_sha256,
+            "quarantine_relative_path": f"{image_sha256}.png",
+            "failure_stage": "vision",
+            "reason_code": "response_schema_invalid",
+            "image_model_provenance": {
+                "requested_model": _RG_MODEL,
+                "resolved_model": _RG_MODEL,
+                "model_verified": True,
+            },
+            "vision_model_provenance": {
+                "requested_model": "grok4.6",
+                "resolved_model": None,
+                "model_verified": False,
+            },
+        }
+        if descriptor["schema_generation"] == "v2":
+            row.update({"schema_version": 2, "schema_stage": "envelope"})
+        rows.append(
+            json.dumps(
+                row, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+        )
+    payload = b"\n".join(rows) + b"\n"
+    private_payloads = {f"{image_sha256}.png": image_bytes}
+    return _RP_SYNTHETIC_DIAGNOSTIC, payload, rows, private_payloads, False
+
+
+def _rp_diagnostic_evidence(
+    cli: ModuleType,
+) -> tuple[Path, bytes, list[bytes], dict[str, bytes], bool]:
     repository = Path(__file__).resolve().parents[1]
     path = repository / "data/assets/cpa_generated_quarantine_diagnostics.jsonl"
-    payload = path.read_bytes()
-    lines = payload.splitlines()
-    assert len(lines) == 3
-    assert hashlib.sha256(payload).hexdigest() == _RP_FROZEN_DIAGNOSTIC_SHA256
-    assert hashlib.sha256(lines[2]).hexdigest() == _RP_FROZEN_V2_LINE_SHA256
-    return path, payload, lines
+    private_root = repository / "data/assets/private_quarantine/cpa_generated"
+    if path.is_file():
+        payload = path.read_bytes()
+        lines = payload.splitlines()
+        if len(lines) == 3:
+            names = [json.loads(line)["quarantine_relative_path"] for line in lines]
+            private_paths = {name: private_root / name for name in names}
+            if all(candidate.is_file() for candidate in private_paths.values()):
+                assert hashlib.sha256(payload).hexdigest() == _RP_FROZEN_DIAGNOSTIC_SHA256
+                assert hashlib.sha256(lines[2]).hexdigest() == _RP_FROZEN_V2_LINE_SHA256
+                return (
+                    path,
+                    payload,
+                    lines,
+                    {name: candidate.read_bytes() for name, candidate in private_paths.items()},
+                    True,
+                )
+    return _rp_synthetic_diagnostic_evidence(cli)
 
 
-def _rp_forged_v2_line(**updates: Any) -> bytes:
-    _, _, lines = _rp_frozen_diagnostic_evidence()
+def _rp_install_synthetic_allowlists(
+    cli: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    lines: list[bytes],
+    *,
+    is_real: bool,
+) -> None:
+    if is_real:
+        return
+    monkeypatch.setattr(
+        cli,
+        "_LEGACY_PRIVATE_QUARANTINE_DIAGNOSTIC_SHA256_ALLOWLIST",
+        frozenset(hashlib.sha256(line).hexdigest() for line in lines[:2]),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_LEGACY_V2_PRIVATE_QUARANTINE_DIAGNOSTIC_SHA256_ALLOWLIST",
+        frozenset({hashlib.sha256(lines[2]).hexdigest()}),
+    )
+
+
+def _rp_forged_v2_line(lines: list[bytes], **updates: Any) -> bytes:
     row = json.loads(lines[2])
     row.update(updates)
     forged = json.dumps(
@@ -7979,9 +8081,12 @@ def test_historical_private_v2_allowlist_contains_only_frozen_ruling_n_line(
 def test_any_mutated_private_v2_line_is_rejected_by_loader(
     licensed_ingestion_cli: ModuleType,
     updates: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cli = licensed_ingestion_cli._load()
-    forged = _rp_forged_v2_line(**updates)
+    _, _, lines, _, is_real = _rp_diagnostic_evidence(cli)
+    _rp_install_synthetic_allowlists(cli, monkeypatch, lines, is_real=is_real)
+    forged = _rp_forged_v2_line(lines, **updates)
     with pytest.raises(
         ValueError,
         match="unrecognized_legacy_v2_private_quarantine_diagnostic",
@@ -7993,20 +8098,20 @@ def test_forged_private_v2_fails_before_provider_and_any_state_write(
     licensed_ingestion_cli: ModuleType,
     vision_module: ModuleType,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cli = licensed_ingestion_cli._load()
-    repository = Path(__file__).resolve().parents[1]
-    _, _, lines = _rp_frozen_diagnostic_evidence()
-    forged = _rp_forged_v2_line(transaction_id="f" * 32)
+    _, _, lines, private_payloads, is_real = _rp_diagnostic_evidence(cli)
+    _rp_install_synthetic_allowlists(cli, monkeypatch, lines, is_real=is_real)
+    forged = _rp_forged_v2_line(lines, transaction_id="f" * 32)
     config = _rg_config(cli, tmp_path)
     private_root, diagnostics = _ri_paths(config)
     private_root.mkdir(parents=True)
     diagnostics.write_bytes(b"\n".join((*lines[:2], forged)) + b"\n")
-    frozen_private = repository / "data/assets/private_quarantine/cpa_generated"
     for raw_line in (*lines[:2], forged):
         row = json.loads(raw_line)
         name = row["quarantine_relative_path"]
-        (private_root / name).write_bytes((frozen_private / name).read_bytes())
+        (private_root / name).write_bytes(private_payloads[name])
 
     marker = config.asset_directory.parent / "cpa_generated_quarantine_transaction.json"
     durable_paths = (private_root, diagnostics, config.manifest_path, config.sources_path, marker)
@@ -8046,17 +8151,24 @@ def test_forged_private_v2_fails_before_provider_and_any_state_write(
 
 def test_frozen_ruling_n_private_v2_is_read_compatible_and_byte_exact(
     licensed_ingestion_cli: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cli = licensed_ingestion_cli._load()
-    path, before, lines = _rp_frozen_diagnostic_evidence()
+    path, before, lines, _, is_real = _rp_diagnostic_evidence(cli)
+    fixture_before = path.read_bytes()
+    _rp_install_synthetic_allowlists(cli, monkeypatch, lines, is_real=is_real)
     record = cli._private_quarantine_diagnostic_from_raw_line(
         lines[2].decode("utf-8")
     )
     assert record.schema_version == 2 and record.schema_stage == "envelope"
-    assert path.read_bytes() == before
-    assert hashlib.sha256(path.read_bytes()).hexdigest() == (
-        _RP_FROZEN_DIAGNOSTIC_SHA256
-    )
+    assert path.read_bytes() == fixture_before
+    if is_real:
+        assert path.read_bytes() == before
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == (
+            _RP_FROZEN_DIAGNOSTIC_SHA256
+        )
+    else:
+        assert b"\n".join(lines) + b"\n" == before
 
 
 # Ruling U: CLIProxyAPI 7.2.97 commit 42f36b94's non-stream OpenAI serializer

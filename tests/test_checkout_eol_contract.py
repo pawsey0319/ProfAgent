@@ -17,6 +17,10 @@ HASH_BOUND_TEXT_INPUTS = (
     "data/fixtures/users.jsonl",
     "data/schemas/garment_s16.schema.json",
 )
+DETERMINISTIC_LF_OUTPUTS = (
+    "data/manifests/fixtures_s16_womenswear_v1.json",
+)
+LF_CHECKOUT_CONTRACT_PATHS = HASH_BOUND_TEXT_INPUTS + DETERMINISTIC_LF_OUTPUTS
 
 
 def _check_attr(path: str) -> dict[str, str]:
@@ -38,7 +42,7 @@ def _sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def test_every_tracked_hash_bound_text_input_forces_lf_checkout() -> None:
+def test_every_byte_bound_input_and_deterministic_output_forces_lf_checkout() -> None:
     manifest = json.loads(S16_MANIFEST.read_text(encoding="utf-8"))
     manifest_paths = {
         receipt["path"] for receipt in manifest["base"]["files"].values()
@@ -48,11 +52,12 @@ def test_every_tracked_hash_bound_text_input_forces_lf_checkout() -> None:
 
     missing_lf_contract = {
         path: _check_attr(path)
-        for path in HASH_BOUND_TEXT_INPUTS
+        for path in LF_CHECKOUT_CONTRACT_PATHS
         if _check_attr(path) != {"text": "set", "eol": "lf"}
     }
     assert missing_lf_contract == {}, (
-        "byte-hash-bound text inputs must force `text eol=lf` so a clean "
+        "byte-hash-bound inputs and deterministic outputs must force "
+        "`text eol=lf` so a clean "
         f"Windows checkout cannot change their SHA-256: {missing_lf_contract}"
     )
 
